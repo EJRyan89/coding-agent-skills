@@ -14,13 +14,15 @@ it is read, and `NOT_READ` what it does not. The module's suite pins every keywo
 GitHub's pages document, fails one no table decides, and reads every keyword in each case before each separator and
 reference the tables read.
 
-What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines or with a
-no-break space between them, `_` or `~` emphasis, a backslash-escaped `\\#<n>`, a keyword in another language, a
-reference GitHub resolves through a repository's custom autolink prefix, a reference written as a Markdown link's text,
-and a URL through `redirect.github.com`, which GitHub's autolink page offers so that a URL makes no backlink. It also
-does not see a reference after the first in a list that names its keyword once (`Closes #<n>, #<m>`; GitHub's pages
-ask for the keyword before each). `stray_closing_lines` also does not see a closing reference inside a comment copied
-character for character from the pull request template, which the squash commit still carries.
+What it does not see, each spelling with why in `NOT_READ`: a keyword and its reference on different lines, with a
+no-break space or another Unicode space such as an em space between them, or with a hyphen or a dash between them, a
+reference in a code span after a keyword outside it (``Closes `#<n>` ``), `_` or `~` emphasis, a backslash-escaped
+`\\#<n>`, a keyword in another language, a reference GitHub resolves through a repository's custom autolink prefix, a
+reference written as a Markdown link's text, and a URL through `redirect.github.com`, which GitHub's autolink page
+offers so that a URL makes no backlink. It also does not see a reference after the first in a list that names its
+keyword once (`Closes #<n>, #<m>`; GitHub's pages ask for the keyword before each). `stray_closing_lines` also does not
+see a closing reference inside a comment copied character for character from the pull request template, which the
+squash commit still carries.
 
 A pull request is squash-merged with its title as the commit's title and its body, as written, HTML comments included,
 as the message, so `pull_request_references` reads the title and the body together and reads inside comments. Every
@@ -109,6 +111,12 @@ NOT_READ = {
     "line break, a keyword ending a line of prose would take the next line's number",
     "Closes\u00a0#1": "a no-break space between the keyword and the reference, which GitHub's pages never write; the "
     "reader takes only spaces and tabs there",
+    "Closes\u2003#1": "another Unicode space, such as an em space, between the keyword and the reference, which "
+    "GitHub's pages never write; the reader takes only spaces and tabs there",
+    "Closes - #1": "a hyphen between the keyword and the reference, which GitHub's pages never write",
+    "Closes \u2014 #1": "a dash between the keyword and the reference, which GitHub's pages never write",
+    "Closes `#1`": "a reference in a code span after a keyword outside it, which GitHub's pages never write and its "
+    "renderer shows as code",
     "_Closes_ #1": "`_` emphasis around the keyword, which GitHub's pages never write; the reader reads `*` emphasis",
     "~~Closes~~ #1": "a struck-out keyword, which GitHub's pages never write and its author has struck out",
     "Closes \\#1": "a backslash-escaped number, which GitHub's pages never write",

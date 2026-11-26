@@ -136,6 +136,21 @@ DOCUMENTED_EXAMPLES = {
 }
 
 
+# The spellings GitHub's pages leave open that the reader reads, each found unread by an outside review, pinned here
+# apart from the module's tables, so a reader narrowed with its table row dropped leaves the spelling undecided and
+# fails the catalogue test.
+OPEN_SEPARATORS = ("{}:", "{}", "{}\t", "{} : ", "**{}** ", "**{}:** ", "**{}**: ", "{} **")
+OPEN_REFERENCES = (
+    "gh-1",
+    "http://github.com/o/r/issues/1",
+    "https://www.github.com/o/r/issues/1",
+    "github.com/o/r/issues/1",
+    "<https://github.com/o/r/issues/1>",
+    "https://github.com/o/r/issues/1#issuecomment-1",
+    "https://github.com/o/r/pull/1/files",
+)
+
+
 def not_read_keyword(keyword: str) -> bool:
     """Whether NOT_READ names `keyword` as a spelling the reader leaves unread, before the first issue's reference."""
     return f"{keyword} #1" in NOT_READ
@@ -175,8 +190,9 @@ def test_the_reader_reads_no_keyword_github_does_not_document() -> None:
         assert not re.fullmatch(CLOSING_KEYWORDS, word, re.IGNORECASE), word
 
 
-def test_every_documented_keyword_separator_and_reference_is_decided_once() -> None:
-    assert undecided(DOCUMENTED_KEYWORDS, DOCUMENTED_SEPARATORS, DOCUMENTED_REFERENCES) == [], (
+def test_every_documented_and_open_keyword_separator_and_reference_is_decided_once() -> None:
+    separators = DOCUMENTED_SEPARATORS + OPEN_SEPARATORS
+    assert undecided(DOCUMENTED_KEYWORDS, separators, DOCUMENTED_REFERENCES + OPEN_REFERENCES) == [], (
         "add each to KEYWORDS, SEPARATORS_READ, or REFERENCES_READ in closing_references.py with where GitHub "
         "documents it, or name it in closing_references.NOT_READ as `<keyword> #1`, `<separator>#1` for `Closes`, or "
         "`Closes <reference>` with the reason; never in both"
@@ -192,6 +208,11 @@ def test_a_form_no_table_decides_or_two_tables_decide_fails_the_catalogue(monkey
     assert undecided([], [], ["https://redirect.github.com/o/r/issues/1"]) == []
     monkeypatch.setitem(NOT_READ, "Closes #1", "a reference the reader reads, named here too")
     assert undecided([], [], ["#1"]) == [("reference", "#1")]
+
+
+def test_each_open_spelling_an_outside_review_found_unread_stays_read() -> None:
+    assert [form for form in OPEN_SEPARATORS if form not in SEPARATORS_READ] == []
+    assert [form for form in OPEN_REFERENCES if form not in REFERENCES_READ] == []
 
 
 def test_each_example_github_documents_is_read_as_its_page_says() -> None:
