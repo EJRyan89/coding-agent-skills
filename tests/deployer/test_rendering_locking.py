@@ -36,7 +36,7 @@ from suite_names import is_suite_name
 from test_presence_reads import stat_failing_at
 
 from deployer import fsops, hashing, lock, platform_support, render
-from deployer.errors import DeployError
+from deployer.errors import DeployError, SourceRefusal
 from deployer.paths import Paths
 
 # The first line of the refusal while another deployment holds the lock, with or without the PID its record names.
@@ -553,18 +553,30 @@ class RenderedExecutableTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="ShellCheck failed for rendered Bash block: alpha/SKILL.md block 1")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def assert_bash_named_the_file(self, output: str) -> None:
+        """Hold that the real Bash's syntax error named the file by the path the deployer passed it, which is how the
+        deployer tells the source's error from Bash's own failure: on Windows, Git Bash keeps the drive-letter argument
+        as given in its messages, never another form of it, or the refusal would name Bash's failure instead."""
+        self.assertRegex(output, r"\n[^\n]*(run\.sh|\d+\.sh): line \d+: syntax error[^\n]*\n")
+        self.assertIn(f"\n{render.RENDERED_CHECK_REMEDY}\n", output)
+        self.assertNotIn(f"{platform_support.BASH_NAME} failed checking", output)
+
     def test_bash_syntax_error_in_shell_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Shell fence fixture\n\n```shell\nif then\n```")
         self.make_config()
-        self.deploy_fails("--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 1")
+        result = self.deploy_fails(
+            "--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 1"
+        )
+        self.assert_bash_named_the_file(result.output)
 
     def test_bash_syntax_error_blocks_deployment(self) -> None:
         self.make_source_json()
         directory = self.make_skill("alpha", "Syntax fixture")
         self.write(directory / "run.sh", "#!/usr/bin/env bash\nif then\n")
         self.make_config()
-        self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
+        result = self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
+        self.assert_bash_named_the_file(result.output)
 
     def test_powershell_syntax_error_names_the_rendered_file_it_came_from(self) -> None:
         self.make_source_json()
@@ -579,6 +591,24 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertNotIn("fine.ps1", result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())
+
+    def test_a_powershell_syntax_error_is_the_source_s_whatever_encoding_pwsh_writes_the_workspace_s_path_in(
+        self,
+    ) -> None:
+        # pwsh writes in the console's encoding, the OEM code page on Windows and the locale's elsewhere, which need
+        # not be the UTF-8 the deployer reads, so the parse names a file by what no encoding changes, never its path.
+        powershell = platform_support.find_powershell()
+        self.assertIsNotNone(powershell, "validation requires PowerShell")
+        assert powershell is not None  # for the type checker, after the check above
+        with (
+            tempfile.TemporaryDirectory(prefix="render-é-", dir=self.root) as temporary,
+            mock.patch.dict(os.environ, {"LC_ALL": "en_US.ISO8859-1"}),
+            self.assertRaises(SourceRefusal) as raised,
+        ):
+            render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), powershell)
+        self.assertEqual("ERROR: Rendered PowerShell syntax validation failed: s/run.ps1", raised.exception.lines[0])
+        self.assertRegex(raised.exception.lines[1], r"\S")
+        self.assertEqual(render.RENDERED_CHECK_REMEDY, raised.exception.lines[-1])
 
     def test_uppercase_powershell_syntax_error_blocks_deployment(self) -> None:
         self.make_source_json()
