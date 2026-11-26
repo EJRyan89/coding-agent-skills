@@ -13,8 +13,10 @@ an error. In a process a suite starts, a warning raised where it is issued ends 
 one raised in a destructor is unraisable: Python prints it and carries on, and the process's exit status never shows
 it. So the run copies tools/unraisable_record.py, as sitecustomize.py, into a folder of its own that it puts first on
 PYTHONPATH, and every Python process the suites start records each unraisable exception it meets in a folder the run
-reads after each suite. A process started with -I, -E, or an environment built without this one takes neither the
-settings nor the recorder, and the run cannot see it.
+reads after each suite. A process that meets one and cannot record it ends with the recorder's UNRECORDED_STATUS, so a
+suite that reads its status fails, and a record file left with no line is read as a record, never as none. A process
+started with -I, -E, or an environment built without this one takes neither the settings nor the recorder, and the run
+cannot see it.
 
 Before the suites it starts one Python process with the suites' environment, which leaves a file open, and checks that
 the process ran in development mode with warnings as errors and recorded the unraisable exception that left. Then it
@@ -33,7 +35,8 @@ It prints one fact per line, its fields tab-separated:
   FAILED <suite> <reason>            pytest failed or ran past SUITE_SECONDS; pytest's output follows, indented;
                                      exit 1
   UNRAISABLE <suite> <record>        a process the suite started recorded an unraisable exception, named by its
-                                     arguments, what Python was finalizing, and the exception; exit 1
+                                     arguments, what Python was finalizing, and the exception, or left a record file
+                                     with no line, named by the file; exit 1
 
 With --summary FILE it also appends the interpreter, the settings, and a table of the suites to FILE, as the workflow
 does with its step summary.
@@ -111,6 +114,8 @@ DIAGNOSTIC_SUITES = (
 # How long one suite may run before it is ended with every process it started and failed.
 SUITE_SECONDS = 600.0
 PROBE_SECONDS = 60.0
+# Follows the name of a record file a process left with no line in it.
+EMPTY_RECORD = "is empty: a process met an unraisable exception whose line was never written"
 # The probe leaves a file open, so development mode warns as its destructor runs and the warning, raised as an error
 # there, is the unraisable exception the recorder must record; then it says how it ran.
 PROBE = (
@@ -164,12 +169,14 @@ def child_environment(environment: Mapping[str, str], site: Path, record: Path) 
 
 def taken_records(record: Path) -> tuple[str, ...]:
     """Each line every process wrote to the record folder, in the order of its file's name, and the files removed, so
-    the next suite starts with none."""
+    the next suite starts with none. A file holding no line is named with EMPTY_RECORD: the recorder makes one only
+    for an unraisable exception, so its line was lost, never absent."""
     lines: list[str] = []
     for path in file_presence.matching(record, "*.txt"):
-        lines += program_lines(path.read_text(encoding="utf-8", errors="replace"))
+        written = [line for line in program_lines(path.read_text(encoding="utf-8", errors="replace")) if line.strip()]
+        lines += written or [f"{path.name} {EMPTY_RECORD}"]
         path.unlink()
-    return tuple(line for line in lines if line.strip())
+    return tuple(lines)
 
 
 def probe_problem(environment: Mapping[str, str], record: Path) -> tuple[str, str | None]:
