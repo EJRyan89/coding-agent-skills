@@ -181,18 +181,18 @@ def local_checks(git: GitClient, repository: Path, options: argparse.Namespace) 
     base: Base = options.base
     top = top_of(git, repository)
     commit = fetched_base(git, repository, base)
-    print(f"BASE {base} {commit}", flush=True)
+    print(single_line(f"BASE {base} {commit}"), flush=True)
     changed = changed_files(git, top, commit)
     windows = windows_check(top, changed)
     checks = [changed_check(options.title_file, options.body_file), *([windows] if windows else [])]
     results = []
     for check in checks:
         results.append(run_check(check, top, base.branch))
-        print(results[-1], flush=True)
+        print(single_line(results[-1]), flush=True)
         if check.name == "changed" and windows is None:
             print("SKIPPED windows-types no changed file is one a type check reads", flush=True)
     failed = [result for result in results if not result.startswith("PASSED ")]
-    print(f"NOT_READY {len(failed)}" if failed else "READY", flush=True)
+    print(single_line(f"NOT_READY {len(failed)}" if failed else "READY"), flush=True)
     return 1 if failed else 0
 
 
