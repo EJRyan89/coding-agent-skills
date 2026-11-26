@@ -704,8 +704,8 @@ The hook sees the command text, and the guard reads git's words in it: it does n
 run by its own words, which it allows whatever those words are, so what a script file, `eval`, a `trap`'s action, a
 builtin's use that runs text no reader reads (`command_wrappers.REFUSED_BUILTINS`, as a `source`d file, a `mapfile -C`
 callback, or a command substitution in the quoted array subscript `printf -v` or `read` names, or one outside a
-builtin's words, as in `[[ -v 'a[$(x)]' ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
-`${a['$(x)']}`, which Bash 5.3 runs), the command
+builtin's words, as in `[[ -v 'a[$(x)]' ]]` or an assignment to an integer variable, which Bash 5.3 runs), the
+command
 `jobs -x` runs, which the guard reads only as a move it does not follow, a later name `hash -p` points at another
 program, a function, a program
 that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a
@@ -731,12 +731,11 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - `shopt -s cdable_vars`, after which a later `cd name` goes to the directory a variable of that name holds, where the
   guard places it in a folder of that name;
 - Bash 5.3's `${ command; }` and `${| command; }` substitutions, which run their commands in the shell itself, so a
-  `cd` in one moves it and a git call in one runs, where ejryan89-skill-core's `bash_syntax.py` reads each as a
-  parameter expansion whose value the text does not settle, running nothing;
+  `cd` in one moves it and a git call in one runs, where the guard reads each as a parameter expansion whose value the
+  text does not settle, running nothing, though ejryan89-skill-core's `bash_syntax.py` refuses each to the readers
+  that judge what a text runs; a git call beside one is read;
 - a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
-  not cover, such as a `for` or `select` loop whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }` whose
-  own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, an arithmetic expansion holding a quoted parenthesis, as
-  `$(( ")" ))`, a reserved word right after `]]`, as `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and
+  not cover, such as a `for` or `select` loop whose body is a `{ }` group, a reserved word right after `]]`, as `if [[ -n x ]] then git commit -m x; fi`, which Bash 5.3 runs and
   Bash 3.2 refuses, or a `]]` inside an `=~` regex's parentheses, as `[[ x =~ ( ]] ) ]]; git commit -m x`: the whole
   command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;

@@ -242,8 +242,9 @@ subscript's included, for `let`, `declare`, `typeset`, `local`, `read`, `printf`
 variable has the integer attribute. Every builtin Bash's `compgen -b` lists is decided there. The policy does not see, and no script here
 writes: an ANSI-C `$'...'` word whose escape spells such a substitution; text an integer variable receives as data, as
 `declare -i i; read i <<< 'a[$(x)]'`; a quoted subscript's substitution outside a builtin's words, as
-`[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, an assignment to an integer variable, `a['$(x)']=1`, or an unquoted
-`${a['$(x)']}`, which Bash 5.3 runs; an option word a variable or a substitution fills, as
+`[[ -v 'a[$(x)]' ]]`, `[[ 'a[$(x)]' -eq 1 ]]`, or an assignment to an integer variable, which Bash 5.3 runs, while
+`bash_syntax.py` reads the single-quoted substitution of an array's subscript in an assignment or a `${ }`, as
+`a['$(x)']=1` or `${a['$(x)']}`, as Bash 5.3 runs it; an option word a variable or a substitution fills, as
 `o=-W; compgen "$o" '$(x)' x`, which the policy takes as the literal its text is; and `enable -n`, which makes a later
 name run the program of that name, as `hash -p` makes one run another file. The grammar does not read a script, which the policy reports as Bash it
 cannot read, holding a command that turns on a `set -o` or `shopt` option under which Bash reads the text after it otherwise, as
@@ -262,12 +263,14 @@ or escaped text or inner braces split it, as `shopt -s {'extglob',x}`, `{x\,y,ex
 it reads as the one word its text spells. Every expansion and quoting form Bash's manual names is decided in
 `bash_syntax.EXPANSIONS_READ`, `EXPANSIONS_REFUSED`, or `NOT_READ`, and the grammar does not read a script holding
 Bash 5.3's `${ command; }` or `${| command; }`, which run in the shell itself; an ANSI-C string inside a double-quoted
-`${ }` that spells `$`, a quote, a backslash, or `}`, or one in arithmetic or a substring's offset that spells `$` or a
+`${ }` that spells `$`, a backquote, a quote, a backslash, or `}`, or one in arithmetic or a substring's offset that spells `$` or a
 backquote, since Bash puts the text it spells into what it expands; or a `$$` before a single-quoted string holding a
 backslash there, which Bash 3.2 reads as `$` and an ANSI-C string. The policy does not see a value Bash runs as code,
 as `${!name}`, `${name@P}`, or arithmetic on a variable whose value holds an array subscript with a substitution, as
 `y='a[$(x)]'; echo $((y))`; nor Bash 3.2's ending of a `${ }` at a `}` inside a substitution it holds, or of a
-double-quoted `$( )` at a `)` inside a `${ }`, which it reads as Bash 4 and later do. In PowerShell it
+double-quoted `$( )` at a `)` inside a `${ }`, which it reads as Bash 4 and later do; nor a backslash and newline
+that split `$(` inside double quotes, a `${ }`'s word, or arithmetic, which Bash joins into a substitution. In
+PowerShell it
 reads what `Start-Process` starts, with the words its `-ArgumentList` gives it, a literal string or a list of them
 joined with spaces and split as the started program splits its command line, what `& (Get-Command <name>)` runs, every
 command of the string `Invoke-Expression` runs, and the program a wrapper or `find`'s `-exec` runs, read through the

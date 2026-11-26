@@ -2779,6 +2779,33 @@ class CommandGuardTests(GuardTestCase):
                 event = {"tool_name": "Edit", "tool_input": {"file_path": str(self.hub / "README.md")}}
                 self.assertEqual("deny", self.decision(event, {**self.environment, name: str(other)}))
 
+    def test_a_git_call_in_or_beside_an_expansion_form_the_reader_reads_is_refused_in_the_hub(self) -> None:
+        # Bash 5.3 runs a single-quoted substitution in an indexed array's subscript, and one after a quoted `}` in a
+        # double-quoted `${ }`; and a form bash_syntax refuses to the readers of what a text runs leaves the git call
+        # beside it read, as does an arithmetic reading Bash does not take.
+        for command in (
+            "echo \"${a['$(git commit -m x)']#x}\"",
+            "echo \"${a['$(git commit -m x)']@Q}\"",
+            "echo \"${!a['$(git commit -m x)']}\"",
+            "echo ${a['$(git commit -m x)']}",
+            "echo ${#a['$(git commit -m x)']}",
+            "a['$(git commit -m x)']=1",
+            "b[${x:-'$(git commit -m x)'}]=1",
+            "cat <<E\n${a['$(git commit -m x)']#x}\nE",
+            "echo $(( ${a['$(git commit -m x)']#x} ))",
+            "x=; echo \"${x:-'}'\"'$(git commit -m x)'\"}\"",
+            "git commit -m x; echo ${ :; }",
+            "git commit -m x; echo ${| :; }",
+            "git commit -m x; echo \"${x:-$'\\x24'}\"",
+            "git commit -m x; echo $(( $'\\x24' ))",
+            "git commit -m x; echo ${x:$$'\\a'}",
+            "((printf %s $'\\x24'); git commit -m x)",
+            'echo $(( ")" )); git commit -m x',
+            '(( x = "${y:-"))"}" )); git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+
 
 class WriteGuardTests(GuardTestCase):
     """A file a program or a cmdlet writes at a path its words name, a link a command makes, and a file the

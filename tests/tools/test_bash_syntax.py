@@ -2107,3 +2107,123 @@ def test_a_process_id_before_a_quote_bash_may_read_as_an_ansi_c_string_spelling_
 def test_a_process_id_before_a_quote_whose_readings_agree_is_read(text: str) -> None:
     parse(text)
     assert simple_commands_of(text) == [["echo", text.removeprefix("echo ")]]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "git commit -m x; echo ${ :; }",
+        "git commit -m x; echo ${| :; }",
+        "git commit -m x; echo \"${x:-$'\\x24'}\"",
+        "git commit -m x; echo $(( $'\\x24' ))",
+        "git commit -m x; echo ${x:$$'\\a'}",
+        'git commit -m x; y=( "${ :; }" )',
+    ],
+)
+def test_parse_reads_a_refused_form_and_the_commands_beside_it_and_the_walk_refuses_it(text: str) -> None:
+    # parse reads the tree as Bash does, so a reader by parse, as the hub guard, still reads the git call beside the
+    # form; the form's refusal rides on its word, which simple_commands and every_command raise.
+    commands = bash_agreement.simple_commands(bash_syntax.parse(text))
+    assert [word.raw for word in commands[0].words] == ["git", "commit", "-m", "x"]
+    assert commands[1].words[-1].refusal
+    with pytest.raises(bash_syntax.NotRead, match=re.escape(commands[1].words[-1].refusal)):
+        bash_syntax.simple_commands(text)
+    with pytest.raises(bash_syntax.NotRead):
+        bash_syntax.every_command(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("((printf %s $'\\x24'); git commit -m x)", [["printf", "%s", "$'\\x24'"], ["git", "commit", "-m", "x"]]),
+        (
+            "echo $((printf %s $'\\x24'); git commit -m x)",
+            [
+                ["echo", "$((printf %s $'\\x24'); git commit -m x)"],
+                ["printf", "%s", "$'\\x24'"],
+                ["git", "commit", "-m", "x"],
+            ],
+        ),
+    ],
+)
+def test_an_arithmetic_reading_bash_does_not_take_leaves_no_refusal(text: str, expected: list[list[str]]) -> None:
+    # Bash reads these as subshells, not arithmetic, where the ANSI-C string spells `$` as plain text.
+    parse(text)
+    assert simple_commands_of(text) == expected
+
+
+def test_a_command_substitution_that_sets_reply_is_refused_with_its_own_reason() -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{\|` in the current shell"):
+        bash_syntax.simple_commands("echo ${| git push; }")
+    with pytest.raises(bash_syntax.NotRead, match=r"^Bash 5\.3 runs the command after `\$\{` and a blank"):
+        bash_syntax.simple_commands("echo ${\\\n git push; }")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo \"${a['$(git push)']#x}\"",
+        "echo \"${a['$(git push)']%x}\"",
+        "echo \"${a['$(git push)']^^}\"",
+        "echo \"${a['$(git push)']@Q}\"",
+        "echo \"${!a['$(git push)']}\"",
+        "echo ${a['$(git push)']}",
+        "echo ${#a['$(git push)']}",
+        "cat <<E\n${a['$(git push)']#x}\nE\n",
+        "echo $(( ${a['$(git push)']#x} ))",
+        "echo \"${x:-${a['$(git push)']#x}}\"",
+        "[[ -n \"${a['$(git push)']#x}\" ]]",
+        "case \"${a['$(git push)']#x}\" in *) :;; esac",
+        "for i in \"${a['$(git push)']#x}\"; do :; done",
+        "y=( \"${a['$(git push)']#x}\" )",
+        "a['$(git push)']=1",
+        "b[${x:-'$(git push)'}]=1",
+    ],
+)
+def test_a_substitution_in_single_quotes_in_a_subscript_is_read_as_bash_5_3_runs_it(text: str) -> None:
+    # Bash 5.3 expands an indexed array's subscript as arithmetic, as a double-quoted string, wherever it stands.
+    parse(text)
+    assert ["git", "push"] in simple_commands_of(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "echo $[ a[b[1]] + $(git push) ]",
+        "echo $[ \\] + $(git push) ]",
+        "echo $(( 1 \\) + $(git push) ))",
+    ],
+)
+def test_arithmetic_reads_nested_brackets_and_escapes_as_bash_reads_them(text: str) -> None:
+    parse(text)
+    assert simple_commands_of(text)[1:] == [["git", "push"]]
+
+
+def test_a_double_quoted_word_bash_expands_holding_a_substitution_the_reader_cannot_close_is_not_read() -> None:
+    text = "echo \"${x:-'$(a'}\""
+    parse(text)
+    with pytest.raises(
+        bash_syntax.NotRead, match=r"^a `\$\{ \}` Bash expands as a double-quoted string is not read \("
+    ):
+        bash_syntax.simple_commands(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "spelled"),
+    [
+        ("\\x24", "$"),
+        ("\\044", "$"),
+        ("\\u0024", "$"),
+        ("\\U00000060", "`"),
+        ("\\U00110000", ""),
+        ("\\\\", "\\"),
+        ("\\'", "'"),
+        ('\\"', '"'),
+        ("\\n", "\x00"),
+        ("\\cA", "\x00A"),
+        ("\\q", "\\q"),
+        ("a}", "a}"),
+    ],
+)
+def test_an_ansi_c_string_spells_each_character_bash_reads_its_escapes_as(text: str, spelled: str) -> None:
+    assert bash_syntax.ansi_c_text(text) == spelled

@@ -3379,3 +3379,14 @@ def test_command_policies_name_a_tools_list_of_another_kind_and_read_a_null_one_
     assert optional_tool_placement_problems(tmp_path, {"gh"}) == [
         "deploy-meta/alpha.json tools is not a list of names, which the deployer refuses"
     ]
+
+
+@pytest.mark.parametrize("text", ["echo $'\\t'/x", "echo $(( 1 ))/x", "echo $[ 1 + 2 ]/x", "a=(1 /tmp/x)"])
+def test_a_word_whose_part_the_grammar_keeps_no_text_of_is_read_as_written(text: str) -> None:
+    import bash_syntax
+
+    [command] = bash_syntax.simple_commands(text)
+    word = command.words[-1]
+    parts = word.assignment.value if word.assignment is not None else None
+    expected = word.raw if parts is None else word.raw.partition("=")[2]
+    assert skill_scripts._word_text(word, parts) == expected

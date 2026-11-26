@@ -49,19 +49,22 @@ option's effect, reads the tree as before.
 
 Every expansion and quoting form Bash's manual names is decided once too: EXPANSIONS_READ, which the reader ends where
 Bash ends them, reading every command substitution in them Bash may run; EXPANSIONS_REFUSED, Bash 5.3's `${ command; }`
-and `${| command; }`, which raise NotRead wherever they stand; and NOT_READ, `${!parameter}` and `${parameter@P}`, which
-run what a variable's value holds. A `${ }` ends at the first `}` outside its quotes, its escapes, and the expansions
-and substitutions it holds, its single quotes and `$'...'` quoting there in double quotes too, as Bash's parser reads
-it. Where Bash expands a `${ }`'s word as a double-quoted string, as `${x:-word}`'s in double quotes, or a substring's
-offset and length anywhere, a single quote is text and a substitution between single quotes runs, so the reader reads
-a substitution wherever one starts in that word; and arithmetic, `$(( ))`, `(( ))`, and the deprecated `$[ ]`, which
-Bash expands the same way, keeps its quoted parentheses and brackets apart and reads each substitution in its quotes.
-A `$((` whose first `)` another does not follow at once is a command substitution of a subshell, as Bash reads it.
-Bash puts the text an ANSI-C string spells into such a word or arithmetic as it reads it, so one there that spells `$`
-or a backquote raises NotRead, and, in a double-quoted `${ }`, where Bash puts it unquoted, one spelling any character
-Bash reads as syntax there. A `$$` there, the shell's process ID, is read whole, as Bash 4 and later read it; one
-before a single-quoted string holding a backslash raises NotRead, since Bash 3.2, and Bash 5.3 in a here-document's
-body, read the second `$` and the quote as an ANSI-C string.
+and `${| command; }`; and NOT_READ, `${!parameter}` and `${parameter@P}`, which run what a variable's value holds. A
+form the reader refuses is kept on its word (`Word.refusal`), or an unquoted here-document's body
+(`HereDocument.refusal`), and `simple_commands` and `every_command` raise NotRead at the command holding it, as for an
+option, while `parse` reads the tree on. A `${ }` ends at the first `}` outside its quotes, its escapes, and the
+expansions and substitutions it holds, its single quotes and `$'...'` quoting there in double quotes too, as Bash's
+parser reads it. Where Bash expands a `${ }`'s word as a double-quoted string, as `${x:-word}`'s in double quotes, or a
+substring's offset and length or a parameter's subscript anywhere, a single quote is text and a substitution between
+single quotes runs, so the reader reads a substitution wherever one starts in that word; an array's subscript in an
+assignment, and arithmetic, `$(( ))`, `(( ))`, and the deprecated `$[ ]`, which Bash expands the same way, keep their
+quoted parentheses and brackets apart and read each substitution in their quotes. A `$((` whose first `)` another does
+not follow at once is a command substitution of a subshell, as Bash reads it. Bash puts the text an ANSI-C string spells
+into such a word or arithmetic as it reads it, so one there that spells `$` or a backquote is refused, and, in a
+double-quoted `${ }`, where Bash puts it unquoted, one spelling any character Bash reads as syntax there. A `$$` there,
+the shell's process ID, is read whole, as Bash 4 and later read it; one before a single-quoted string holding a
+backslash is refused, since Bash 3.2, and Bash 5.3 in a here-document's body, read the second `$` and the quote as an
+ANSI-C string.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
@@ -93,6 +96,8 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   whole, as the reader does.
 - A substitution in a `${ }`'s word that Bash expands as a double-quoted string is read wherever one starts, so one
   Bash does not run there, as after a backslash, is read too.
+- A backslash and newline that split `$(` inside double quotes, a `${ }`'s word, or arithmetic, which Bash joins into
+  a command substitution, leave the substitution unread.
 - A value Bash runs as code is not seen: a variable's value `${!parameter}` or `${parameter@P}` expands (NOT_READ),
   and one Bash evaluates as arithmetic, in `$(( ))`, `(( ))`, `$[ ]`, a substring's offset or length, or a subscript,
   whose array subscript holds a command substitution, as `y='a[$(cmd)]'; echo $((y))` runs `cmd`.
@@ -272,6 +277,9 @@ QUOTED_PATTERN = re.compile(r"!?(?:[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[-*@#?$!])(
 # A `:` that opens no `:-`, `:=`, `:?`, or `:+`: a substring's offset, which Bash expands as a double-quoted string
 # wherever the `${ }` stands, so a substitution between its single quotes runs.
 SUBSTRING = re.compile(r":(?![-=?+])")
+# A parameter with a subscript, after an optional `!` or `#`: Bash 5.3 expands an indexed array's subscript as
+# arithmetic, as a double-quoted string, wherever the `${ }` stands, so a substitution between its single quotes runs.
+SUBSCRIPT = re.compile(r"[!#]?[A-Za-z_]\w*\[", re.ASCII)
 # An escape of an ANSI-C string, `$'...'`: by a hexadecimal, Unicode, or octal number, or any other; and the letters
 # whose escape spells a control character, and `?`, which spells itself, `c` taking the character after it.
 ANSI_C_ESCAPE = re.compile(
@@ -425,6 +433,9 @@ class Word:
     arithmetic: bool = False
     # The script line the word starts on; 0 for a word a reader builds.
     line: int = field(default=0, compare=False)
+    # Why the reader does not read a form the word holds, as Bash 5.3's `${ command; }`, which simple_commands and
+    # every_command raise as NotRead at the command holding the word, while parse reads on; "" for none.
+    refusal: str = field(default="", compare=False)
 
     @property
     def literal(self) -> str | None:
@@ -627,8 +638,10 @@ class Lexer:
         # on.
         self.descriptor = ""
         self.descriptor_line = 0
-        # The variables the expansions read since the word being read began assign.
+        # The variables the expansions read since the word being read began assign, and why the reader does not read
+        # a form among them, as a word's refusal keeps it.
         self.assigned: list[str] = []
+        self.refusals: list[str] = []
         # The parentheses open here, which a `)` closes before the one that closes a `$( )` body, and each case open
         # here, innermost last.
         self.depth = 0
@@ -763,19 +776,27 @@ class Lexer:
         False, reading nothing, where its `((` closes with a `)` that another does not follow at once, which Bash
         reads as two subshells' parentheses."""
         start = self.index
+        refused = len(self.refusals)
         try:
             found = self.arithmetic(start + 2, quotes=True)
-        except NotRead:
-            raise
         except BashSyntaxError:
             found = None
         if found is None:
+            # Read as two subshells instead, the arithmetic reading's refusals go with it.
+            del self.refusals[refused:]
             self.index = start
             return False
         text = self.text[start : self.index]
         assigns = tuple(match.group(1) + match.group(2) for match in ASSIGNING.finditer(text))
+        refusal = next(iter(self.refusals[refused:]), "")
         word = Word(
-            text, (Part("dynamic", "(("),), tuple(found), assigns=assigns, arithmetic=True, line=self.lines[start]
+            text,
+            (Part("dynamic", "(("),),
+            tuple(found),
+            assigns=assigns,
+            arithmetic=True,
+            line=self.lines[start],
+            refusal=refusal,
         )
         self.follow_word(word)
         self.tokens.append(word)
@@ -840,10 +861,13 @@ class Lexer:
         """One word; with subscripts set it stands where Bash reads an assignment, so a subscript after a name at its
         start is read whole."""
         outer, self.assigned = self.assigned, []
+        outer_refusals, self.refusals = self.refusals, []
         try:
             return self.word_parts(subscripts)
         finally:
             self.assigned = outer
+            # A word nested in another, as an array's element, refuses the word around it too.
+            self.refusals = outer_refusals + self.refusals
 
     def word_parts(self, subscripts: bool) -> Word:
         start = self.index
@@ -885,15 +909,17 @@ class Lexer:
         raw = self.text[start : self.index]
         assigns = tuple(self.assigned)
         line = self.lines[start]
+        refusal = next(iter(self.refusals), "")
         if head is None:
-            return Word(raw, tuple(parts), tuple(substitutions), array, assigns=assigns, line=line)
+            return Word(raw, tuple(parts), tuple(substitutions), array, assigns=assigns, line=line, refusal=refusal)
         whole = [Part("text", self.text[start:value_start])]
         for part in parts:
             if part.kind == "text" and len(whole) == 1:
                 add_text(whole, part.text, part.quoted)
             else:
                 whole.append(part)
-        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)), assigns, line=line)
+        assignment = Assignment(*head, tuple(parts))
+        return Word(raw, tuple(whole), tuple(substitutions), array, assignment, assigns, line=line, refusal=refusal)
 
     def assignment_head(self, subscripts: bool, substitutions: list[str]) -> tuple[str, bool, bool] | None:
         """Reads the start of an assignment, NAME or NAME[SUBSCRIPT] and the = or += after it, and returns the name,
@@ -923,7 +949,9 @@ class Lexer:
 
     def subscript(self, substitutions: list[str]) -> None:
         """The `[ ]` after a name where Bash reads an assignment, up to the `]` that closes it; blanks and operators
-        inside are its own, and quotes, expansions, and nested brackets are read as Bash reads them."""
+        inside are its own, and quotes, expansions, and nested brackets are read as Bash reads them. Bash 5.3 expands
+        an indexed array's subscript as arithmetic, as a double-quoted string, so a substitution between its single
+        quotes runs, as one in a `${ }` inside it does."""
         depth = 0
         self.index += 1
         while True:
@@ -932,13 +960,10 @@ class Lexer:
                 raise BashSyntaxError("an array subscript is not closed")
             if character == "\\":
                 self.index += 2
-            elif character == "'":
-                self.single_quoted(self.index + 1)
-            elif character == '"':
-                self.index += 1
-                self.double_quoted([], substitutions)
+            elif character in "'\"":
+                substitutions.extend(self.arithmetic_quote(character))
             elif character == "$":
-                self.dollar([], substitutions, quoted=False)
+                self.dollar([], substitutions, quoted=True)
             elif character == "`":
                 substitutions.append(self.backquoted())
             elif character == "]" and depth == 0:
@@ -1020,7 +1045,10 @@ class Lexer:
     def dollar(self, parts: list[Part], substitutions: list[str], quoted: bool) -> None:
         following = self.peek(1)
         start = self.index
+        refused = len(self.refusals)
         found = self.arithmetic(start + 3, quotes=True) if self.text.startswith("$((", start) else None
+        if found is None:
+            del self.refusals[refused:]  # a substitution of a subshell, its arithmetic reading's refusals going with it
         if found is not None:
             substitutions.extend(found)
             parts.append(Part("dynamic", "$((", quoted=quoted))
@@ -1092,7 +1120,7 @@ class Lexer:
             if quotes and character in "'\"":
                 found.extend(self.arithmetic_quote(character))
             elif character == "$" and self.peek(1) == "'":
-                refuse_spelled_expansion([self.ansi_c_quoted(self.index + 2)])
+                self.refuse(spelled_expansion([self.ansi_c_quoted(self.index + 2)]))
             elif not self.arithmetic_expansion(found):
                 if character == opening:
                     depth += 1
@@ -1124,18 +1152,25 @@ class Lexer:
     def quote_after_process_id(self) -> str | None:
         """The text of the single-quoted string at the index, right after a `$$` inside a `${ }` or arithmetic, read
         nothing past, for its caller to read as an ANSI-C string too: Bash 3.2, and Bash 5.3 in a here-document's body,
-        read the second `$` and the quote as one, where Bash 4 and later read `$$` whole elsewhere. NotRead where it
-        holds a backslash, by which the two readings may end it apart; None where no closed quote stands there."""
+        read the second `$` and the quote as one, where Bash 4 and later read `$$` whole elsewhere. Refused (refuse)
+        where it holds a backslash, by which the two readings may end it apart; None where no closed quote stands
+        there."""
         end = self.text.find("'", self.index + 1) if self.peek() == "'" else -1
         if end < 0:
             return None
         text = self.text[self.index + 1 : end]
         if "\\" in text:
-            raise NotRead(
+            self.refuse(
                 "a `$$` before a single-quoted string holding a backslash, inside a `${ }` or arithmetic, which Bash "
                 "3.2, and Bash 5.3 in a here-document's body, read as `$` and an ANSI-C string, ending it elsewhere"
             )
         return text
+
+    def refuse(self, reason: str | None) -> None:
+        """Records why the reader does not read a form of the word being read, which simple_commands and
+        every_command raise as NotRead at the command holding it, while parse reads on; nothing for None."""
+        if reason is not None:
+            self.refusals.append(reason)
 
     def arithmetic_quote(self, quote: str) -> list[str]:
         """The substitutions in the quoted string at the index inside arithmetic, read past its closing quote: Bash
@@ -1159,12 +1194,16 @@ class Lexer:
         """The `${ }` at the index, ended where Bash's parser ends it: at the first `}` outside a quoted string, an
         escape, and a nested expansion or substitution. Its quotes quote there in double quotes too, `$'...'` as an
         ANSI-C string; and a word Bash expands as a double-quoted string, as `${x:-word}`'s in double quotes or a
-        substring's offset anywhere (double_quoted_word), runs each substitution its single quotes hold too. Bash 5.3's
-        `${ command; }` and `${| command; }` raise NotRead. With nested set, the variables it assigns are left to the
-        expansion around it."""
+        substring's offset or a subscript anywhere (double_quoted_word), runs each substitution its single quotes hold
+        too. Bash 5.3's `${ command; }` and `${| command; }` are refused (refuse), read on to the first `}` as any
+        other. With nested set, the variables it assigns are left to the expansion around it."""
         start = self.index + 2
-        if self.peek(2) and self.peek(2) in CURRENT_SHELL_OPENERS:
-            raise NotRead(EXPANSIONS_REFUSED["${ command;}"])
+        # Bash joins the lines a backslash continues before it reads the character after `${`.
+        opener = start
+        while self.text.startswith("\\\n", opener):
+            opener += 2
+        if self.text[opener : opener + 1] and self.text[opener] in CURRENT_SHELL_OPENERS:
+            self.refuse(EXPANSIONS_REFUSED["${| command;}" if self.text[opener] == "|" else "${ command;}"])
         self.index = start
         found: list[str] = []
         ansi_c: list[str] = []
@@ -1173,7 +1212,7 @@ class Lexer:
         content = self.text[start : self.index]
         self.index += 1
         if quoted and any(set(ansi_c_text(text)) & TRANSLATED_SYNTAX for text in ansi_c):
-            raise NotRead(TRANSLATED_REASON)
+            self.refuse(TRANSLATED_REASON)
         if double_quoted_word(content, quoted):
             found = self.double_quoted_expansions(start, ansi_c)
         substitutions.extend(found)
@@ -1217,10 +1256,10 @@ class Lexer:
     def double_quoted_expansions(self, start: int, ansi_c: list[str]) -> list[str]:
         """The substitutions of the `${ }` whose text runs from start to the index's `}`, read as Bash expands a word
         there, as a double-quoted string, in which a single quote is text, so each substitution it holds runs. An
-        ANSI-C string there that spells `$` or a backquote by an escape raises NotRead, since Bash puts the text it
-        spells there, single-quoted, as it reads the word, and then expands it; and so does an expansion it does not
+        ANSI-C string there that spells `$` or a backquote by an escape is refused (refuse), since Bash puts the text
+        it spells there, single-quoted, as it reads the word, and then expands it; and so is an expansion it does not
         close."""
-        refuse_spelled_expansion(ansi_c)
+        self.refuse(spelled_expansion(ansi_c))
         end = self.index - 1
         source = Source(self.text[start:end], self.lines[start : end + 1])
         lexer = Lexer(source, lines=source.lines, bash_3_2=self.bash_3_2)
@@ -1235,12 +1274,10 @@ class Lexer:
                     lexer.dollar([], found, quoted=True)
                 else:
                     lexer.index += 1
-        except NotRead:
-            raise
         except BashSyntaxError as error:
-            raise NotRead(f"a `${{ }}` Bash expands as a double-quoted string is not read ({error})") from error
-        finally:
-            self.holds_bare_case = self.holds_bare_case or lexer.holds_bare_case
+            self.refuse(f"a `${{ }}` Bash expands as a double-quoted string is not read ({error})")
+        self.holds_bare_case = self.holds_bare_case or lexer.holds_bare_case
+        self.refusals.extend(lexer.refusals)
         return found
 
     def ansi_c_quoted(self, start: int) -> str:
@@ -1278,10 +1315,12 @@ class Lexer:
 
 def double_quoted_word(content: str, quoted: bool) -> bool:
     """Whether Bash expands the word of the `${ }` whose text is content as a double-quoted string, where a single
-    quote is text: a substring's offset and length wherever it stands (SUBSTRING), and in double quotes any word that is
-    not a pattern (QUOTED_PATTERN). Either is taken wherever the text may hold one, so a `:` anywhere is read as a
-    substring's."""
-    return SUBSTRING.search(content) is not None or (quoted and QUOTED_PATTERN.match(content) is None)
+    quote is text: a substring's offset and length, and a parameter's subscript, wherever it stands (SUBSTRING,
+    SUBSCRIPT), and in double quotes any word that is not a pattern (QUOTED_PATTERN). Each is taken wherever the text
+    may hold one, so a `:` anywhere is read as a substring's."""
+    if SUBSTRING.search(content) is not None or SUBSCRIPT.match(content) is not None:
+        return True
+    return quoted and QUOTED_PATTERN.match(content) is None
 
 
 def ansi_c_text(text: str) -> str:
@@ -1301,15 +1340,16 @@ def ansi_c_text(text: str) -> str:
     return ANSI_C_ESCAPE.sub(spelled, text)
 
 
-def refuse_spelled_expansion(ansi_c: list[str]) -> None:
-    """Raises NotRead where an ANSI-C string of ansi_c, standing where Bash expands it as a double-quoted string, in
-    arithmetic or a `${ }`'s word, spells `$` or a backquote: Bash puts the text it spells there, single-quoted, as it
-    reads it, and then expands it, single quotes being text there."""
+def spelled_expansion(ansi_c: list[str]) -> str | None:
+    """Why the reader does not read text holding an ANSI-C string of ansi_c, standing where Bash expands it as a
+    double-quoted string, in arithmetic or a `${ }`'s word, that spells `$` or a backquote: Bash puts the text it
+    spells there, single-quoted, as it reads it, and then expands it, single quotes being text there; None for none."""
     if any(set(ansi_c_text(text)) & set("$`") for text in ansi_c):
-        raise NotRead(
+        return (
             "an ANSI-C string Bash expands as a double-quoted string, in arithmetic or a `${ }`'s word, spells `$` or "
             "a backquote, which Bash then expands"
         )
+    return None
 
 
 def escapes_its_end(line: str) -> bool:
@@ -1354,6 +1394,11 @@ def expansions(
             # reads it, so no expansion stands after it.
             error.holds_bare_case = error.holds_bare_case or lexer.holds_bare_case
             return found, lexer.assigned, parts, error, error.holds_bare_case
+    if lexer.refusals:
+        # A form the reader does not read refuses the body as an expansion it does not close does.
+        refused = NotRead(lexer.refusals[0])
+        refused.holds_bare_case = lexer.holds_bare_case
+        return found, lexer.assigned, parts, refused, lexer.holds_bare_case
     return found, lexer.assigned, parts, None, lexer.holds_bare_case
 
 
@@ -1765,7 +1810,7 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Command]:
                 for command in pipeline.commands:
                     yield from _tree_commands(command)
         return
-    refusal = option_refusal(node)
+    refusal = option_refusal(node) or next((word.refusal for word in expanded_words(node) if word.refusal), None)
     if refusal is not None:
         raise NotRead(refusal)
     yield node
