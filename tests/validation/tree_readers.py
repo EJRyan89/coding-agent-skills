@@ -188,6 +188,9 @@ TREE_READERS: dict[str, dict[str, str]] = {
     "tests/validation/upgrade_notes.py": {"revision_snapshot": COMMITTED},
     # The issue forms' configuration on the default branch, read through GitHub's contents endpoint.
     "tools/branch_protection.py": {"ISSUE_CONFIG_ENDPOINT": COMMITTED},
+    # The probe's own file at its checkout's commit, compared with the running file once line endings are LF, so a
+    # commit is recorded only when it holds the probe that ran: the bytes as committed.
+    "tools/context_probe.py": {"checkout_commit": COMMITTED},
     "tools/mutation_gate.py": {"tree_files": ENTRIES},
     "tools/release_notes.py": {"_notes_at": COMMITTED},
 }

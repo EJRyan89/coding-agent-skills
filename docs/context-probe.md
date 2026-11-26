@@ -43,7 +43,9 @@ never to one value. Every string is a word the probe defines or a closed vocabul
 
 - `probe`: the profile's layout version, `schema`, and `commit`, the commit of the checkout the probe ran from, so a
   reader knows which probe produced it, or `unknown` when that folder is not the top of a checkout of its own, as a
-  copy unpacked inside another repository is not, or git answers that it has no commit.
+  copy unpacked inside another repository is not, when that commit's `tools/context_probe.py` is not the file that
+  ran, as for a copy unpacked at another repository's top or a probe edited since its commit, or when git answers that
+  it has no commit.
 - `files`: the files the walk found. The walk skips version control, dependency, and build output folders as
   `folder_walk` does, follows no link, and does not enter another checkout.
 - `languages`: files by language, from a table of file-name suffixes; a suffix in no entry counts as `other`.
@@ -115,5 +117,9 @@ the same private-term scan the release procedure runs over the tree, against its
 - The review counts follow the configuration's `checkout_path`: a repository reviewed but not configured with the
   checkout probed has `reviews_absent` `not_configured`.
 - The whole-word scan, like the release scan, does not match a term written inside a longer word.
+- Run the probe from its own clone, outside the repository it examines. A copy installed inside that repository, or
+  one missing a skill its scripts import, may print the probe's own location when it cannot start, before any of its
+  checks run; and a repository that commits an unmodified copy of the probe at its own top would have its commit
+  recorded as the probe's.
 - A FAILED line withholds the text of every failure: one a reader raises names the part being read and the error's
   kind, and any other, a defect in the probe itself, ends as `FAILED <kind>`.

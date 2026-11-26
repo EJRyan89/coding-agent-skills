@@ -35,8 +35,9 @@ its rule sources, and the hook events its `.claude/settings.json` declares. The 
 the ones the code-review configuration names (`CODE_REVIEW_CONFIG` and `CODE_REVIEW_FLAGS` choose others), read for the
 configured repository whose checkout holds `<repository>`, as review-insights finds it, through `GitClient`. The
 profile records the commit of the checkout the probe runs from, read through git, only when that folder is the top of a
-checkout of its own, and `unknown` otherwise, so a copy unpacked inside another repository never records that
-repository's commit; a git that fails there stops the run.
+checkout of its own whose commit holds this very `tools/context_probe.py`, and `unknown` otherwise, so a copy unpacked
+inside another repository, or at its top, never records that repository's commit; a git that fails there stops the
+run.
 
 Exit status:
   0  preview: the profile and its DIGEST line; write: WROTE <file>
@@ -534,9 +535,9 @@ def hook_counts(root: Path) -> dict[str, Any]:
         return {"unread": 1}
     if not isinstance(data, dict):
         return {"unread": 1}
-    hooks = data.get("hooks")
-    if hooks is None:
+    if "hooks" not in data:
         return {}
+    hooks = data["hooks"]
     if not isinstance(hooks, dict):
         return {"unread": 1}
     events: Counter[str] = Counter()
@@ -665,15 +666,33 @@ def flag_counts(path: Path, repository: str) -> dict[str, int]:
     return bucketed(statuses)
 
 
-def checkout_commit(checkout: Path = CHECKOUT) -> str | None:
-    """The commit `checkout` holds when it is the top of a checkout of its own, else None. A copy of the probe with no
-    `.git` of its own, unpacked inside another repository such as the private one it examines, lies in that
-    repository's tree, and git, which searches the folders above, would answer with that repository's commit."""
+# The probe's own file, as the checkout it belongs to holds it.
+PROBE_FILE = "tools/context_probe.py"
+
+
+def same_text(first: bytes, second: bytes) -> bool:
+    """Whether two files hold the same bytes once each line ending is LF, as a checkout that converts line endings on
+    Windows writes the committed text with CRLF."""
+    return first.replace(b"\r\n", b"\n") == second.replace(b"\r\n", b"\n")
+
+
+def checkout_commit(checkout: Path = CHECKOUT, running: Path = Path(__file__)) -> str | None:
+    """The commit `checkout` holds when it is this project's checkout, else None. Two things must hold: `checkout` is
+    the top of a checkout of its own, so a copy with no `.git` unpacked in a folder of another repository is not
+    taken for one, and that commit's `tools/context_probe.py` is the running file, so a copy unpacked at another
+    repository's own top, as `git archive` with no prefix extracts it, is not either. The committed file is read with
+    `cat-file`, which runs no filter the repository configures, never with `hash-object`, which would."""
     client = GitClient()
     top = client.rev_parse_path("--show-toplevel", directory=checkout)
     if top is None or path_key(top, resolve=True) != path_key(checkout, resolve=True):
         return None
-    return client.commit_of("HEAD", directory=checkout)
+    commit = client.commit_of("HEAD", directory=checkout)
+    if commit is None:
+        return None
+    committed = client.file_at(commit, PROBE_FILE, directory=checkout)
+    # The running file was read to start this run, so a read that fails now raises for the run to stop, never to be
+    # taken for a file that differs.
+    return commit if committed is not None and same_text(committed, running.read_bytes()) else None
 
 
 def probe_commit(services: ProbeServices) -> str:
@@ -684,6 +703,8 @@ def probe_commit(services: ProbeServices) -> str:
         commit = services.commit()
     except GitError as error:
         raise ProbeError(f"git could not read the probe's own commit: {type(error).__name__} {error.kind}") from None
+    except OSError as error:
+        raise ProbeError(f"the probe's own file could not be read: {type(error).__name__}") from None
     return commit if commit is not None and COMMIT.fullmatch(commit) else UNKNOWN
 
 

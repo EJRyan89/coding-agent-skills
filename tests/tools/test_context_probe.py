@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -585,19 +586,47 @@ def commit_repository(top: Path) -> str:
 
 def test_a_copy_of_the_probe_inside_another_repository_records_no_commit(tmp_path: Path) -> None:
     outer = tmp_path / "qzvprivaterepo"
-    private_head = commit_repository(outer)
+    commit_repository(outer)
     copy = outer / "vendor" / "cas"
     copy.mkdir(parents=True)
 
-    assert context_probe.checkout_commit(copy) is None
-    assert context_probe.checkout_commit(outer) == private_head
+    assert context_probe.checkout_commit(copy, SCRIPT) is None
+    # The top of a checkout of its own, but its commit holds no tools/context_probe.py.
+    assert context_probe.checkout_commit(outer, SCRIPT) is None
 
 
-def test_a_copy_without_git_nested_in_a_repository_prints_unknown_end_to_end(planted: dict[str, Path]) -> None:
-    # The tool tree, with no .git of its own, unpacked inside the examined repository: git would answer with that
-    # repository's commit, so the profile must say unknown and hold no part of it.
-    private_head = commit_repository(planted["checkout"])
-    copy = planted["checkout"] / "vendor" / "cas"
+@pytest.mark.parametrize(
+    ("committed", "recorded"),
+    [
+        pytest.param(lambda text: text, True, id="the running file"),
+        pytest.param(lambda text: text.replace(b"\n", b"\r\n"), True, id="the running file with CRLF endings"),
+        pytest.param(lambda text: text + b"# qzvedited\n", False, id="another file"),
+    ],
+)
+def test_the_commit_is_recorded_only_when_it_holds_the_running_probe(
+    tmp_path: Path, committed: Callable[[bytes], bytes], recorded: bool
+) -> None:
+    top = tmp_path / "qzvprivaterepo"
+    (top / "tools").mkdir(parents=True)
+    (top / "tools" / "context_probe.py").write_bytes(committed(SCRIPT.read_bytes()))
+    head = commit_repository(top)
+
+    assert context_probe.checkout_commit(top, SCRIPT) == (head if recorded else None)
+
+
+def test_a_probe_file_that_cannot_be_read_stops_the_run_naming_the_class_alone(planted: dict[str, Path]) -> None:
+    def failing() -> str | None:
+        raise PermissionError(13, "Permission denied", "/qzvprivate/tools/context_probe.py")
+
+    probe = context_probe.ProbeServices(
+        commit=failing, config_path=lambda: planted["config"], flags_path=lambda: planted["flags"]
+    )
+
+    assert preview(planted, probe) == (1, "FAILED the probe's own file could not be read: PermissionError\n", "")
+
+
+def run_copy(planted: dict[str, Path], copy: Path) -> subprocess.CompletedProcess[str]:
+    """The probe run from a copy of its tree at `copy`, with no .git of its own, on the planted checkout."""
     (copy / "tools").mkdir(parents=True)
     shutil.copy2(SCRIPT, copy / "tools" / "context_probe.py")
     for skill in ("ejryan89-skill-core", "ejryan89-code-review-core", "review-insights", "audit-ai-config"):
@@ -611,8 +640,7 @@ def test_a_copy_without_git_nested_in_a_repository_prints_unknown_end_to_end(pla
         "CODE_REVIEW_CONFIG": str(planted["config"]),
         "CODE_REVIEW_FLAGS": str(planted["flags"]),
     }
-
-    result = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             "-B",
@@ -629,6 +657,16 @@ def test_a_copy_without_git_nested_in_a_repository_prints_unknown_end_to_end(pla
         timeout=120,
         check=False,
     )
+
+
+@pytest.mark.parametrize("place", ["vendor/cas", ""], ids=["in a folder of it", "at its top"])
+def test_a_copy_without_git_in_a_repository_prints_unknown_end_to_end(planted: dict[str, Path], place: str) -> None:
+    # The tool tree, with no .git of its own, unpacked inside the examined repository, in a folder of it or at its top
+    # as extracting `git archive` with no prefix there does: git would answer with that repository's commit, so the
+    # profile must say unknown and hold no part of it.
+    private_head = commit_repository(planted["checkout"])
+
+    result = run_copy(planted, planted["checkout"] / place if place else planted["checkout"])
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert printed_profile(result.stdout)["probe"]["commit"] == "unknown"
@@ -735,8 +773,17 @@ def test_settings_that_cannot_be_read_are_unread(tmp_path: Path, monkeypatch: py
 
 @pytest.mark.parametrize(
     "text",
-    ["{qzvnotjson", "\ufeff{}", '{"a": 1, "a": 2}', "[]", '"qzvtext"', "null", '{"hooks": ["qzvevent"]}'],
-    ids=["malformed", "bom", "twice", "a list", "a string", "null", "hooks no object"],
+    [
+        "{qzvnotjson",
+        "\ufeff{}",
+        '{"a": 1, "a": 2}',
+        "[]",
+        '"qzvtext"',
+        "null",
+        '{"hooks": ["qzvevent"]}',
+        '{"hooks": null}',
+    ],
+    ids=["malformed", "bom", "twice", "a list", "a string", "null", "hooks no object", "hooks null"],
 )
 def test_settings_that_hold_no_json_are_unread(tmp_path: Path, text: str) -> None:
     (tmp_path / ".claude").mkdir()
@@ -796,3 +843,50 @@ def test_reviewer_runs_snapshots_diff_fallbacks_and_scopes_are_counted() -> None
     assert section["scope_requested"] == {"auto": 1}
     assert section["scope_used"] == {"incremental": 1}
     assert section["unreviewed_languages"] == {"Image": 2}
+
+
+def test_a_configuration_that_cannot_be_read_has_no_review_counts(planted: dict[str, Path]) -> None:
+    planted["config"].write_text('{"qzvsetting": ', encoding="utf-8")
+
+    profile = printed_profile(preview(planted)[1])
+
+    assert profile["reviews_absent"] == "configuration_unreadable"
+    assert "reviews" not in profile
+
+
+def test_a_record_that_cannot_be_read_is_counted_as_unreadable(planted: dict[str, Path]) -> None:
+    pull = next((planted["root"] / "qzvhome" / "qzvarchive").glob("*/*/pulls/7"))
+    (pull / "review-v9.json").write_text('{"qzvbroken": ', encoding="utf-8")
+
+    code, stdout, stderr = preview(planted)
+
+    assert code == 0, stdout
+    assert MARKER not in (stdout + stderr).casefold()
+    totals = printed_profile(stdout)["reviews"]["totals"]
+    assert (totals["records"], totals["unreadable"]) == (1, 1)
+
+
+def test_an_archive_that_cannot_be_listed_is_counted_as_unreadable(
+    planted: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(root: Path, repository: str) -> list[Path]:
+        raise PermissionError(13, "Permission denied", f"{root}/qzvowner/qzvrepo/pulls")
+
+    monkeypatch.setattr(context_probe, "record_files", failing)
+
+    code, stdout, stderr = preview(planted)
+
+    assert code == 0, stdout
+    assert MARKER not in (stdout + stderr).casefold()
+    totals = printed_profile(stdout)["reviews"]["totals"]
+    assert totals == {"unreadable": 1}
+
+
+def test_a_flag_store_that_cannot_be_read_is_counted_as_unread(planted: dict[str, Path]) -> None:
+    planted["flags"].write_text('{"qzvflags": ', encoding="utf-8")
+
+    code, stdout, stderr = preview(planted)
+
+    assert code == 0, stdout
+    assert MARKER not in (stdout + stderr).casefold()
+    assert printed_profile(stdout)["reviews"]["flags"] == {"unread": 1}
