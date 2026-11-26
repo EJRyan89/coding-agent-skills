@@ -11,6 +11,10 @@ under its remote's name when the fork is a configured remote and under its URL w
 request (cli/cli pkg/cmd/pr/checkout/checkout.go, cmdsForExistingRemote and cmdsForMissingRemote), so the upstream
 cannot tell the two apart. A branch with no upstream is the user's own, so the refusal names the way out: unset the
 upstream, which a later push without -u leaves unset, since a push without -u never clears one.
+
+Each setting is read as every value git holds for it, each whole: git takes a branch's upstream from the first value of
+`branch.<name>.merge` and reads the last of `branch.<name>.remote`, while `git config --get` answers the last, so a
+branch that sets either more than once is refused rather than read as one value.
 """
 
 from __future__ import annotations
@@ -35,6 +39,16 @@ OWN_FORK_STEP = (
 
 # A branch's name on a remote: the source a fetch refspec maps a branch of origin from.
 BRANCH_PREFIX = "refs/heads/"
+
+
+def config_values(git: GitClient, directory: Path, key: str) -> list[str]:
+    """Every value the configuration of the checkout at `directory` holds for `key`, in the order git reads them, none
+    when it holds none. Read with -z, which ends each value with NUL, a byte no value holds, so a value holding a
+    newline is one value, as git reads it; a valueless key reads as the empty value. Raises GitError when git cannot
+    read it."""
+    # Exits 1 saying nothing when the configuration holds no value for the key.
+    values = git.quiet_output(["config", "-z", "--get-all", key], directory=directory)
+    return values.removesuffix("\0").split("\0") if values else []
 
 
 def refspec_match(pattern: str, name: str) -> str | None:
@@ -77,9 +91,8 @@ def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
     """The full names of origin's remote-tracking branches whose history holds the checkout's HEAD, in git's order: the
     local refs origin's fetch refspecs write from its branches alone, never another ref they write, such as a pull
     request's head mirrored under refs/remotes/origin. Raises GitError when git cannot read the checkout."""
-    # Exits 1 saying nothing when origin has no fetch refspec, and then no ref is a branch of origin.
-    configured = git.quiet_output(["config", "--get-all", "remote.origin.fetch"], directory=directory)
-    refspecs = output_lines(configured or "")
+    # No fetch refspec of origin leaves no ref a branch of origin.
+    refspecs = config_values(git, directory, "remote.origin.fetch")
     held = output_lines(git.output(["for-each-ref", "--contains", "HEAD", "--format=%(refname)"], directory=directory))
     return [ref for ref in held if is_origin_branch(refspecs, ref)]
 
@@ -87,8 +100,9 @@ def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
 def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
     branch's upstream is a pull request's ref, a remote other than origin, which gh pr checkout sets for a fork's pull
-    request and which therefore cannot be told from the user's own fork, or any other ref that is not a branch, or its
-    HEAD is detached at a commit no branch of origin holds. Raises GitError when git cannot read the checkout."""
+    request and which therefore cannot be told from the user's own fork, or any other ref that is not a branch, its
+    branch sets its remote or its merge ref more than once, or its HEAD is detached at a commit no branch of origin
+    holds. Raises GitError when git cannot read the checkout."""
     # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
     # HEAD's ref is read by its full name: --short gives a branch beside a tag of the same name as heads/<branch>, whose
     # settings are none, which would read as a branch that follows nothing.
@@ -101,17 +115,22 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     if not ref.startswith(BRANCH_PREFIX):
         return f"its HEAD names {ref}, not a branch"
     name = ref.removeprefix(BRANCH_PREFIX)
-    remote = output_line(git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "")
-    merge = output_line(git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "")
-    if merge.startswith("refs/pull/"):
-        return f"its branch {name} follows {merge}, a pull request's ref"
+    settings = {key: config_values(git, directory, f"branch.{name}.{key}") for key in ("remote", "merge")}
+    pull_request = next((merge for merge in settings["merge"] if merge.startswith("refs/pull/")), None)
+    if pull_request is not None:
+        return f"its branch {name} follows {pull_request}, a pull request's ref"
+    for key, values in settings.items():
+        if len(values) > 1:
+            return f"its branch {name} sets branch.{name}.{key} more than once: {', '.join(values)}"
+    remote = next(iter(settings["remote"]), "")
+    merge = next(iter(settings["merge"]), None)
     if remote not in OWN_REMOTES:
         return (
             f"its branch {name} follows {remote}, a remote other than origin, as gh pr checkout sets for a fork's pull"
             f" request; {OWN_FORK_STEP}"
         )
-    if merge and not merge.startswith(BRANCH_PREFIX):
-        return f"its branch {name} follows {merge}, not a branch"
+    if merge is not None and not merge.startswith(BRANCH_PREFIX):
+        return f"its branch {name} follows {merge or 'an empty name'}, not a branch"
     return None
 
 

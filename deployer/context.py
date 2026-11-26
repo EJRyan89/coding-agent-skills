@@ -19,9 +19,9 @@ class Options:
     include: list[str] = field(default_factory=list)
     uninstall: bool = False
     dry_run: bool = False
-    migrate_from: str = ""
+    migrate_from: str | None = None
     take_over_source: bool = False
-    canary_home: str = ""
+    canary_home: str | None = None
     at: str | None = None
     unpin: bool = False
     debug: bool = False

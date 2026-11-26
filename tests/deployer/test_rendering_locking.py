@@ -1339,6 +1339,15 @@ class LockTests(DeployerTestCase):
             f"ERROR: Could not open the deployment lock: {forward(self.paths.lock_file)}: Access is denied\n",
             result.output,
         )
+        # The dry run asks whether the lock is held, whose stat comes before its open, and names it as the deployment.
+        self.paths.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.lock_file.touch()
+        with stat_failing_at(self.paths.lock_file):
+            result = self.deploy_fails("--all", "--dry-run", pattern="Could not open the deployment lock")
+        self.assertIn(
+            f"ERROR: Could not open the deployment lock: {forward(self.paths.lock_file)}: Access is denied\n",
+            result.output,
+        )
 
     def test_a_lock_file_a_stopped_run_left_is_taken_and_removed(self) -> None:
         self.fixture()
@@ -1407,14 +1416,16 @@ class LockTests(DeployerTestCase):
     def test_a_record_whose_stat_fails_is_refused_with_the_reason(self) -> None:
         self.fixture()
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        with stat_failing_at(self.lock_dir):
-            result = self.deploy_fails(
-                "--all", pattern="read the deployment lock's record", probe=probe_returning(False, None)
-            )
-        self.assertIn(
-            f"ERROR: Could not read the deployment lock's record: {forward(self.lock_dir)}: Access is denied\n",
-            result.output,
-        )
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            with self.subTest(arguments=arguments):
+                with stat_failing_at(self.lock_dir):
+                    result = self.deploy_fails(
+                        *arguments, pattern="read the deployment lock's record", probe=probe_returning(False, None)
+                    )
+                self.assertIn(
+                    f"ERROR: Could not read the deployment lock's record: {forward(self.lock_dir)}: Access is denied\n",
+                    result.output,
+                )
         self.assertTrue((self.lock_dir / "info.json").is_file())
 
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
