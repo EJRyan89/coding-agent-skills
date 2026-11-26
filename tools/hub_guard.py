@@ -3683,7 +3683,7 @@ def read_powershell_start(program: str, arguments: list[Word], cwd: Path | None,
     command = startup_command(arguments, positional_command=program == "powershell", positional_file=program == "pwsh")
     if command is None or isinstance(command, UnknownWord):
         return
-    start = startup_directory(arguments, command, cwd, reading.environment)
+    start = startup_directory(program, arguments, command, cwd, reading.environment)
     if command.encoded:
         reading.notes.append(f"{program} -EncodedCommand runs a script the text does not settle")
         read_git([None], start, reading)
@@ -3695,19 +3695,25 @@ def read_powershell_start(program: str, arguments: list[Word], cwd: Path | None,
 
 
 def startup_directory(
-    arguments: list[Word], command: StartupCommand, cwd: Path | None, environment: Mapping[str, str]
+    program: str, arguments: list[Word], command: StartupCommand, cwd: Path | None, environment: Mapping[str, str]
 ) -> Path | None:
     """Where a start-up's script starts: pwsh runs Set-Location -LiteralPath on the last -WorkingDirectory value it is
     given, in any spelling startup_command reads, from its parent's directory, cwd, before the script, the value's last
     character dropped under -RemoveWorkingDirectoryTrailingCharacter, as pwsh on Windows does; with none, the script
     starts in cwd. A value that is no directory now leaves pwsh in cwd unless an earlier command makes it one, so it
-    leaves where the script starts unsettled, as a value the text does not settle does."""
+    leaves where the script starts unsettled, as a value the text does not settle does.
+
+    Windows PowerShell has no -WorkingDirectory: it takes the first parameter it does not know as the start of its
+    command, so it runs `-wd <dir>` as a command that fails and runs the script's later statements in cwd. A
+    `powershell` that is pwsh, as on a host that names pwsh so, starts in the directory instead, so a Windows PowerShell
+    start-up's script starts where both readings agree, and is unsettled wherever they differ."""
     if command.working_directory is None:
         return cwd
     value = arguments[command.working_directory]
     if value and command.trims_working_directory:
         value = value[:-1]
-    return location_after(value, Directory(cwd), Directory(cwd), home(environment)).merged().cwd
+    start = location_after(value, Directory(cwd), Directory(cwd), home(environment)).merged().cwd
+    return start if program != "powershell" or same_place(start, cwd) else None
 
 
 def shell_script(arguments: list[Word]) -> str | None:
