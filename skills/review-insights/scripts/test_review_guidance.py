@@ -1069,6 +1069,45 @@ class LinkDestinationTests(unittest.TestCase):
             [(item["line"], item["reference"]) for item in found],
         )
 
+    def test_a_code_path_holds_every_character_a_path_written_in_prose_holds(self) -> None:
+        # changed: CODE_PATH took only `[A-Za-z0-9_./-]`, so a span naming `docs/c++.md` or `docs/über.md` was no path,
+        # and guidance naming such a file the reviewer was not given read as fully supplied. A path is read as a link's
+        # destination is: an inner `./` and a doubled `/` dropped, and a backslash a separator on Windows only, so a
+        # backslash path is rooted there and one name beside the guidance file elsewhere.
+        lines = [
+            "Read `docs/c++.md` and `docs/über.md` and `docs/a.md`.",
+            "`docs/x@y.md` `docs/PROGRA~1.md` `docs/Q&A.md` `docs/50%.md` `docs\\b.md` `\\docs\\c.md`",
+            "`~/a.md` `@a.md` `+a.md` `$HOME/a.md` `cat docs/a.md` `C:/a.md` `it's.md` `a=b.md` `a,b.md` `**/*.md`",
+            "`docs/./e.md`",
+            "`docs//f.md`",
+        ]
+        backslashed = ["docs/b.md", "/docs/c.md"] if sys.platform == "win32" else ["docs\\b.md", "\\docs\\c.md"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual(
+            [
+                (1, "docs/c++.md"),
+                (1, "docs/über.md"),
+                (1, "docs/a.md"),
+                (2, "docs/x@y.md"),
+                (2, "docs/PROGRA~1.md"),
+                (2, "docs/Q&A.md"),
+                (2, "docs/50%.md"),
+                (2, backslashed[0]),
+                (2, backslashed[1]),
+                (4, "docs/e.md"),
+                (5, "docs/f.md"),
+            ],
+            [(item["line"], item["reference"]) for item in found],
+        )
+
+    def test_a_code_path_holding_a_space_is_no_path(self) -> None:
+        # The stated limit: a span holding a space is more often a command that names a path than a path, so it is
+        # no path, as a prose path holding one is read only from after its last space.
+        lines = ["`my notes.md`", "`cat docs/a.md`"]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+        self.assertEqual([], rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources))
+
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
         # read a link in a code span, and took `mailto:` for a file beside the guidance.
