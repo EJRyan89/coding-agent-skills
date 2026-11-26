@@ -49,7 +49,7 @@ from git_client import GLOBAL_VALUE_OPTIONS
 from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, relative_within
-from python_names import TYPE_PARAMETERS
+from python_names import TYPE_PARAMETERS, chosen_callee
 from runtime_support import names_git
 from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
@@ -80,7 +80,6 @@ from validation_support import (
     attribute_lookups,
     bound_values,
     call_argument,
-    chosen_callee,
     docstring_ids,
     import_aliases,
     is_test_script,

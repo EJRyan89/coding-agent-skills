@@ -21,17 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import python_checks
 import validation_support
+from python_names import LITERAL_DISPLAYS, REFUSED_CALLEES, chosen_callee
 from validation_support import (
     ARGUMENT_FIELDS,
     CALLEE_FORMS,
     IMPORT_FIELDS,
-    LITERAL_DISPLAYS,
     NOT_READ,
-    REFUSED_CALLEES,
     REPOSITORY_ROOT,
     CallableResolver,
     call_arguments,
-    chosen_callee,
     import_aliases,
     resolved_calls,
     write_fixture_tree,
