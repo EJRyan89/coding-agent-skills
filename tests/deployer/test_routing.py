@@ -9,6 +9,7 @@ from unittest import mock
 from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
 
 from deployer.arguments import parse_command, parser
+from deployer.context import Options
 
 # Every option and command the hand-written usage named before the subparsers replaced it, per help page.
 OLD_USAGE_NAMES = {
@@ -183,6 +184,15 @@ class DeployUsageErrorTests(DeployerTestCase):
                     result = self.run_cli(*arguments)
                     self.assertEqual(2, result.code, result.output)
                     self.assertIn(f"ERROR: {option} cannot be combined with the check command\n", result.output)
+
+    def test_options_built_with_their_defaults_are_the_options_of_a_command_line_that_gives_none(self) -> None:
+        # The suites build Options directly, so a dataclass default that differs from the parser's, such as an empty
+        # --migrate-from, would run a migration or a canary no command line asks for.
+        namespace = parse_command([])
+        assert isinstance(namespace, argparse.Namespace)
+        self.assertEqual(
+            Options(**{key: value for key, value in vars(namespace).items() if key != "command"}), Options()
+        )
 
     def test_the_uninstall_refuses_every_option_that_selects_or_replaces(self) -> None:
         for extra, message in (
