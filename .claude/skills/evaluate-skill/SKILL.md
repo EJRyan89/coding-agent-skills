@@ -55,4 +55,4 @@ A script grader that passes a wrong run fails nothing, so every run with `--writ
 python -B tools/skill_evals.py review-prs --sample-read agrees
 ```
 
-Use `disagrees` instead when a `PASS` is not what the transcript shows: that is a defect of the script grader, its kind's check in `tools/skill_evals_scenarios.py` or the judging in `tools/skill_evals_judging.py`. Open a bug issue from the template against it, name it in the pull request, and do not change the skill to suit the grader. A `FAILED` line names why the reading was not recorded; report it. Validation fails while a committed row is still `unread`.
+Use `disagrees` instead when a `PASS` is not what the transcript shows: that is a defect of the script grader, its kind's check in `tools/skill_evals_scenarios.py` or the judging in `tools/skill_evals_judging.py`. Open a bug issue from the template against it, its `## Introduced` section filled as the template's comment asks, name it in the pull request, and do not change the skill to suit the grader. A `FAILED` line names why the reading was not recorded; report it. Validation fails while a committed row is still `unread`.

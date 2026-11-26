@@ -24,6 +24,15 @@ assignees: ''
 <!-- Name any known siblings: the same defect elsewhere, such as another caller of the same code or its twin in the
      other shell. -->
 
+## Introduced
+
+<!-- When the defect was written, not when it was found: the commit and pull request that wrote the defective code
+     or text, found with git log -S or -G, or git blame, on the lines the issue cites; the first release tag that
+     holds that commit (git tag --contains); and whether that pull request was itself a fix, by its title's type.
+     For drift against an outside page, name the upstream change that made the line stale instead, such as a
+     runtime version or changelog entry. When the line is older than the history you reached, write predates <tag>;
+     when you cannot tell, write unknown. Either way, name what you searched. -->
+
 ## Commit and environment
 
 <!-- The output of python deploy.py check, run in the clone the skills were deployed from: it names the deployed
