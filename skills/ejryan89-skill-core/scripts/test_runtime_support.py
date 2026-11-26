@@ -112,6 +112,121 @@ def test_a_python_git_call_names_its_subcommand(line: str, expected: set[str]) -
     assert runtime_support.python_git_subcommands(line) == expected
 
 
+# A git call whose function a value chooses, as validation's indirection policy refuses one in this repository, is
+# not modelled: its words are not read, and it is recorded as the word no literal names, so it may reach a remote.
+@pytest.mark.parametrize(
+    "line",
+    [
+        '(services.git.run or log)(["push"])',
+        '(log or services.git.run)(["status"])',
+        '(log and services.git.run)(["status"])',
+        '(services.git.run if x else log)(["push"])',
+        '(log if x else git_in)(checkout, "fetch")',
+        '((services.git.run or log) if x else print)(["push"])',
+        '[services.git.run][0](["push"])',
+        '(log, services.git.run)[1](["push"])',
+        '{"run": services.git.run}["run"](["push"])',
+        '[(git := services.git.run)][0](["status"])',
+        '(run := services.git.run)(["push"])',
+        '(run := services.git.run if x else log)(["status"])',
+        '(g := services.git).run(["push"])',
+        '(g := GitClient(runner)).output(["status"])',
+        '(g := services).git.run(["push"])',
+    ],
+)
+def test_a_git_call_whose_function_a_value_chooses_is_recorded_as_unread(line: str) -> None:
+    assert runtime_support.python_git_subcommands(line) == {UNREAD_WORD}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A call whose function a value chooses among callables none of which starts git starts none.
+        '(print if quiet else log)(["push"])',
+        '[print, log][0](["push"])',
+        '(run := print)(["push"])',
+        # A method that names its own subcommand takes no word of git's, however its client is chosen.
+        '(g := services.git).commit_of("HEAD")',
+        # A git call whose function is written directly is read as before, inside an assignment expression too.
+        '(found := services.git.run(["status"]))',
+    ],
+)
+def test_a_call_a_value_chooses_among_callables_that_start_no_git_records_nothing_unread(line: str) -> None:
+    assert UNREAD_WORD not in runtime_support.python_git_subcommands(line)
+
+
+# The stated limits: a call whose function a value chooses beyond the forms python_names' chosen_callee reads, as
+# validation's indirection policy leaves it alone, and a starred item a subscripted literal holds, read as itself.
+@pytest.mark.parametrize(
+    "line",
+    [
+        '(client or services.git).run(["push"])',
+        'CALLS[kind](["push"])',
+        '[[services.git.run]][0][0](["push"])',
+        '[services.git][0].run(["push"])',
+        '(t := [services.git.run])[0](["push"])',
+        '[services.git.run for _ in x][0](["push"])',
+        '([services.git.run] or x)[0](["push"])',
+        '[*runners][0](["push"])',
+        '[*git_calls][0](["push"])',
+    ],
+)
+def test_a_call_a_value_chooses_beyond_the_forms_chosen_callee_reads_is_not_read(line: str) -> None:
+    assert runtime_support.python_git_subcommands(line) == set()
+
+
+def test_a_double_star_value_of_a_subscripted_dict_is_read_by_its_own_name() -> None:
+    assert runtime_support.python_git_subcommands('{**git_calls}["run"](["push"])') == {UNREAD_WORD}
+    assert runtime_support.python_git_subcommands('{**runners}["run"](["push"])') == set()
+
+
+@pytest.mark.parametrize(
+    "chosen",
+    [
+        "(push_all if services.ready else log)",
+        "[push_all][0]",
+        "(run := push_all)",
+        "(log or push_all)",
+    ],
+)
+def test_a_value_chosen_call_of_the_script_s_own_git_starting_function_starts_git(chosen: str) -> None:
+    source = f"""
+        def push_all(services, *args):
+            return services.git.run(list(args))
+
+        def git(services, *args):
+            return {chosen}(services, *args)
+
+        git(services, "push", "origin")
+    """
+    assert script_subcommands(source) == {"push"}
+
+
+def test_a_value_chosen_call_of_the_script_s_own_quiet_function_named_for_git_starts_none() -> None:
+    source = """
+        def git(message):
+            print(message)
+
+        def git_report(services, *args):
+            (git if services.quiet else log)("note")
+
+        git_report(services, "status")
+    """
+    assert script_subcommands(source) == set()
+    direct = source.replace("(git if services.quiet else log)", "git")
+    assert script_subcommands(direct) == set()
+
+
+def test_a_helper_named_for_git_that_calls_a_git_call_a_value_chooses_starts_git() -> None:
+    source = """
+        def git(services, *arguments):
+            return (services.git.run if services.ready else services.log)(list(arguments))
+
+        git(services, "push", "origin")
+    """
+    assert script_subcommands(source) == {UNREAD_WORD, "push"}
+
+
 def test_a_python_script_that_does_not_parse_raises() -> None:
     with pytest.raises(python_reader.PythonRefused):
         runtime_support.python_git_subcommands("git(")

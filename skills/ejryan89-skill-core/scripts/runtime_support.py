@@ -21,6 +21,7 @@ import git_client
 import python_reader
 from markdown_sections import code_spans
 from powershell_commands import UNREAD_WORD
+from python_names import chosen_callables, chosen_callee
 from text_lines import text_lines
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
@@ -228,6 +229,14 @@ def starts_git(function: ast.expr, script: ScriptCallables) -> bool:
     return not quiet and names_git(function)
 
 
+def may_start_git(function: ast.expr, script: ScriptCallables) -> bool:
+    """Whether a call of `function` may start git: as starts_git reads it, or, for a function a value chooses, as
+    python_names' chosen_callee reads one, such as `(services.git.run or log)` or `(g := services.git).run`, whether
+    any of the callables chosen_callables finds it may be starts git. Python indirection is restricted rather than
+    modelled (docs/design.md), so which of them such a call runs is never read."""
+    return any(starts_git(callable_, script) for callable_ in chosen_callables(function))
+
+
 def _module_of(function: ast.expr, script: ScriptCallables) -> str | None:
     """The name an import binds that `function` is a method of, such as a module's, or None for a method of anything
     else or a plain name."""
@@ -243,13 +252,16 @@ def script_callables(tree: ast.Module) -> ScriptCallables:
     a GitClient's methods. Of the functions, methods, and classes the script defines, one starts git when a definition
     of its name holds a call that does: a method in GIT_ARGUMENT_METHODS on any receiver, as a wrapper's
     `self.client.output(...)` is, a callable named for git the script does not define, or a module's, as starts_git
-    reads one, or another of the script's own that starts git. Every other one is quiet, a helper that only words
-    git's failure, as `git_failure` does, and two that only call each other, as a reader's recursion does, among
-    them. Beyond what it reads: a callable the script imports from any module but git_client is read by its name
-    alone, so a definition whose only git runs through such an import, or through a callable it is given, as
-    `runner(["git", *arguments], timeout)`, under a name with no git in it, is read as quiet. A call on a receiver that
-    is not an import, named like one of the script's own definitions that starts no git, as `store.git("push")`
-    beside a `def git(message)`, is read as that definition and records nothing.
+    reads one, or another of the script's own that starts git. A call whose function a value chooses is decided by
+    each callable python_names' chosen_callables finds it may be, as a direct call of that callable is, so `(push_all
+    if ready else log)(...)` starts git when push_all does, and `(git if quiet else log)(...)` starts none when the
+    script's own `git` starts none. Every other one is quiet, a helper that only words git's failure, as `git_failure`
+    does, and two that only call each other, as a reader's recursion does, among them. Beyond what it reads: a
+    callable the script imports from any module but git_client is read by its name alone, so a definition whose only
+    git runs through such an import, or through a callable it is given, as `runner(["git", *arguments], timeout)`,
+    under a name with no git in it, is read as quiet. A call on a receiver that is not an import, named like one of the
+    script's own definitions that starts no git, as `store.git("push")` beside a `def git(message)`, is read as that
+    definition and records nothing.
     """
     imported: set[str] = set()
     quiet: set[str] = set()
@@ -266,18 +278,22 @@ def script_callables(tree: ast.Module) -> ScriptCallables:
             calls.setdefault(node.name, []).extend(call for call in ast.walk(node) if isinstance(call, ast.Call))
     known = ScriptCallables(frozenset(imported), frozenset(quiet))
 
-    def own(call: ast.Call) -> str | None:
-        name = _callable_name(call.func)
-        return name if name in calls and _module_of(call.func, known) is None else None
+    def own(function: ast.expr) -> str | None:
+        name = _callable_name(function)
+        return name if name in calls and _module_of(function, known) is None else None
 
-    def direct(call: ast.Call) -> bool:
-        return _callable_name(call.func) in GIT_ARGUMENT_METHODS or (own(call) is None and starts_git(call.func, known))
+    def starts(function: ast.expr, starting: set[str]) -> bool:
+        if _callable_name(function) in GIT_ARGUMENT_METHODS:
+            return True
+        name = own(function)
+        return starts_git(function, known) if name is None else name in starting
+
+    def makes(call: ast.Call, starting: set[str]) -> bool:
+        return any(starts(function, starting) for function in chosen_callables(call.func))
 
     starting: set[str] = set()
     while more := {
-        name
-        for name, made in calls.items()
-        if name not in starting and any(direct(call) or own(call) in starting for call in made)
+        name for name, made in calls.items() if name not in starting and any(makes(call, starting) for call in made)
     }:
         starting |= more
     return ScriptCallables(known.imported, frozenset(quiet | (calls.keys() - starting)))
@@ -299,7 +315,9 @@ def python_git_subcommands(source: str) -> set[str]:
     `git.output(["-C", directory, verb])`, is recorded as that word, which may be any subcommand and which
     reaches_remote reads as one that may reach a remote. A value that is not starred among the arguments before the
     first literal is the function's own, such as its client and its folder in `git(services, root, "fetch")`, and
-    stands for no word.
+    stands for no word. A git call whose function a value chooses, as may_start_git reads one, such as
+    `(services.git.run or log)(["push"])`, `[services.git.run][0](["push"])`, or `(g := services.git).run(["push"])`,
+    is recorded as UNREAD_WORD alone, its words not read, since which callable it runs is not modelled.
 
     Beyond what it reads: a call that holds neither a literal word, a list or tuple literal, nor a starred value, such
     as a wrapper's `services.git.run(arguments)`, records nothing, so a wrapper's subcommands are read only at its
@@ -311,14 +329,26 @@ def python_git_subcommands(source: str) -> set[str]:
     call all the same, since script_callables reads only the script's own definitions. A call on a receiver that is
     not an import, named like one of the script's own definitions that starts no git, as `store.git("push")` beside a
     `def git(message)`, is read as that definition and records nothing. A call of what another call returns, as
-    `make_git(root)("fetch")`, is not read. A script that does not parse, or nests past the parser's limits, raises
-    python_reader's PythonRefused.
+    `make_git(root)("fetch")`, is not read, nor is a call whose function a value chooses beyond the forms
+    python_names' chosen_callee reads, which validation's indirection policy leaves alone too: a method of the value
+    an `and`, an `or`, an if-expression, or a subscripted literal chooses, as `(client or services.git).run(["push"])`
+    or `[services.git][0].run(["push"])`, a dispatch table's `CALLS[kind](["push"])`, a subscript of a subscript, as
+    `[[services.git.run]][0][0](["push"])`, and a subscript of a comprehension, a `:=`, or an `or`, as `(t :=
+    [services.git.run])[0](["push"])`. A starred item of a subscripted literal, as `[*runners][0](["push"])`, is never
+    read as a git call, and a `**` value of a subscripted dict, as `{**git_calls}["run"](["push"])`, is read by its own
+    name. A script that does not parse, or nests past the parser's limits, raises python_reader's PythonRefused.
     """
     tree = python_reader.parse(source)
     script = script_callables(tree)
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not starts_git(node.func, script):
+        if not isinstance(node, ast.Call):
+            continue
+        if chosen_callee(node.func):
+            if may_start_git(node.func, script):
+                found.add(UNREAD_WORD)
+            continue
+        if not starts_git(node.func, script):
             continue
         words: list[str] = []
         for argument in node.args:

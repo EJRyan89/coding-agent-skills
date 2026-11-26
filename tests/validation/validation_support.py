@@ -270,16 +270,9 @@ COMPUTED_NAME = "?"
 # - a subscript of a subscript, or of a comprehension, a `:=`, or an `or`, as `[[f]][0][0](x)`, `[f for _ in x][0](x)`,
 #   or `(t := [f])[0](x)`, read as a dispatch table.
 CALLEE_FORMS = frozenset({"Name", "Attribute", "Call", "Subscript"})
-# The expressions that choose a call's function by a value, which the indirection policy in python_checks.py refuses
-# at the source as a call's function, in every module the claim policies read: an `and` or an `or`, an if-expression,
-# and an assignment expression, by their ast node, a subscript of a literal (LITERAL_DISPLAYS), and an attribute of an
-# assignment expression's value, which chosen_callee reads.
-REFUSED_CALLEES = {
-    "BoolOp": "an `and` or an `or`",
-    "IfExp": "an if-expression",
-    "NamedExpr": "an assignment expression",
-}
-LITERAL_DISPLAYS: dict[type[ast.expr], str] = {ast.Tuple: "tuple", ast.List: "list", ast.Set: "set", ast.Dict: "dict"}
+# The forms that choose a call's function by a value, which the indirection policy refuses, are ejryan89-skill-core's
+# python_names.REFUSED_CALLEES and LITERAL_DISPLAYS, read by its chosen_callee, since runtime_support decides the same
+# forms.
 # The fields of an import statement CallableResolver and module_imports read, as `<node>.<field>`. A star import
 # binds names no reader sees, and ruff's F403, which validation runs on every module, refuses every one.
 IMPORT_FIELDS = frozenset(
@@ -497,24 +490,6 @@ def call_argument(call: ast.Call, position: int | None, *keywords: str) -> ast.e
     if named is not None:
         return named
     return next((found for found in call_arguments(call, position, ()) if isinstance(found, ast.Starred)), None)
-
-
-def chosen_callee(function: ast.expr) -> str:
-    """How a call's function is chosen by a value, as REFUSED_CALLEES and LITERAL_DISPLAYS word it: "calls the
-    function an if-expression chooses" for `(print if quiet else os.system)(x)`, "calls the function a subscript of a
-    literal list chooses" for `[os.system][0](x)`, and "calls an attribute of the value an assignment expression
-    binds" for `(fs := shutil).rmtree(p)`, however deep the attribute; "" for any other function. The shared readers
-    name nothing such a call runs, so the indirection policy refuses it."""
-    if (chosen := REFUSED_CALLEES.get(type(function).__name__)) is not None:
-        return f"calls the function {chosen} chooses"
-    if isinstance(function, ast.Subscript) and (display := LITERAL_DISPLAYS.get(type(function.value))) is not None:
-        return f"calls the function a subscript of a literal {display} chooses"
-    receiver = function
-    while isinstance(receiver, ast.Attribute):
-        receiver = receiver.value
-    if receiver is not function and isinstance(receiver, ast.NamedExpr):
-        return "calls an attribute of the value an assignment expression binds"
-    return ""
 
 
 def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
