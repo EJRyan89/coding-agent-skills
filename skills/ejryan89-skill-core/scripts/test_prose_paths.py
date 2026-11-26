@@ -59,6 +59,8 @@ def test_a_path_is_read_whole_with_every_character_a_path_holds(path: str) -> No
         "a!.md",
         "**/*.md",
         "a\tb.md",
+        # The stated limit: a name in Unicode's decomposed form, NFD, holds a combining mark, no word character.
+        "docs/u\u0308ber.md",
     ],
 )
 def test_a_text_starting_or_holding_what_no_path_does_is_no_path(text: str) -> None:

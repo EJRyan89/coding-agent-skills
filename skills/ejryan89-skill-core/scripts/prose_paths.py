@@ -9,6 +9,9 @@ character, or the first after its root, is PATH_START: a word character, a non-A
 `&`, or `$`, as a home folder, an import, or a variable does, is not read, nor is one holding a space or a character
 prose ends or joins words with, such as `'`, `=`, `#`, `;`, `,`, `:`, `!`, or a glob's `*`; each reader states where a
 path it reads starts and ends, and these limits, beside its pattern.
+
+Limit: a name written in Unicode's decomposed form, NFD, as `u` followed by the combining U+0308 for `ü`, is no path,
+since a combining mark is no word character; the composed form, NFC, which editors write, is read.
 """
 
 from __future__ import annotations
