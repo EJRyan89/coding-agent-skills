@@ -23,10 +23,12 @@ forward slashes:
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
                   not enter, a junction, a symbolic link, a nested checkout, one it cannot list, or the one its
                   bound stopped it at; its facts are missing
-    SDK_NOT_ASKED <project> <reason>                         why's walk may not have read the restore's assets file
-                  MSBuild reads for the project, and why: a place it cannot settle, where it reads obj/'s, or one
-                  outside the examined tree, where it reads none; then that ask_sdk.py would have `dotnet nuget why`
-                  locate it, or, run, that dotnet is not installed; once per project
+    SDK_NOT_ASKED <project> <reason>                         the walk may not have read the restore's assets file
+                  MSBuild reads for a project whose packages the answer reads, and why: a place it cannot settle,
+                  where it reads obj/'s, or one outside the examined tree, where it reads none; then, for a project
+                  `why <name>` starts from, that ask_sdk.py would have `dotnet nuget why` locate it, or, run, that
+                  dotnet is not installed, and for any other that only `why <name>` asks the SDK, through ask_sdk.py,
+                  about the projects it starts from; once per project
     SDK_FAILED    <project> <name> <reason>                  under ask_sdk.py, `dotnet nuget why` failed; the graph
                   walk answered, the reason saying so where it answered from a restore it read from obj/
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
@@ -109,20 +111,22 @@ after `graph` where it differs, a private package or project being walked on its
 chain, version, and framework `dotnet nuget why` prints from the same file, which is all that command reads once it has
 located the file. Where the files leave the place unsettled, such as after an Import the reader did not read, which may
 set it, or under the SDK's artifacts layout, the walk reads the assets file in obj/, where a restore writes it unless a
-file moves it, which may not be the one the build uses; where they leave it outside the tree, it reads none. For each
-such project, `why` prints an SDK_NOT_ASKED line saying so, and asks the SDK nothing: `dotnet nuget why` evaluates the
-project through MSBuild, and MSBuild and the .NET host that starts it read and run whatever the project and the
-machine's SDK configuration lead them to, beyond the examined tree: imports, the restore's generated .nuget.g.props and
-.targets, the project's .user file, the nearest global.json, whose sdk.paths names the SDK the host runs and whose
-msbuild-sdks the resolvers read, and every NuGet.Config from the project's folder up for a versioned MSBuild SDK. This
-script starts no dotnet; ask_sdk.py, which the skill grants to no runtime, answers `why` as it does and asks the SDK,
-with dotnet installed, about exactly those projects, whatever else MSBuild would read for them, once per project and
-name, in the project's folder. For a project the SDK answered, the walk takes the project file alone,
-leaving out a restore it read from obj/ (answered_view): its chains along a route the SDK printed are printed once with
-it, named `sdk`, under the framework the SDK names, with the walk's hops at the SDK's versions and the walk's version of
-a package after `graph` where it differs, and the walk adds every chain the SDK cannot see, such as one ending in an
-assembly or one through a packages.config project. A run that fails, even after printing part of an answer, is an
-SDK_FAILED line, and the walk answers that project, the line saying so where it answers from obj/. A path a solution or
+file moves it, which may not be the one the build uses; where they leave it outside the tree, it reads none, and reports
+the file as an UNREADABLE line. For each such project whose packages a query's answer reads, a project it starts from or
+one they reach through project references, every query prints an SDK_NOT_ASKED line saying so, and asks the SDK nothing:
+`dotnet nuget why` evaluates the project through MSBuild, and MSBuild and the .NET host that starts it read and run
+whatever the project and the machine's SDK configuration lead them to, beyond the examined tree: imports, the restore's
+generated .nuget.g.props and .targets, the project's .user file, the nearest global.json, whose sdk.paths names the SDK
+the host runs and whose msbuild-sdks the resolvers read, and every NuGet.Config from the project's folder up for a
+versioned MSBuild SDK. This script starts no dotnet; ask_sdk.py, which the skill grants to no runtime, answers `why` as
+it does and asks the SDK, with dotnet installed, about exactly those projects among the ones `why` starts from, whatever
+else MSBuild would read for them, once per project and name, in the project's folder. For a project the SDK answered,
+the walk takes the project file alone, leaving out a restore it read from obj/ (answered_view): its chains along a route
+the SDK printed are printed once with it, named `sdk`, under the framework the SDK names, with the walk's hops at the
+SDK's versions and the walk's version of a package after `graph` where it differs, and the walk adds every chain the SDK
+cannot see, such as one ending in an assembly or one through a packages.config project. A run that fails, even after
+printing part of an answer, is an SDK_FAILED line, and the walk answers that project, the line saying so where it
+answers from obj/. A path a solution or
 project names is read only inside the examined tree, the checkout holding the solution or directory searched, and every
 read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES (msbuild_reader's docstring). Nothing inside
 the tree is stat, listed, or read through a link that leads outside it, judged from each name's own metadata and each
@@ -427,9 +431,17 @@ ASSETS_UNSETTLED = (
     " where a restore writes it unless a file moves it, which may not be the one the build uses"
 )
 ASSETS_NOT_READ = "the walk does not read the restore's assets file at {file}: {reason}"
-ASK_SDK_ADVICE = (
-    "; rerun the query through ask_sdk.py to have dotnet nuget why locate it, which lets MSBuild and the .NET host read"
-    " and run whatever the project and the machine's SDK configuration lead them to, beyond the examined tree"
+SDK_REACH = (
+    "which lets MSBuild and the .NET host read and run whatever the project and the machine's SDK configuration lead"
+    " them to, beyond the examined tree"
+)
+ASK_SDK_ADVICE = f"; rerun the query through ask_sdk.py to have dotnet nuget why locate it, {SDK_REACH}"
+# What an SDK_NOT_ASKED line adds for a project the SDK would not be asked about: under a query other than `why <name>`,
+# which no route asks the SDK for, or one a `why --project` reaches through a project reference.
+NOT_ASKED_HERE = (
+    "; the SDK is asked only by why <name> run through ask_sdk.py, about the projects that query starts from, so this"
+    " answer stands on what the walk read for the project; rerun why <name> --project <project> through ask_sdk.py to"
+    f" have dotnet nuget why locate it, {SDK_REACH}"
 )
 NO_DOTNET = "; ask_sdk.py ran, but dotnet is not installed"
 GUESSED_RESTORE = "; the walk answered from the restore's assets file in obj/, which may not be the one the build uses"
@@ -1042,15 +1054,15 @@ def located_assets(graph: Graph, project: Project) -> Path | None:
     did not read, which may set it, project.assets.json in obj/, where a restore writes it by default. The project's
     `assets_unread` then says why the walk may not have read the file MSBuild reads: a place the evaluation cannot
     settle, or one outside the tree, which only MSBuild, through `dotnet nuget why`, can read, the walk reading none
-    for the second; a link leading out is also reported against the file, never followed."""
+    for the second, which is also reported against the file, as a path outside the tree or a link on its way leading
+    out of it, never followed."""
     place = project.file.assets()
     if place.path is None:
         project.assets_unread = ASSETS_UNSETTLED.format(written=place.written)
         return project.file.path.parent / DEFAULT_RESTORE_FOLDER / ASSETS_FILE
-    reason = refusal(place.path, graph.tree)
-    if reason is None and (reason := outside_link_refusal(place.path, graph.tree)) is not None:
-        graph.refuse(Unreadable(place.path, reason))
+    reason = refusal(place.path, graph.tree) or outside_link_refusal(place.path, graph.tree)
     if reason is not None:
+        graph.refuse(Unreadable(place.path, reason))
         project.assets_unread = ASSETS_NOT_READ.format(file=graph.relative(place.path), reason=reason)
         return None
     return place.path
@@ -1532,11 +1544,29 @@ def sdk_candidates(
     unread = [project for project in projects if project.assets_unread is not None]
     if ask_sdk and services.which("dotnet") is not None:
         return unread
-    for project in unread:
-        out.line(
-            "SDK_NOT_ASKED", graph.label(project), f"{project.assets_unread}{NO_DOTNET if ask_sdk else ASK_SDK_ADVICE}"
-        )
+    unread_assets_lines(graph, unread, NO_DOTNET if ask_sdk else ASK_SDK_ADVICE, out)
     return []
+
+
+def unread_assets_lines(graph: Graph, projects: Iterable[Project], advice: str, out: Emitter) -> None:
+    """An SDK_NOT_ASKED line for each of the projects whose assets file the walk may not have read (`located_assets`),
+    once, saying why and ending with `advice`: what ask_sdk.py would do, or why it did not. Every query prints them for
+    each project whose packages its answer reads (`unread_reached`), so an answer read from a guessed restore, or
+    missing the transitive packages of a restore outside the tree, says so: `why <name>` for the projects it starts
+    from through `sdk_candidates`, and every other project, and every project of another query, which asks the SDK
+    nothing, with `NOT_ASKED_HERE`."""
+    for project in projects:
+        if project.assets_unread is not None:
+            out.line("SDK_NOT_ASKED", graph.label(project), f"{project.assets_unread}{advice}")
+
+
+def unread_reached(graph: Graph, projects: list[Project]) -> list[Project]:
+    """The projects whose packages an answer starting from `projects` reads, they and those they reach through project
+    references (`with_references`), whose assets file the walk may not have read; none, with no reference read, when
+    no project of the graph has one, so a query over a solution the walk reads whole walks no references for it."""
+    if all(project.assets_unread is None for project in graph.projects.values()):
+        return []
+    return [project for project in with_references(graph, projects) if project.assets_unread is not None]
 
 
 def sdk_answers(
@@ -1659,6 +1689,9 @@ def why_query(
 ) -> None:
     projects = selected_projects(graph, narrowed)
     candidates = sdk_candidates(graph, projects, ask_sdk, services, out)
+    starts = {graph.key(project.file.path) for project in projects}
+    reached = [project for project in unread_reached(graph, projects) if graph.key(project.file.path) not in starts]
+    unread_assets_lines(graph, reached, NOT_ASKED_HERE, out)
     paths, found, missing = 0, 0, 0
     for name in names:
         answered = sdk_answers(graph, candidates, name, services, out)
@@ -1676,6 +1709,7 @@ def why_query(
 
 def why_all_query(graph: Graph, narrowed: Path, out: Emitter) -> None:
     (project,) = selected_projects(graph, narrowed)
+    unread_assets_lines(graph, unread_reached(graph, [project]), NOT_ASKED_HERE, out)
     rows = labelled(
         (target.framework, (item.name, item.version or "-", item.kind, item.first_hop))
         for target in project.targets
@@ -1718,7 +1752,9 @@ def resolved_assemblies(graph: Graph, project: Project, target: Target) -> list[
 def where_query(graph: Graph, assembly: str, narrowed: Path | None, out: Emitter) -> None:
     target_name = ordinal_fold(assembly)
     projects = 0
-    for project in selected_projects(graph, narrowed):
+    selected = selected_projects(graph, narrowed)
+    unread_assets_lines(graph, unread_reached(graph, selected), NOT_ASKED_HERE, out)
+    for project in selected:
         rows: list[tuple[str, Row]] = []
         for target in project.targets:
             rows += [
@@ -1802,6 +1838,7 @@ def redirect_lines(graph: Graph, project: Project, out: Emitter) -> int:
 
 def conflicts_query(graph: Graph, narrowed: Path | None, out: Emitter) -> None:
     projects = selected_projects(graph, narrowed)
+    unread_assets_lines(graph, unread_reached(graph, projects), NOT_ASKED_HERE, out)
     by_name: dict[tuple[str, str], list[Want]] = {}
     for project in projects:
         for want in wants(graph, project):
@@ -1934,7 +1971,9 @@ def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
 
 def graph_query(graph: Graph, narrowed: Path | None, fmt: str, requested: Path | None, out: Emitter) -> None:
     refuse_output(requested)
-    nodes, edges = graph_edges(graph, with_references(graph, selected_projects(graph, narrowed)))
+    projects = with_references(graph, selected_projects(graph, narrowed))
+    unread_assets_lines(graph, projects, NOT_ASKED_HERE, out)
+    nodes, edges = graph_edges(graph, projects)
     text = render_dot(nodes, edges) if fmt == "dot" else render_mermaid(nodes, edges)
     target = write_graph(text, requested, fmt)
     out.line("WROTE", given_path(target).as_posix(), len(nodes), len(edges))
