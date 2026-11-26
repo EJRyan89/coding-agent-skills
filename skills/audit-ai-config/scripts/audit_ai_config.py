@@ -3260,7 +3260,8 @@ CLAUDE_HOOKS = HookRules(
     guard_events=frozenset(),
 )
 ON_FAILURE_VALUES = ("continue", "block")
-ON_FAILURE_TYPES = ("command", "http")
+# The hooks page: "set "onFailure": "block" on a command, http, or mcp_tool hook"; mcp_tool from Claude Code v2.1.328.
+ON_FAILURE_TYPES = ("command", "http", "mcp_tool")
 
 
 def check_claude_code(root: Path) -> list[Finding]:
@@ -3414,7 +3415,8 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
     on_failure = handler.get("onFailure")
     if rules.on_failure and on_failure is not None:
         if kind not in ON_FAILURE_TYPES:
-            problems.append(("ERROR", f"Hook on '{event}': onFailure applies to command and http hooks only"))
+            kinds = f"{', '.join(ON_FAILURE_TYPES[:-1])}, and {ON_FAILURE_TYPES[-1]}"
+            problems.append(("ERROR", f"Hook on '{event}': onFailure applies to {kinds} hooks only"))
         elif on_failure not in ON_FAILURE_VALUES:
             problems.append(("ERROR", f"Hook on '{event}': onFailure must be 'continue' or 'block'"))
     return problems

@@ -5347,7 +5347,48 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             ),
             "prompt hook with onFailure and its short default": (
                 {"hooks": {"Stop": [{"hooks": [{"type": "prompt", "prompt": "Check.", "onFailure": "block"}]}]}},
-                [("ERROR", "Hook on 'Stop': onFailure applies to command and http hooks only")],
+                [("ERROR", "Hook on 'Stop': onFailure applies to command, http, and mcp_tool hooks only")],
+            ),
+            "agent hook with onFailure": (
+                {"hooks": {"Stop": [{"hooks": [{"type": "agent", "prompt": "Check.", "onFailure": "continue"}]}]}},
+                [("ERROR", "Hook on 'Stop': onFailure applies to command, http, and mcp_tool hooks only")],
+            ),
+            # The hooks page: "set "onFailure": "block" on a command, http, or mcp_tool hook" (v2.1.328 on).
+            "http and mcp_tool hooks with onFailure": (
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {"type": "http", "url": "https://x.test", "timeout": 5, "onFailure": "block"},
+                                    {
+                                        "type": "mcp_tool",
+                                        "server": "guard",
+                                        "tool": "check",
+                                        "timeout": 5,
+                                        "onFailure": "block",
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                },
+                [],
+            ),
+            "mcp_tool hook with an unknown onFailure": (
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "hooks": [
+                                    {"type": "mcp_tool", "server": "s", "tool": "t", "timeout": 5, "onFailure": "x"}
+                                ]
+                            }
+                        ]
+                    }
+                },
+                [("ERROR", "Hook on 'PreToolUse': onFailure must be 'continue' or 'block'")],
             ),
             "an event with a short default": (
                 {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "x"}]}]}},
