@@ -36,7 +36,7 @@ import json_writer
 import runtime_support
 import skill_menu
 from console import run_main
-from markdown_sections import code_spans, document_headings, markdown_section
+from markdown_sections import code_block_lines, code_spans, document_headings, markdown_section
 from text_lines import LINE_BREAK, text_lines
 
 from deployer import source as deploy_source
@@ -337,6 +337,11 @@ def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[st
     section = markdown_section(readme, "## Included skills")
     if section is None:
         return [f"{README.as_posix()}: no 'Included skills' section"]
+    # A line a code block, fenced or indented, shows is the block's text, as GitHub renders it, so neither a row nor a
+    # link there stands in for the table's own.
+    lines = text_lines(section)
+    code = code_block_lines(lines)
+    section = "\n".join(line for index, line in enumerate(lines) if index not in code)
     # A row is named by the first code span in its first cell; the header and separator rows have none.
     rows = [
         found[0].text

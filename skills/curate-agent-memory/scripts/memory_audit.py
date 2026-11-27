@@ -161,7 +161,7 @@ from flat_text import flat_text, single_line
 from folder_walk import followed_inside
 from git_client import GitClient, GitError
 from link_destinations import link_destinations, written_destination
-from markdown_sections import ATX_HEADING, CODE, EMPTY_ATX_HEADING, HEADING, blocks, code_spans
+from markdown_sections import ATX_HEADING, CODE, EMPTY_ATX_HEADING, HEADING, blocks, code_block_lines, code_spans
 from path_containment import resolved_path, within
 from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
@@ -624,9 +624,16 @@ def words(text: str) -> set[str]:
 
 
 def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
+    """Each path a memory's body cites in a code span, with whether it exists. The body is read whole, so a span may
+    run across a line break as CommonMark's does, with each line of a code block, fenced or indented, as
+    markdown_sections' code_block_lines places one, left empty first: a backticked path there is the block's text, as
+    GitHub renders it, so it is no citation."""
     cited: list[CitedPath] = []
     seen: set[str] = set()
-    for span in code_spans(body):
+    lines = text_lines(body)
+    code = code_block_lines(lines)
+    prose = "\n".join("" if index in code else line for index, line in enumerate(lines))
+    for span in code_spans(prose):
         candidate = span.text.strip()
         candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
         if (

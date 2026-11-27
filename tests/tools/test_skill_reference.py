@@ -346,6 +346,24 @@ class SkillReferenceTestCase(unittest.TestCase):
             skill_reference.readme_problems(readme, ["alpha", "beta"], ["alpha", "beta"]),
         )
 
+    def test_a_readme_row_or_link_a_code_block_shows_is_not_the_tables(self) -> None:
+        # changed: every line of the section was read, so a row or a link an example shows in a fenced or indented
+        # code block, which GitHub renders as the block's text, stood in for the table's own.
+        readme = (
+            "## Included skills\n\n| Skill | What |\n|---|---|\n| `alpha` | x |\n\n"
+            "```markdown\n| `beta` | y |\n[R](docs/skills.md#runtime-support)\n```\n\n"
+            "    | `beta` | y |\n    [S](docs/skills.md)\n"
+        )
+        self.assertEqual(
+            [
+                "README.md: 'Included skills' has no row for `beta`",
+                "README.md: 'Included skills' does not link docs/skills.md",
+                "README.md: 'Included skills' does not link docs/skills.md#runtime-support, "
+                "which says which runtimes run each skill",
+            ],
+            skill_reference.readme_problems(readme, ["alpha", "beta"], ["alpha", "beta"]),
+        )
+
     def test_a_readme_link_to_a_missing_reference_section_is_reported(self) -> None:
         self.written_and_explained()
         readme = self.root / "README.md"

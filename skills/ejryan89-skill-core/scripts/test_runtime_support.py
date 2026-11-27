@@ -266,6 +266,23 @@ def test_a_line_ends_where_commonmark_ends_one_so_a_separator_keeps_the_span_on_
     assert runtime_support.invoked_skills("Then invoke\r`review-prs`\n", {"review-prs"}) == set()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```text\ninvoke `review-prs`\n```\n",
+        "~~~\ninvoke `review-prs`\n~~~\n",
+        "Intro.\n\n    invoke `review-prs`\n",
+        "- Step:\n\n  ```text\n  invoke `review-prs`\n  ```\n",
+        "> ```text\n> invoke `review-prs`\n> ```\n",
+    ],
+)
+def test_an_invoke_line_inside_a_fenced_or_indented_code_block_invokes_nothing(text: str) -> None:
+    # changed: each line was read alone, so an example a code block shows, where GitHub renders the backticks as the
+    # block's text, invoked the skill its span named.
+    assert runtime_support.invoked_skills(text, {"review-prs"}) == set()
+    assert runtime_support.invoked_skills(text + "\nThen invoke `review-prs`.\n", {"review-prs"}) == {"review-prs"}
+
+
 def test_an_invoked_skill_carries_its_needs_and_its_own_invoked_skills_but_not_user_only_start() -> None:
     own = {
         "dashboard": {"sandbox-network"},
