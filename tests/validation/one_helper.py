@@ -189,6 +189,7 @@ import file_presence
 import git_client
 import git_worktrees
 import github_remote
+from kinds_table import LOOKUP_METHODS
 from python_checks import formatted_modules, sanctioned_problems
 from validation_support import (
     REPOSITORY_ROOT,
@@ -1080,8 +1081,6 @@ REVIEW_IDENTITY_HELPER = "skills/ejryan89-code-review-core/scripts/review_record
 REVIEW_IDENTITY_READER = "review_records.review_identity"
 # A record's head, as a reader spells it: the record's pull request, then its head commit.
 RECORD_HEAD = ("pull_request", "head_sha")
-# The dictionary methods that take a key first.
-KEY_METHODS = frozenset({"setdefault", "get", "pop"})
 GROUPBY = "itertools.groupby"
 REVIEW_IDENTITY_ALLOWANCE = "REVIEW_IDENTITY_ALLOWED"
 READ_REVIEW_IDENTITY = (
@@ -1112,7 +1111,7 @@ def _keys(node: ast.AST, resolver: CallableResolver) -> list[ast.AST]:
         return [node.slice]
     if isinstance(node, ast.Call):
         function = node.func
-        if isinstance(function, ast.Attribute) and function.attr in KEY_METHODS and node.args:
+        if isinstance(function, ast.Attribute) and function.attr in LOOKUP_METHODS and node.args:
             return [node.args[0]]
         if resolver.name(function) == GROUPBY:
             return [
