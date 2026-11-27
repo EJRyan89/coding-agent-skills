@@ -1108,6 +1108,37 @@ class LinkDestinationTests(unittest.TestCase):
         sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
         self.assertEqual([], rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources))
 
+    def test_a_code_path_a_fenced_or_indented_code_block_shows_is_not_a_reference(self) -> None:
+        # changed: each line was read alone, so a backticked path inside an example, which GitHub renders as the
+        # block's text, was reported as a reference the reviewer was not given.
+        lines = [
+            "Guidance prose.",
+            "",
+            "```text",
+            "Run `docs/a.md` here.",
+            "```",
+            "~~~",
+            "`docs/b.md`",
+            "~~~",
+            "",
+            "    `docs/c.md`",
+            "",
+            "- Item:",
+            "",
+            "  ```text",
+            "  `docs/d.md`",
+            "  ```",
+            "",
+            "> ```text",
+            "> `docs/f.md`",
+            "> ```",
+            "",
+            "See `docs/e.md`.",
+        ]
+        sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
+        found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
+        self.assertEqual([(22, "docs/e.md")], [(item["line"], item["reference"]) for item in found])
+
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,
         # read a link in a code span, and took `mailto:` for a file beside the guidance.

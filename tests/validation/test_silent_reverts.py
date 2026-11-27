@@ -354,6 +354,21 @@ class SilentRevertDeclarations(unittest.TestCase):
         body = "Summary.\rReverts `a/b.py` to its state before abcdef1\r* Reverts `c.py` to its state before 1234567\r"
         self.assertEqual({("a/b.py", "abcdef1"), ("c.py", "1234567")}, declarations(body))
 
+    def test_a_declaration_a_fenced_or_indented_code_block_shows_is_not_read(self) -> None:
+        # changed: each line was read alone, so a declaration shown as an example in a code block, which GitHub
+        # renders as the block's text, silenced the guard for the file it named.
+        declared = "Reverts `a.txt` to its state before 1234567\n"
+        for body in (
+            f"```text\n{declared}```\n",
+            f"~~~\n{declared}~~~\n",
+            f"Example:\n\n    {declared}",
+            f"- Example:\n\n  ```text\n  {declared}  ```\n",
+            f"> ```\n> {declared}> ```\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(set(), declarations(body))
+                self.assertEqual({("a.txt", "1234567")}, declarations(body + "\n" + declared))
+
 
 class AuditReplay(unittest.TestCase):
     def test_the_pull_request_that_undid_the_one_before_it_is_named_when_replayed(self) -> None:

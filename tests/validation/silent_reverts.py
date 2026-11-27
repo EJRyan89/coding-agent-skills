@@ -16,7 +16,7 @@ from pathlib import Path
 
 from git_client import GitError, output_line
 from hidden_comments import without_hidden_comments
-from markdown_sections import code_spans
+from markdown_sections import code_block_lines, code_spans
 from text_lines import text_lines
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -29,7 +29,8 @@ from tools.release_notes import CLIENT, RELEASE_BRANCH, SQUASH_TITLE_NUMBER, Rel
 # hundred commits reach back several days of a branch left behind, while a match further back is ever more likely a
 # deliberate return to an old text than a stale one.
 COMMITS_BEFORE_MERGE_BASE = 200
-# A declaration, on a line of its own, optionally a list item, anywhere in the body outside an HTML comment:
+# A declaration, on a line of its own, optionally a list item, anywhere in the body outside an HTML comment and a code
+# block:
 # "Reverts `<path>` to its state before <commit>", the commit by seven or more hexadecimal digits of its name.
 # It is matched at the start of each line of the body where CommonMark ends one: what opens it, then the path, the code
 # span markdown_sections' code_spans reads right after it, by whole backtick runs, then what closes it.
@@ -164,11 +165,17 @@ def find_reverts(root: Path, head: str = "HEAD", main: str = RELEASE_BRANCH) -> 
 
 
 def declarations(text: str) -> set[tuple[str, str]]:
-    """Each (path, commit prefix) the text declares a revert of, outside the HTML comments GitHub hides, the commit in
-    lower case; a `<!--` that code shows is text, as hidden_comments reads them."""
+    """Each (path, commit prefix) the text declares a revert of, outside the HTML comments GitHub hides and outside
+    every code block, fenced or indented, the commit in lower case; a `<!--` that code shows is text, as hidden_comments
+    reads them, and so is a declaration a code block shows, as markdown_sections' code_block_lines places one."""
     # CommonMark ends a line at CR, LF, and CRLF, so a declaration after a lone CR is read on a line of its own.
     lines = text_lines(without_hidden_comments(text))
-    return {declared for line in lines if (declared := declaration(line)) is not None}
+    code = code_block_lines(lines)
+    return {
+        declared
+        for index, line in enumerate(lines)
+        if index not in code and (declared := declaration(line)) is not None
+    }
 
 
 def declaration(line: str) -> tuple[str, str] | None:

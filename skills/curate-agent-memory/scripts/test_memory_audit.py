@@ -436,6 +436,25 @@ class MemoryAuditTests(unittest.TestCase):
         }
         self.assertEqual({"docs/guide.md": (True, None), "docs/two.md": (False, None)}, cited)
 
+    def test_a_path_a_fenced_or_indented_code_block_shows_is_not_cited(self) -> None:
+        # changed: the body was read whole, so a ``` fence's backtick runs paired with each other and hid the spans
+        # inside it by chance, while a ~~~ fence or an indented block showed its backticked paths as citations, where
+        # GitHub renders every one of them as the block's text.
+        write(
+            self.memory_dir / "paths.md",
+            memory(
+                "paths",
+                "Prose.\n\n~~~\n`docs/tilde.md`\n~~~\n\n    `docs/indented.md`\n\n```text\n`docs/fenced.md`\n```\n\n"
+                "- Item:\n\n  ~~~\n  `docs/listed.md`\n  ~~~\n\n> ~~~\n> `docs/quoted.md`\n> ~~~\n\n"
+                "See `docs/prose.md`.\n",
+            ),
+        )
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"docs/prose.md": (False, None)}, cited)
+
     def test_a_cited_home_path_is_checked_under_the_absolute_home(self) -> None:
         home = self.root / "home"
         write(home / "notes" / "rule.md", "Rule.\n")
