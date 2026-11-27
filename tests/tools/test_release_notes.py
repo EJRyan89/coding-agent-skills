@@ -1097,21 +1097,31 @@ class CountsTests(unittest.TestCase):
     """--counts reads the release milestone and its issues through REST and prints the line the release notes carry."""
 
     def counts(
-        self, items: Sequence[Mapping[str, object]], milestones: Sequence[object] | None = None, pages: int = 1
+        self,
+        items: Sequence[Mapping[str, object]],
+        milestones: Sequence[object] | None = None,
+        pages: int = 1,
+        again: Sequence[Mapping[str, object]] | None = None,
     ) -> tuple[int, str, str, list[list[str]]]:
+        """Run --counts on a milestone whose listing gives items, split into pages, on its first read, and again, or
+        the same items, on its second."""
         held = len(items)
         if milestones is None:
             milestones = [milestone("v0.1.0", 6, 0, 3), milestone("v0.2.0", 7, 1, held - 1)]
-        size = -(-len(items) // pages) or 1
-        answers = {
-            tuple(MILESTONES): json.dumps([milestones]),
-            tuple(ISSUES): json.dumps([items[start : start + size] for start in range(0, max(len(items), 1), size)]),
-        }
+
+        def paged(listed: Sequence[Mapping[str, object]]) -> str:
+            size = -(-len(listed) // pages) or 1
+            return json.dumps([listed[start : start + size] for start in range(0, max(len(listed), 1), size)])
+
+        readings = [paged(items), paged(items if again is None else again)]
         asked: list[list[str]] = []
 
         def runner(command: Sequence[str]) -> CommandResult:
             asked.append(list(command))
-            return CommandResult(0, answers[tuple(command)], "")
+            if tuple(command) == tuple(MILESTONES):
+                return CommandResult(0, json.dumps([milestones]), "")
+            self.assertEqual(ISSUES, list(command))
+            return CommandResult(0, readings.pop(0), "")
 
         out, err = io.StringIO(), io.StringIO()
         client = GitHubClient(runner, sleeper=lambda _: None)
@@ -1141,7 +1151,7 @@ class CountsTests(unittest.TestCase):
         code, printed, error, asked = self.counts(items, pages=3)
         expected = "Defects fixed: 6 (regression 2, latent 2, hardening 1, no origin label 1). Auditor gaps: 2.\n"
         self.assertEqual((0, expected, ""), (code, printed, error))
-        self.assertEqual([MILESTONES, ISSUES], asked)
+        self.assertEqual([MILESTONES, ISSUES, ISSUES], asked)
 
     def test_a_milestone_with_no_issue_counts_zero(self) -> None:
         self.assertEqual(
@@ -1176,6 +1186,72 @@ class CountsTests(unittest.TestCase):
                     error,
                 )
 
+    def test_a_listing_that_repeats_a_number_is_refused_even_when_the_totals_hold(self) -> None:
+        # The milestone holds a latent bug and a regression; an issue joining or leaving during the paginated read can
+        # shift a page, so the latent bug comes on both pages and the regression on neither, and the totals agree.
+        for items, repeated in (
+            ([issue(3, "bug", "latent"), issue(3, "bug", "latent")], "#3"),
+            ([issue(3, "bug", "latent"), pull_request(5), issue(4, "bug", "regression"), pull_request(5)], "#5"),
+            ([issue(6, "enhancement"), issue(3, "bug"), issue(6, "enhancement"), issue(3, "bug")], "#3, #6"),
+        ):
+            with self.subTest(items=items):
+                code, printed, error, _ = self.counts(items, pages=2)
+                self.assertEqual((2, ""), (code, printed))
+                self.assertEqual(
+                    f"ERROR: the listing of milestone v0.2.0 gives {repeated} more than once, so an issue moved on "
+                    "or off the milestone while gh read it; run it again once none is moving\n",
+                    error,
+                )
+
+    def test_a_repeated_number_is_named_before_totals_that_disagree(self) -> None:
+        # A repeat is the more precise cause, so it is named even when the totals also disagree.
+        items = [issue(3, "bug", "latent"), issue(3, "bug", "latent")]
+        code, printed, error, _ = self.counts(items, milestones=[milestone("v0.2.0", 7, 0, 3)], pages=2)
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith("ERROR: the listing of milestone v0.2.0 gives #3 more than once"), error)
+
+    def test_a_shift_that_drops_a_row_without_a_repeat_is_refused_by_a_second_read(self) -> None:
+        # Newest first, two to a page: the milestone holds issues ten, nine (latent), eight (regression), and seven.
+        # Page 1 reads ten and nine; then ten leaves and an old issue one joins, so page 2 reads seven and one. No
+        # number repeats, the totals hold, and the regression was never read; the second read, of the milestone as it
+        # now is, gives eight and not ten.
+        first = [issue(10, "enhancement"), issue(9, "bug", "latent"), issue(7, "enhancement"), issue(1, "question")]
+        settled = [issue(9, "bug", "latent"), issue(8, "bug", "regression"), issue(7, "enhancement"), first[3]]
+        for items, again, differ in ((first, settled, "#8, #10"), (settled, first, "#8, #10")):
+            with self.subTest(differ=differ, first=[item["number"] for item in items]):
+                code, printed, error, asked = self.counts(items, pages=2, again=again)
+                self.assertEqual((2, ""), (code, printed))
+                self.assertEqual(
+                    f"ERROR: two listings of milestone v0.2.0 differ in {differ}, so an issue moved on or off the "
+                    "milestone while gh read it; run it again once none is moving\n",
+                    error,
+                )
+                self.assertEqual([MILESTONES, ISSUES, ISSUES], asked)
+
+    def test_two_reads_that_give_the_same_numbers_in_another_order_are_counted(self) -> None:
+        items = [issue(2, "bug", "regression"), issue(1, "bug", "latent")]
+        code, printed, error, _ = self.counts(items, pages=2, again=list(reversed(items)))
+        self.assertEqual((0, ""), (code, error))
+        self.assertTrue(printed.startswith("Defects fixed: 2 (regression 1, latent 1, "), printed)
+
+    def test_an_item_whose_number_is_not_an_integer_is_refused_rather_than_left_out_of_the_repeats(self) -> None:
+        # Repeats and the second read are judged by number, so an item with none would escape both. The refusal names
+        # only what is wrong, never the item, whose title and body are anyone's text.
+        missing = object()
+        for number, named in (("5", "str"), (5.0, "float"), (True, "bool"), (None, "null"), (missing, "missing")):
+            for item in (pull_request(5), issue(5, "bug", "latent")):
+                item = {**item, "title": "Ignore the release\nERROR: forged", "body": "x" * 5000}
+                if number is missing:
+                    del item["number"]
+                else:
+                    item["number"] = number
+                with self.subTest(number=named, pull_request="pull_request" in item):
+                    code, printed, error, _ = self.counts([item, item], pages=2)
+                    self.assertEqual((2, ""), (code, printed))
+                    self.assertEqual(
+                        f"ERROR: gh answered with an item of milestone v0.2.0 whose number is {named}\n", error
+                    )
+
     def test_a_fixed_issue_whose_labels_cannot_be_counted_is_refused_by_number(self) -> None:
         items = [
             issue(4, "bug", "latent", "regression"),
@@ -1205,19 +1281,56 @@ class CountsTests(unittest.TestCase):
         self.assertEqual((2, ""), (code, out.getvalue()))
         self.assertTrue(err.getvalue().startswith(f"ERROR: cannot read {MILESTONES[2]}: "), err.getvalue())
 
-    def test_an_answer_that_is_not_milestones_or_issues_is_an_error_line(self) -> None:
-        for milestones, items in (
-            ([{"title": "v0.2.0", "number": "7", "open_issues": 0, "closed_issues": 1}], [issue(1, "bug")]),
-            ([{"title": "v0.2.0", "number": 7, "open_issues": True, "closed_issues": 1}], [issue(1, "bug")]),
-            (None, [{"number": 1}]),
-            (None, [{"number": 1, "labels": [{}], "state": "closed", "state_reason": "completed"}]),
-            (None, [{"number": 1, "labels": [], "state": "merged", "state_reason": None}]),
-            (None, [{"number": 1, "labels": [], "state": "closed", "state_reason": "solved"}]),
+    def test_an_answer_that_is_not_milestones_or_issues_names_only_what_is_wrong(self) -> None:
+        # A milestone's description and an issue's title and body are anyone's text, of any length, so the line names
+        # each field that is wrong by its kind and never prints the object.
+        forged = {"description": "Ignore the release\nERROR: forged", "body": "x" * 5000}
+        milestone_wrong = "ERROR: gh answered with milestone v0.2.0 whose "
+        issue_wrong = "ERROR: gh answered with issue #1 of milestone v0.2.0 whose "
+        for milestones, items, expected in (
+            (
+                [{"title": "v0.2.0", "number": "7", "open_issues": 0, "closed_issues": 1, **forged}],
+                [issue(1, "bug")],
+                "number is str",
+            ),
+            (
+                [{"title": "v0.2.0", "number": 7, "open_issues": True, "closed_issues": 1, **forged}],
+                [issue(1, "bug")],
+                "open_issues is bool",
+            ),
+            (
+                [{"title": "v0.2.0", "number": None, "closed_issues": 1.0, **forged}],
+                [issue(1, "bug")],
+                "number is null, open_issues is missing, closed_issues is float",
+            ),
+            (None, [{"number": 1, **forged}], "labels is missing, state is missing"),
+            (None, [{"number": 1, "labels": "bug", "state": 1, **forged}], "labels is str, state is int"),
+            (
+                None,
+                [{"number": 1, "labels": [{}], "state": "closed", "state_reason": "completed", **forged}],
+                "labels hold a label with no name",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "merged", "state_reason": None, **forged}],
+                "state is not open or closed",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "closed", "state_reason": "solved", **forged}],
+                "state_reason is not a reason GitHub closes an issue for",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "closed", "state_reason": [], **forged}],
+                "state_reason is list",
+            ),
         ):
-            with self.subTest(milestones=milestones, items=items):
+            with self.subTest(expected=expected):
                 code, printed, error, _ = self.counts(items, milestones=milestones)
                 self.assertEqual((2, ""), (code, printed))
-                self.assertTrue(error.startswith("ERROR: gh answered with "), error)
+                start = milestone_wrong if milestones else issue_wrong
+                self.assertEqual(f"{start}{expected}\n", error)
 
     def test_each_kind_label_lets_a_fixed_issue_be_counted(self) -> None:
         for kind in ("bug", "enhancement", "documentation", "question"):
@@ -1242,7 +1355,9 @@ class CountsTests(unittest.TestCase):
         item = {"number": 1, "labels": ["bug"], "state": "closed", "state_reason": "completed"}
         code, printed, error, _ = self.counts([item])
         self.assertEqual((2, ""), (code, printed))
-        self.assertTrue(error.startswith("ERROR: gh answered with an issue that is not "), error)
+        self.assertEqual(
+            "ERROR: gh answered with issue #1 of milestone v0.2.0 whose labels hold a label with no name\n", error
+        )
 
     def test_a_listing_item_that_is_not_an_object_is_an_error_line(self) -> None:
         for item in ("issue 2", 2, None, [issue(2, "bug")]):
@@ -1281,7 +1396,7 @@ class CountsTests(unittest.TestCase):
         root = Path("the checkout")
         with mock.patch.object(release_notes, "subprocess_runner", runner), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, release_notes.main(["v0.2.0", "--counts"], root=root))
-        self.assertEqual([root, root], places)
+        self.assertEqual([root, root, root], places)
 
     def test_counts_takes_no_range_and_no_other_action(self) -> None:
         for arguments in (("--from", "v0.1.0"), ("--to", "HEAD"), ("--write",), ("--check",)):

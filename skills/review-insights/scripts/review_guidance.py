@@ -45,7 +45,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
-from markdown_sections import PROSE_BLOCKS, blocks, code_spans
+from markdown_sections import PROSE_BLOCKS, blocks, code_block_lines, code_spans
 from path_containment import resolved_path, written_refusal
 from prose_paths import PATH_CHARACTER, PATH_START
 from review_config import safe_repository_path
@@ -592,7 +592,9 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
     """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
     was not given. A link leads where ejryan89-skill-core's link_targets resolves it, from the guidance file's folder,
     or from the repository root when it starts with `/`; a path named in code outside a link counts as given when the
-    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. An inline link or
+    reviewer was given it from the root, a leading `./` dropped, or from the guidance file's folder. A path is named in
+    code only in prose: a backticked path inside a code block, fenced or indented, as markdown_sections'
+    code_block_lines places one, is the block's text, as GitHub renders it, and so is no reference. An inline link or
     a definition is read only through its destination, so a path its text names in code is not read again, within
     link_targets' limits: a reference link's text, as in `[text][label]`, `[text][]`, or `[label]`, is still read; a
     definition's line is passed over whole; and an inline link with text after its title is passed over to the next
@@ -607,11 +609,12 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
                 continue
             lines = text_lines(text)
             linked, spans = _markdown_links(lines)
+            code = code_block_lines(lines)
             for number, line in enumerate(lines, start=1):
                 links = [link_target(path, target) for target in linked.get(number, [])]
                 named = [
                     (target, link_target(path, target))
-                    for target in _code_references(line, spans.get(number, NO_LINKS))
+                    for target in ([] if number - 1 in code else _code_references(line, spans.get(number, NO_LINKS)))
                 ]
                 candidates = [link for link in links if link is not None and link not in given]
                 candidates += [target for target, near in named if target not in given and near not in given]

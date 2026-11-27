@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import git_client
 import python_reader
-from markdown_sections import code_spans
+from markdown_sections import code_block_lines, code_spans
 from memoized_walk import MemoizedWalk
 from powershell_commands import UNREAD_WORD
 from python_names import chosen_callables, chosen_callee
@@ -368,12 +368,16 @@ def python_git_subcommands(source: str) -> set[str]:
 def invoked_skills(text: str, names: Collection[str]) -> set[str]:
     """The skills a SKILL.md's text invokes: each of `names` that is the first word of a code span on a line that
     says "invoke", such as `review-prs` in "invoke `review-prs --re-review`". A line ends where CommonMark ends one,
-    at CR, LF, or CRLF, so a line separator before the span keeps it on the line that says "invoke".
+    at CR, LF, or CRLF, so a line separator before the span keeps it on the line that says "invoke". A line inside a
+    code block, fenced or indented, as markdown_sections' code_block_lines places one, is the block's text, as GitHub
+    renders it, so an example there invokes nothing.
     tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
+    lines = text_lines(text)
+    code = code_block_lines(lines)
     return {
         words[0]
-        for line in text_lines(text)
-        if "invoke" in line
+        for index, line in enumerate(lines)
+        if "invoke" in line and index not in code
         for span in code_spans(line)
         if (words := span.text.split()) and words[0] in names
     }
