@@ -31,6 +31,7 @@ from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
+from memoized_walk import MemoizedWalk
 from path_containment import posix_within
 from python_names import ModuleImport as ModuleImport
 from python_names import import_aliases as import_aliases
@@ -63,6 +64,13 @@ DUPLICATION_ALLOWED = {
 }
 INDIRECTION_ALLOWED = {
     "BUILTIN_NAMES": "lists the names the builtins module binds, reading no value by any of them",
+}
+WALK_ALLOWED = {
+    "_calls_of": (
+        "carries a functools.partial's arguments ahead of the call's down each path, so what a binding gives depends "
+        "on the path, and each path is one way the call may run, which the answer lists; a path ends at a partial it "
+        "has already passed or at a value that is no partial, so it is no longer than the module's partial calls"
+    ),
 }
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -920,6 +928,10 @@ class _BindingReader(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+# The dotted name each name or attribute a binding holds stands for, read once for each scope's aliases.
+AliasWalk = MemoizedWalk[ast.expr, str]
+
+
 class CallableResolver:
     """Resolve import and simple-assignment aliases in their lexical scopes, never guessing after a rebinding.
 
@@ -940,26 +952,27 @@ class CallableResolver:
         self.shape: _ModuleShape | None = None
         self.walk: _ReferenceWalk | None = None
 
-    def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
+    def _bound_name(self, name: str, scope: _NameScope, walk: AliasWalk) -> str:
+        """The dotted name a name stands for in a scope, its one value's read once for the question by its walk; ""
+        for a name bound more than once, or whose value leads back to itself."""
         owner = scope.owner(name)
         if owner is None:
             return name if name in BUILTIN_NAMES else ""
-        key = (id(owner), name)
         values = owner.bindings[name]
-        if key in seen or len(values) != 1:
+        if len(values) != 1:
             return ""
         value = values[0]
         if isinstance(value, str):
             return value
         if isinstance(value, (ast.Name, ast.Attribute)):
-            return self._name(value, seen | {key})
+            return walk(value)
         return f"<local>.{name}"
 
-    def _name(self, node: ast.AST, seen: frozenset[tuple[int, str]]) -> str:
+    def _name(self, node: ast.AST, walk: AliasWalk) -> str:
         if isinstance(node, ast.Name):
-            return self._bound_name(node.id, self.scopes[id(node)], seen)
+            return self._bound_name(node.id, self.scopes[id(node)], walk)
         if isinstance(node, ast.Attribute):
-            base = self._name(node.value, seen)
+            base = self._name(node.value, walk)
             return f"{base}.{node.attr}" if base else ""
         return ""
 
@@ -971,7 +984,8 @@ class CallableResolver:
             while parent is not None:
                 names.update(parent.bindings)
                 parent = parent.parent
-            self._aliases[id(scope)] = {name: self._bound_name(name, scope, frozenset()) for name in names}
+            walk: AliasWalk = MemoizedWalk(self._name, "")
+            self._aliases[id(scope)] = {name: self._bound_name(name, scope, walk) for name in names}
         return self._aliases[id(scope)]
 
     def name(self, node: ast.AST) -> str:
@@ -1715,23 +1729,32 @@ PATH_JOINS = frozenset({"join", "Path", "PurePath", "PurePosixPath", "PureWindow
 PATH_CONVERSIONS = frozenset({"str", "fspath", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
 
 
+# The components each name a module assigns once gives, read once a question.
+PartsWalk = MemoizedWalk[str, tuple[str | None, ...]]
+
+
 def path_parts(
-    node: ast.AST | None, names: Mapping[str, list[ast.expr]] | None = None, seen: frozenset[str] = frozenset()
+    node: ast.AST | None, names: Mapping[str, list[ast.expr]] | None = None, walk: PartsWalk | None = None
 ) -> list[str | None]:
     """The components a path expression is built from, in order, each literal one by its text and anything else as
     None: a `/` chain, a join of parts, a conversion of one, or a string, split at each separator, so "x/scripts" is
-    two components. Given the values a module assigns each name, a name assigned once is followed to its value."""
+    two components. Given the values a module assigns each name, a name assigned once is followed to its value, once
+    for the question through the walk the first call starts, and one whose value leads back to it is None."""
+    if walk is None:
+        walk = MemoizedWalk(
+            lambda name, walk: tuple(path_parts(names[name][0] if names else None, names, walk)), (None,)
+        )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return path_parts(node.left, names, seen) + path_parts(node.right, names, seen)
+        return path_parts(node.left, names, walk) + path_parts(node.right, names, walk)
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [part for part in re.split(r"[/\\]", node.value) if part] or [None]
-    if isinstance(node, ast.Name) and names is not None and node.id not in seen and len(names.get(node.id, [])) == 1:
-        return path_parts(names[node.id][0], names, seen | {node.id})
+    if isinstance(node, ast.Name) and names is not None and len(names.get(node.id, [])) == 1:
+        return list(walk(node.id))
     if isinstance(node, ast.Call) and not node.keywords:
         function = ast.unparse(node.func).rsplit(".", 1)[-1]
-        arguments = [part for argument in node.args for part in path_parts(argument, names, seen)]
+        arguments = [part for argument in node.args for part in path_parts(argument, names, walk)]
         if function == "joinpath" and isinstance(node.func, ast.Attribute):
-            return path_parts(node.func.value, names, seen) + arguments
+            return path_parts(node.func.value, names, walk) + arguments
         if (function in PATH_JOINS and len(node.args) > 1) or (function in PATH_CONVERSIONS and len(node.args) == 1):
             return arguments
     return [None]

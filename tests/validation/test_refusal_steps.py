@@ -12,10 +12,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import refusal_steps
 from refusal_steps import (
     COVERED,
     REFUSAL,
@@ -993,6 +995,27 @@ class RefusalStepFixtures(unittest.TestCase):
             self.problems(files, errors),
         )
 
+    def test_a_ladder_of_functions_each_returning_the_next_twice_reads_each_function_once(self) -> None:
+        # Each rung returns the next rung's text twice, so the bottom rung is reached by 2**12 call paths, and a reader
+        # per path reads it on every one.
+        rungs = "".join(
+            f"def rung{index}():\n    return f'{{rung{index + 1}()}}{{rung{index + 1}()}}'\n\n\n" for index in range(12)
+        )
+        files = {
+            "deployer/out.py": (rungs + "def rung12():\n    return 'ERROR: Bad'\n\n\ndef show():\n    print(rung0())\n")
+        }
+        read: list[str] = []
+        original = refusal_steps._Printed._returned
+
+        def counted(printed: refusal_steps._Printed, call: ast.Call, *rest: object) -> refusal_steps.Texts:
+            read.append(ast.unparse(call))
+            return original(printed, call, *rest)  # type: ignore[arg-type]  # the reader's own arguments, passed on
+
+        with mock.patch.object(refusal_steps._Printed, "_returned", counted):
+            problems = self.problems(files)
+        self.assertEqual(["deployer/out.py:54 a print in show" + PRINTED_SUFFIX], problems)
+        self.assertLessEqual(len(read), 2 * 12 + 1)
+
     def test_each_stated_limit_of_printed_lines_passes_unread(self) -> None:
         files = {
             "deployer/limits.py": (
@@ -1179,6 +1202,22 @@ class LooseRefusalAssertionFixtures(unittest.TestCase):
             ),
         }
         self.assertEqual(["tests/deployer/test_loose.py:8 assert_lines in Tests.test_it" + LOOSE], self.problems(files))
+
+    def test_a_name_bound_to_a_name_read_twice_is_followed_once_per_binding(self) -> None:
+        # Each constant unpacks the next one twice, so a reader per path follows the bottom one 2**10 times, while its
+        # binding is one; the lines are read once per name in a binding.
+        chain = "".join(f"L{index} = (*L{index + 1}, *L{index + 1})\n" for index in range(10))
+        files = {"tests/deployer/test_loose.py": chain + 'L10 = ("Fix it.",)\n' + suite("self.assert_lines(out, *L0)")}
+        followed: list[str] = []
+        original = refusal_steps._Refusals._displayed
+
+        def counted(reader: refusal_steps._Refusals, value: ast.expr, *rest: object) -> list[ast.expr] | None:
+            followed.append(ast.unparse(value))
+            return original(reader, value, *rest)  # type: ignore[arg-type]  # the reader's own arguments, passed on
+
+        with mock.patch.object(refusal_steps._Refusals, "_displayed", counted):
+            self.assertEqual([], self.problems(files))
+        self.assertLessEqual(len(followed), 2 * 10 + 1)
 
     def test_assert_refusal_an_error_line_alone_or_last_or_lines_with_no_error_pass(self) -> None:
         files = {

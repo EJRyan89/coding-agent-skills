@@ -6,6 +6,7 @@ import ast
 import inspect
 import sys
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -277,6 +278,33 @@ def test_an_invoked_skill_carries_its_needs_and_its_own_invoked_skills_but_not_u
     assert carried == {"review": {"agent-delegation", "workflow"}}
     assert list(runtime_support.carried_needs("review", own.__getitem__, invokes.__getitem__)) == ["dashboard", "flag"]
     assert runtime_support.carried_needs("loop", own.__getitem__, invokes.__getitem__) == {}
+
+
+def test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once() -> None:
+    # Each rung's skill invokes two, which each invoke the next rung's skill, so the bottom skill is reached by
+    # 2**16 paths, and a walk per path reads it on every one.
+    invokes: dict[str, set[str]] = {"top16": set()}
+    for rung in range(16):
+        invokes[f"top{rung}"] = {f"left{rung}", f"right{rung}"}
+        invokes[f"left{rung}"] = invokes[f"right{rung}"] = {f"top{rung + 1}"}
+    own = {name: {"workflow"} if name == "top16" else set() for name in invokes}
+    reads: Counter[str] = Counter()
+
+    def own_needs(name: str) -> set[str]:
+        reads[name] += 1
+        return own[name]
+
+    carried = runtime_support.carried_needs("top0", own_needs, invokes.__getitem__)
+    assert carried == {"left0": {"workflow"}, "right0": {"workflow"}}
+    assert set(reads.values()) == {1}
+    assert set(reads) == set(invokes) - {"top0"}
+
+
+def test_a_cycle_back_to_the_asked_skill_is_cut_and_each_invoked_skill_answers_whole() -> None:
+    own = {"a": {"user-only-start"}, "b": {"workflow"}, "c": {"sandbox-network"}}
+    invokes = {"a": {"b", "c"}, "b": {"a", "c"}, "c": {"b"}}
+    carried = runtime_support.carried_needs("a", own.__getitem__, invokes.__getitem__)
+    assert carried == {"b": {"workflow", "sandbox-network"}, "c": {"workflow", "sandbox-network"}}
 
 
 def test_what_a_runtime_lacks_decides_its_declaration() -> None:
