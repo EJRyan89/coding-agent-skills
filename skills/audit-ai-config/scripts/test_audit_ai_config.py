@@ -1103,6 +1103,12 @@ class InstructionLayeringTests(unittest.TestCase):
         )
         self.assertEqual("", audit._extract_sections(claude_content, ["Not a section", "Nor this", "Hidden"]))
 
+    def test_a_section_ends_at_the_next_first_level_heading_as_at_the_next_second_level_one(self) -> None:
+        # A `# ` heading after a `## ` section ends it, as CommonMark reads a section, so the text under the `# `
+        # heading is never projected as the section's, and a projection that held it no longer matches.
+        claude_content = "# CLAUDE.md\n\n## Overview\n\nUse tabs.\n\n# Appendix\n\nNot the overview.\n"
+        self.assertEqual("## Overview\n\nUse tabs.", audit._extract_sections(claude_content, ["Overview"]))
+
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"
         manifest = json.loads(audit.read_text(self.root, manifest_path))
