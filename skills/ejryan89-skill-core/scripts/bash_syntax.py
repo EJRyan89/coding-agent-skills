@@ -338,6 +338,10 @@ CATALOGUE_TESTS = {
         "tests/tools/test_bash_syntax.py::"
         "test_every_expansion_form_bash_names_is_read_refused_or_not_read_with_a_reason"
     ),
+    "the builtins after which Bash reads an array assignment, of those `compgen -b` prints": (
+        "tests/tools/test_bash_syntax.py::"
+        "test_declaration_builtins_are_the_builtins_after_which_bash_reads_an_array_assignment"
+    ),
 }
 # Each reserved word, `set -o` option, `shopt` option, and expansion form the reader neither reads nor refuses, with
 # why.

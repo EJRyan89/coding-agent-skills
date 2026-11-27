@@ -522,6 +522,10 @@ CATALOGUE_TESTS = {
     "git's builtin commands, as `git --list-cmds=builtins` prints them": (
         "tests/tools/test_hub_guard_git_options.py::ReadOnlyCatalogueTests.test_every_builtin_no_row_names_is_refused_in_a_hub"
     ),
+    "each operand writer's and unread mode's options that take a value, as `git <command> -h` lists them": (
+        "tests/tools/test_hub_guard_git_options.py::CatalogueTests."
+        "test_each_operand_writer_and_unread_mode_skips_the_value_of_every_option_git_lists_with_one"
+    ),
 }
 # Every Bash builtin is followed, not followed, or one that moves nothing, a decision tests/tools/test_hub_guard.py
 # holds to each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's.

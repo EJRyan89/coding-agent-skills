@@ -203,6 +203,9 @@ CATALOGUE_TESTS = {
         "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::"
         "test_every_binding_mode_is_read_refused_or_not_read_and_every_parameter_property_is_decided"
     ),
+    "each bound command's parameters, aliases, and positions, as pwsh lists them": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_each_bound_command_s_table_is_what_pwsh_lists"
+    ),
 }
 # The binding modes the reader leaves unread, each with why; every one is read or refused today.
 NOT_READ: dict[str, str] = {}

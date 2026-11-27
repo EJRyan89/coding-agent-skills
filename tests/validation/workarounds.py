@@ -259,7 +259,7 @@ def suite_defines(root: Path, suites: set[str], path: str, test: str) -> str | N
         tree = python_reader.parse(text, filename=path)
     except python_reader.PythonRefused as error:
         return f"whose suite does not parse ({error})"
-    return None if catalogue_tests.defines(tree, test) else "which its suite does not define"
+    return None if catalogue_tests.defines(tree, test) else "whose suite defines no test of that name"
 
 
 def catalogue_test_problems(root: Path, files: list[Path]) -> list[str]:

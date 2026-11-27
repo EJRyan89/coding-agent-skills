@@ -334,9 +334,13 @@ def fixture_catalogue_tests(files: dict[str, str]) -> list[str]:
 # file of the same text whose name is no suite's.
 CATALOGUE_SUITE = (
     "import unittest\n\n\ndef test_words():\n    def test_nested():\n        pass\n\n\n"
-    "class Catalogue(unittest.TestCase):\n    def test_options(self):\n        pass\n"
+    "class Catalogue(unittest.TestCase):\n    def test_options(self):\n        pass\n\n"
+    "    def setUp(self):\n        pass\n"
 )
 SUITES = {"tests/tools/test_reader.py": CATALOGUE_SUITE, "skills/a/scripts/helper.py": CATALOGUE_SUITE}
+# The refusal of a reference to a name its suite defines no test by: none, one nested, a class, or a method no runner
+# collects.
+NO_TEST = "whose suite defines no test of that name"
 
 
 @pytest.mark.parametrize(
@@ -373,12 +377,14 @@ def test_a_catalogue_test_table_naming_a_test_its_suite_defines_passes(source: s
         ),
         ("CATALOGUE_TESTS = {'words': 'tests/tools/test_gone.py::test_words'}\n", "which is no tracked suite"),
         ("CATALOGUE_TESTS = {'words': 'skills/a/scripts/helper.py::test_words'}\n", "which is no tracked suite"),
-        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_gone'}\n", "which its suite does not define"),
-        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_nested'}\n", "which its suite does not define"),
-        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue'}\n", "which its suite does not define"),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_gone'}\n", NO_TEST),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_nested'}\n", NO_TEST),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue'}\n", NO_TEST),
+        # A method the suite defines but no runner collects as a test, as unittest's setUp.
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.setUp'}\n", NO_TEST),
         (
             "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.test_gone'}\n",
-            "which its suite does not define",
+            NO_TEST,
         ),
         (
             "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\nCATALOGUE_TESTS['x'] = 'y'\n",
@@ -455,8 +461,8 @@ def test_each_problem_names_the_module_the_reference_why_and_what_to_do() -> Non
         "tests/test_reader.py": "def test_y():\n    pass\n",
     }
     assert fixture_catalogue_tests(files) == [
-        "tools/reader.py CATALOGUE_TESTS names tests/test_reader.py::test_x for words, which its suite does not "
-        "define; name the test that decides every entry of that catalogue",
+        "tools/reader.py CATALOGUE_TESTS names tests/test_reader.py::test_x for words, whose suite defines no test of "
+        "that name; name the test that decides every entry of that catalogue",
     ]
 
 
