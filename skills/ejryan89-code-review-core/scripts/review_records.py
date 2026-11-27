@@ -420,32 +420,19 @@ class ReviewRecord(TypedDict):
     ledger: NotRequired[list[LedgerEntry]]
 
 
-class ReviewSubject(NamedTuple):
-    """The pull request as a review read it: its repository, in the one form a repository identity is compared in, its
-    number, the head commit the review read, and the base commit it compared that head with. Two reviews of one
-    subject read one diff, and differ only by their version."""
-
-    repository: str
-    number: int
-    head_sha: str
-    base_sha: str
-
-
 class ReviewIdentity(NamedTuple):
-    """Which review a record holds: its subject's fields and its version. The same head on another base, as once
-    GitHub retargets a pull request, is another subject, and a later version of one subject, as a re-review is,
-    another review, so a reader that groups, compares, or relays reviews keys them by this or by its `subject`, never
-    by the head alone."""
+    """Which review a record holds: its repository, in the one form a repository identity is compared in, its pull
+    request number, the head commit it read, the base branch's tip when it ran, and its version. A later version, as a
+    re-review is, is another review even at the same head and base, so a reader that groups, compares, or relays
+    reviews keys them by this, never by the head alone. `base_sha` is that tip, not the merge base the reviewer diffed
+    the head against: two reviews with equal heads and bases read one diff, but two reviews of one head on different
+    tips, as after main moved, may have read one diff too, so the base alone never says that two diffs differ."""
 
     repository: str
     number: int
     head_sha: str
     base_sha: str
     version: int
-
-    @property
-    def subject(self) -> ReviewSubject:
-        return ReviewSubject(self.repository, self.number, self.head_sha, self.base_sha)
 
 
 def review_identity(record: ReviewRecord) -> ReviewIdentity:

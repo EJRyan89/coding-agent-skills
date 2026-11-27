@@ -3,12 +3,14 @@ thing disagreed with themselves or with each other, which is the main symptom of
 
 - Severity drift: a group of findings with the same repository, category, and headline, or one ledger entry's finding
   and its repeats in the range, that carries more than one severity.
-- A verdict flip: two consecutive reviews of one pull request at the same head and base commits with different
-  verdicts, with the findings each held open whose severity or presence differs. Findings are matched by their ledger
-  entry, then by file and a line within ANCHOR_WINDOW of each other, so two initial reviews of the same code compare
-  too.
-- Reviewer disagreement: findings at the same head and base commits of one pull request, in the same file within
-  ANCHOR_WINDOW lines, raised by reviewers that share none of their sources, at different severities.
+- A verdict flip: two consecutive reviews of one pull request at the same head commit with different verdicts, with
+  the findings each held open whose severity or presence differs. Findings are matched by their ledger entry, then by
+  file and a line within ANCHOR_WINDOW of each other, so two initial reviews of the same code compare too.
+- Reviewer disagreement: findings at the same head commit of one pull request, in the same file within ANCHOR_WINDOW
+  lines, raised by reviewers that share none of their sources, at different severities.
+
+Both compare reviews by their head commit alone, so a head GitHub retargeted to another base, with no new commit, is
+still compared with the review before it (REVIEW_IDENTITY_ALLOWED says why).
 
 The report also carries the guidance candidates `review_guidance.py` finds. Each kind keeps its SIGNALS_KEPT strongest
 items, numbered, and counts them all. Drift is strongest with the most severities, then the most findings; a flip
@@ -28,20 +30,18 @@ from typing import TypedDict, cast
 from flat_text import flat_text
 from markdown_literal import markdown_line
 from review_guidance import GuidanceOverlap, UnsuppliedReference
-from review_records import (
-    Finding,
-    FindingReference,
-    LedgerKey,
-    ReviewRecord,
-    ReviewSubject,
-    finding_reference,
-    review_identity,
-    source_parts,
-)
+from review_records import Finding, FindingReference, LedgerKey, ReviewRecord, finding_reference, source_parts
 from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline, review_key
 from review_vocabularies import SEVERITIES, SEVERITY_RANK, Severity
 from typed_fields import FieldReader
 
+# Each signal that keys reviews by their head commit rather than by review_records.review_identity, with why.
+REVIEW_IDENTITY_ALLOWED = {
+    "verdict_flips": "a record names the base branch's tip, not the merge base its review diffed against, so a key "
+    "by base would split every rerun of an unmoved head after main moved; a retargeted head is compared as one",
+    "reviewer_disagreements": "a record names the base branch's tip, not the merge base its review diffed against, "
+    "so a key by base would split the reviews of an unmoved head after main moved; a retargeted head is one place",
+}
 ANCHOR_WINDOW = 3
 SIGNALS_KEPT = 20
 EXAMPLES_KEPT = 3
@@ -451,19 +451,18 @@ def flip_rank(flip: VerdictFlip, differences: int) -> tuple[bool, int, str, int,
 
 
 def verdict_flips(records: Iterable[ReviewRecord]) -> list[VerdictFlip]:
-    """Each pair of consecutive reviews of one subject (`review_identity`), a pull request at the same head commit on
-    the same base commit, whose verdicts differ, strongest first (see flip_rank). The same head on another base, as
-    once GitHub retargets a pull request, reads another diff, so its review is never compared with the one before."""
+    """Each pair of consecutive reviews of a pull request at the same head commit whose verdicts differ, strongest
+    first (see flip_rank)."""
     pulls: dict[tuple[str, int], list[ReviewRecord]] = {}
     for record in records:
         pulls.setdefault(review_key(record)[:2], []).append(record)
     found: list[tuple[VerdictFlip, int]] = []
     for _, history in sorted(pulls.items()):
         history.sort(key=lambda record: record["review"]["version"])
-        by_subject: dict[ReviewSubject, list[ReviewRecord]] = {}
+        by_head: dict[str, list[ReviewRecord]] = {}
         for record in history:
-            by_subject.setdefault(review_identity(record).subject, []).append(record)
-        for runs in by_subject.values():
+            by_head.setdefault(record["pull_request"]["head_sha"], []).append(record)
+        for runs in by_head.values():
             found += [
                 _flip(history, before, after)
                 for before, after in pairwise(runs)
@@ -526,16 +525,16 @@ def _spread(members: list[Member], cluster: list[int]) -> int:
 
 
 def reviewer_disagreements(records: Iterable[ReviewRecord]) -> list[ReviewerDisagreement]:
-    """Each place in one subject (`review_identity`), a pull request at one head commit on one base commit, where
-    reviewers that share no source gave findings within ANCHOR_WINDOW lines of each other different severities: the
-    findings joined by such pairs, from the first. The widest spread of severities comes first, then the place with
-    the most findings, then by place."""
-    subjects: dict[ReviewSubject, list[Member]] = {}
+    """Each place at one head commit of a pull request where reviewers that share no source gave findings within
+    ANCHOR_WINDOW lines of each other different severities: the findings joined by such pairs, from the first. The
+    widest spread of severities comes first, then the place with the most findings, then by place."""
+    heads: dict[tuple[str, int, str], list[Member]] = {}
     for record in records:
-        subject = review_identity(record).subject
-        subjects.setdefault(subject, []).extend((record, finding) for finding in record["findings"])
+        repository, number, _ = review_key(record)
+        key = (repository, number, record["pull_request"]["head_sha"])
+        heads.setdefault(key, []).extend((record, finding) for finding in record["findings"])
     found: list[tuple[tuple[int, int, str, int, str, str, int], ReviewerDisagreement]] = []
-    for (repository, number, head, _), members in sorted(subjects.items()):
+    for (repository, number, head), members in sorted(heads.items()):
         members.sort(key=lambda member: (member[1]["path"], member[1]["line"], *_order(member)))
         for cluster in _clusters(members):
             anchor = members[cluster[0]][1]

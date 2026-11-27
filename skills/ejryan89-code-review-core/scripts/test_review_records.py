@@ -24,7 +24,6 @@ from review_records import (
     RecordFieldError,
     ReviewIdentity,
     ReviewRecord,
-    ReviewSubject,
     build_record,
     calculate_verdict,
     canonical_json,
@@ -606,18 +605,14 @@ class RecordTests(unittest.TestCase):
         identity = review_identity(record)
         # Pinned against literals, the repository in the one form a repository identity is compared in.
         self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "a" * 40, 1), identity)
-        self.assertEqual(ReviewSubject("example/one", 12, "b" * 40, "a" * 40), identity.subject)
-        # A re-review of the same head on the same base reads the same subject and is another review.
+        # A re-review of the same head on the same base is another review.
         again = copy.deepcopy(record)
         again["review"]["version"] = 2
-        self.assertEqual(identity.subject, review_identity(again).subject)
-        self.assertNotEqual(identity, review_identity(again))
-        # The same head retargeted to another base, reviewed at a new version, is another subject and another review.
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "a" * 40, 2), review_identity(again))
+        # The same head on another base tip, reviewed at a new version, names that tip.
         retargeted = copy.deepcopy(again)
         retargeted["pull_request"]["base_sha"] = "c" * 40
-        self.assertNotEqual(identity.subject, review_identity(retargeted).subject)
-        self.assertNotEqual(review_identity(again), review_identity(retargeted))
-        self.assertEqual("c" * 40, review_identity(retargeted).base_sha)
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "c" * 40, 2), review_identity(retargeted))
 
     def test_verdict_policy_is_centralized(self) -> None:
         ledger: Any = [{"severity": "SHOULD_FIX", "state": "open"}] * 2

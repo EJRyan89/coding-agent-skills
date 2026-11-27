@@ -1223,9 +1223,9 @@ or removed fails validation until its pattern follows it.
   can be reused.
 - **Why:** A branch name or a path outlives what it named, so a new branch with an old name is judged merged.
 - **Use:** `pull_carried:carried`, `review_insights:decide_custom`, which decides only the custom-candidate rules
-  whose IDs the user was shown, `review_records:review_identity`, a review's repository, number, head, base, and
-  version, whose `review_records:ReviewIdentity.subject` drops the version, so a reader that groups, compares, or
-  relays reviews never takes the same head on another base for the review before it
+  whose IDs the user was shown, `review_records:review_identity`, a review's repository, number, head, base tip, and
+  version, so a reader that groups, compares, or relays reviews never takes a later review of one head, as a
+  re-review on another base is, for the one before
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,

@@ -1477,8 +1477,8 @@ REFUSED_REVIEW_KEYS = {
 # Modules that key reviews by their identity, or read a head as a value.
 PASSED_REVIEW_KEYS = {
     "through the helper": (
-        "from review_records import review_identity\n\n\ndef f(by_subject, record):\n"
-        "    by_subject.setdefault(review_identity(record).subject, []).append(record)\n"
+        "from review_records import review_identity\n\n\ndef f(by_review, record):\n"
+        "    by_review.setdefault(review_identity(record), []).append(record)\n"
     ),
     "a head as a value": f'def f(record):\n    return {{"head_sha": {HEAD}, "short": {HEAD}[:12]}}\n',
     "a head compared": f"def f(record, head):\n    return {HEAD} == head\n",

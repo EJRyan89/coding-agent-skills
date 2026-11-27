@@ -150,16 +150,17 @@ stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 
 Review identity. ejryan89-code-review-core's review_records.py is the one reader of a review's identity: its
 review_identity gives a record's repository, in the one form a repository identity is compared in, its pull request
-number, head, base, and version, and its `subject`, the same without the version. A review is its head, its base, and
-its version, so the same head on another base, as once GitHub retargets a pull request, is another review, and a
-reader that keys reviews by the head alone takes it for the one before, as review-insights' verdict flips and reviewer
-disagreements did. In every non-test module ruff formats but the helper, it fails a scope that keys reviews by a
-record's head, RECORD_HEAD read as `<expression>["pull_request"]["head_sha"]`, alone or beside other fields, read there
-or through a name the scope binds by `=` to an expression holding it: a subscript's index; the first argument of a
-dictionary's setdefault, get, or pop; a dictionary display's or comprehension's key; a set display's or
-comprehension's element; the left side of an `in` or `not in` test; and the key of itertools.groupby, given by
-position or by keyword, under any name it is imported by. A head read as a
-value, compared with `==`, or given to a call passes. A module states why a scope keys one itself in a module-level
+number, head, the base branch's tip when the review ran, and version. A reader that keys reviews by the head alone takes
+a later review of that head, as a re-review on another base is, for the one before, so it keys them by the identity or
+states why the head is its key: review-insights' verdict flips and reviewer disagreements do, since a record holds the
+base branch's tip, not the merge base its review diffed against, and a key by that tip would split every rerun of an
+unmoved head once main moved. In every non-test module ruff formats but the helper, it fails a scope that keys reviews
+by a record's head, RECORD_HEAD read as `<expression>["pull_request"]["head_sha"]`, alone or beside other fields, read
+there or through a name the scope binds by `=` to an expression holding it: a subscript's index; the first argument of a
+dictionary's setdefault, get, or pop; a dictionary display's or comprehension's key; a set display's or comprehension's
+element; the left side of an `in` or `not in` test; and the key of itertools.groupby, given by position or by keyword,
+under any name it is imported by. A head read as a value, compared with `==`, or given to a call passes. A module states
+why a scope keys one itself in a module-level
 REVIEW_IDENTITY_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its stated
 limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A head read by `.get("head_sha")`, or through the pull request bound to a name first, as `pull["head_sha"]`, is not

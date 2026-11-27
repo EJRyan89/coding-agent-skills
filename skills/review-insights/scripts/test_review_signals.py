@@ -25,8 +25,8 @@ from test_review_insights import LINE_BREAKS, LITERAL, MARKUP, UNTRUSTED, Insigh
 HEAD = "c" * 40
 OTHER_HEAD = "d" * 40
 BASE = "a" * 40
-# The base commit a pull request reads after GitHub retargets it, its head unmoved.
-RETARGETED_BASE = "e" * 40
+# The base branch's tip a later review of an unmoved head reads once main moved.
+MOVED_BASE = "e" * 40
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 SIGNAL_PREFIXES = (
     "SEVERITY_DRIFT",
@@ -234,16 +234,14 @@ class VerdictFlipTests(SignalFixture):
         _, lines = self.signal_lines()
         self.assertEqual([], lines)
 
-    def test_a_retargeted_head_reviewed_at_a_new_version_is_another_review_and_no_flip(self) -> None:
-        # Two reviews of one head against different bases read different diffs, so their verdicts may differ; the
-        # same two reviews on one base are a flip, which shows the base alone tells them apart.
+    def test_a_forced_rerun_of_one_head_after_main_moved_is_still_a_flip(self) -> None:
+        # A record holds the base branch's tip when its review ran, not the merge base it diffed against, so a rerun of
+        # the same head after main moved reads the same diff on another tip, and its verdict changing is a flip.
         self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
-        self.review(7, 2, [], base=RETARGETED_BASE, mode="re-review", dispositions=(("v1:F001", "addressed"),))
-        self.review(8, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
-        self.review(8, 2, [], mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        self.review(7, 2, [], base=MOVED_BASE, mode="re-review", dispositions=(("v1:F001", "addressed"),))
         _, lines = self.signal_lines()
         self.assertEqual(
-            [f"VERDICT_FLIP V1 owner/repo#8 head={HEAD[:12]} v1=CHANGES_REQUESTED v2=APPROVED"],
+            [f"VERDICT_FLIP V1 owner/repo#7 head={HEAD[:12]} v1=CHANGES_REQUESTED v2=APPROVED"],
             [line for line in lines if line.startswith("VERDICT_FLIP")],
         )
 
@@ -272,28 +270,24 @@ class DisagreementTests(SignalFixture):
             lines,
         )
 
-    def test_findings_on_a_retargeted_head_at_a_new_version_never_disagree_with_the_review_before_it(self) -> None:
-        # Pull request 7's head is reviewed again on another base, pull request 8's on the same one: only 8's two
-        # reviews read one diff, so only 8's findings at one place are a disagreement.
-        for number, base in ((7, RETARGETED_BASE), (8, BASE)):
-            self.review(
-                number,
-                1,
-                [finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security")],
-                reviewers=self.REVIEWERS,
-            )
-            self.review(
-                number,
-                2,
-                [finding("SUGGESTION", "src/a.cs", 11, "Name the path variable", source="style")],
-                base=base,
-                mode="re-review",
-                dispositions=(("v1:F001", "still_present"),),
-                reviewers=self.REVIEWERS,
-            )
+    def test_findings_on_one_head_reviewed_again_after_main_moved_still_disagree(self) -> None:
+        # The second review read the same head on main's later tip: the same diff, so its findings compare with the
+        # first review's at one place.
+        self.review(
+            7, 1, [finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security")], reviewers=self.REVIEWERS
+        )
+        self.review(
+            7,
+            2,
+            [finding("SUGGESTION", "src/a.cs", 11, "Name the path variable", source="style")],
+            base=MOVED_BASE,
+            mode="re-review",
+            dispositions=(("v1:F001", "still_present"),),
+            reviewers=self.REVIEWERS,
+        )
         _, lines = self.signal_lines()
         self.assertEqual(
-            [f"REVIEWER_DISAGREEMENT R1 owner/repo#8 head={HEAD[:12]} src/a.cs:10"],
+            [f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:10"],
             [line for line in lines if line.startswith("REVIEWER_DISAGREEMENT")],
         )
 
