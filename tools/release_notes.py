@@ -57,8 +57,9 @@ that is not the milestones or issues asked for, a fixed issue, one closed as com
 `enhancement`, `documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed
 issue with an origin label and no `bug`, or a fixed bug with two origin labels. An issue closed as not planned or a
 duplicate is not read for labels. A refusal of an answer names each field that is wrong by its kind, never the object
-or a value, since a milestone's description and an issue's title and body are anyone's text. It takes no range and
-writes nothing.
+or a value, since a milestone's description and an issue's title and body are anyone's text. Two reads that moves
+skew the same way agree and are counted, which takes an issue leaving and rejoining the milestone in step with both
+reads' pages. It takes no range and writes nothing.
 
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
