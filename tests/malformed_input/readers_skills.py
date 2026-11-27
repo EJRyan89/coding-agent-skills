@@ -195,7 +195,8 @@ def _synthesis_context(path: Path) -> object:
 
 
 class _Detector:
-    """A change detector that asks GitHub nothing: a head unchanged since the review is unchanged."""
+    """A change detector that asks GitHub nothing: a head unchanged since the review, on the base the review read, is
+    unchanged, and anything else, the same head on another base included, changed."""
 
     def detect(
         self,
@@ -206,7 +207,7 @@ class _Detector:
         head_sha: str,
         since_base: str | None = None,
     ) -> str:
-        return UNCHANGED if since_sha == head_sha else CHANGED
+        return UNCHANGED if Query(repository, base_ref, since_sha, head_sha, since_base).one_comparison else CHANGED
 
     def prefetch(self, queries: Iterable[Query]) -> None:
         pass

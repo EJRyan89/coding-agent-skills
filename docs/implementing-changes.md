@@ -362,7 +362,7 @@ pull request whose head is in step, not in conflict, with a check neither red no
 that turns green and merges between two ticks, every head while the archive cannot be read, and one whose review fails
 twice may never be reviewed, so a pull request that reaches a trust-boundary route is not sure to have a record. It
 arms auto-merge first, and auto-merge waits only for the required check, so the review may land after the pull request merged. An author who
-wants the report before the merge runs `review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
+wants the report before the merge runs `review-prs --pull` first; its record then covers that head on the base it read, since a review is its head, its base, and its version, so a retarget to another base can make it due again. The result is the review record `review-prs` writes in
 the configured archive, which `review-insights` and `update-pr-dashboard` read. It is reported to the orchestrating
 session and the pull request's owner, never posted on the pull request by the shepherd: text posted on a public pull
 request first passes a scan for private terms that no skill here can run, so the orchestrating session relays the
