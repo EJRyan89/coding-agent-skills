@@ -4666,6 +4666,17 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo "$(git status && git commit -m x)"', self.tree))
         self.assertIn(WRITES.format("commit"), self.reason)
 
+    def test_a_background_job_leaves_the_session_where_it_was_but_for_a_nested_command_that_may_move_it(self) -> None:
+        # A pipeline run as a background job moves its job's location, never the session's, so the statement after it
+        # runs where the session was; a nested command in it is read as one that may move the session, which leaves
+        # the statement after it unplaced.
+        self.assertIsNone(self.powershell(f"Set-Location '{self.hub}' &\ngit commit -m x", self.tree))
+        self.assertEqual("deny", self.powershell(f"Set-Location '{self.tree}' &\ngit commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        command = f"Write-Output $(Set-Location '{self.hub}') &\ngit commit -m x"
+        self.assertEqual("deny", self.powershell(command, self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+
     def test_a_script_block_a_pipeline_hands_its_commands_runs_after_an_element_before_it_moves(self) -> None:
         # A script block handed to one of a pipeline's own commands runs while the pipeline runs, so after an element
         # before it has moved the location, unlike an argument's expression, which runs before the pipeline. The guard
