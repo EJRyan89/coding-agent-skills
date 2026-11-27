@@ -24,8 +24,12 @@ match a candidate its agent judges, and its literal model and effort, a word quo
   followed by `\s`; a comment test with anything after its `#`, or indented by ` *`; a prompt after `\s+`, `(?m)^`,
   or ` *`; a prose path with no lookbehind, folders counted `{1,}`, or a backslash in its separator; a code span whose
   body starts with literal text, as `` `--[\w-]+ ``, or a literal word quoted by optional backticks, as
-  `` `?haiku`? ``, which reads the word, not a span; and a brace count written other than
-  `a.count("{") - b.count("}")`.
+  `` `?haiku`? ``, which reads the word, not a span; a span whose class comes behind two lookarounds, nested groups,
+  or a group and then a lookahead, as `` `(?!-)(?!\s)[^`]+` ``, `` `((?:[^`]+))` ``, or `` `(?:(?!`).)+` ``, behind a
+  lookaround holding a class or longer than 64 characters, or in a conditional group; a span opened by a class or an
+  escape that holds the backtick, as `` [`]([^`]+)[`] `` or `\x60`; a header's bare `\(\)` before `\s+`, ` *`, a
+  literal space, or no `{`, and `\( *\)`; and a brace count written other than `a.count("{") - b.count("}")`.
+  A backtick before an unescaped `.`, as `` `(.+?)` ``, which no code here writes, is read as a span.
 """
 
 from __future__ import annotations
@@ -94,12 +98,13 @@ FAMILIES = (
     # A code span read by single backticks: a backtick, then, after at most one whole lookaround or inline-flag group
     # and at most one group's opening, plain, named, non-capturing, atomic, or flagged, a class of what the span holds:
     # a bracketed one, positive or negated, an escape's, or `.`. A backtick that opens a class, as `[^`\s]`, is the
-    # class's, not a span's. No part repeats another, so the search is linear.
+    # class's, not a span's. A lookaround's text is read up to 64 characters, and every other run stops at a
+    # backtick, so each backtick starts a bounded search and the whole is linear in the pattern's length.
     Family(
         "a single-backtick code span",
         MARKDOWN_OWNER,
         re.compile(
-            r"(?<!\[)(?<!\[\^)`(?:\(\?(?:<?[!=][^)\[]*|[aiLmsux-]+)\))?(?:\((?:\?(?:P<\w+>|[:>]|[aiLmsux-]+:))?)?"
+            r"(?<!\[)(?<!\[\^)`(?:\(\?(?:<?[!=][^)\[]{0,64}|[aiLmsux-]+)\))?(?:\((?:\?(?:P<\w+>|[:>]|[aiLmsux-]+:))?)?"
             r"(?:\[|\\[wWsSdD]|\.)"
         ),
     ),

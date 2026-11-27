@@ -5917,3 +5917,19 @@ def test_a_relayed_setting_is_a_code_span_whose_first_word_is_a_status_word_read
         ("model", path, 2, "printed MODEL", False),
         ("effort", path, 2, "printed EFFORT", False),
     ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Pass `Read it. Then go.` When a `MODEL` line names a role, start its subagent on that model.",
+        # review-prs' review step, whose quoted prompt holds a sentence's end: a code span read within one sentence
+        # paired the prompt's closing backtick with the next span's opening one, and missed `MODEL`.
+        "Start one subagent of type `code-review-reviewer`, with exactly this prompt and nothing else: `Read <prompt "
+        "file> and follow it exactly. It is your complete task.` When a `MODEL` line names that role, start its "
+        "subagent on that model.",
+    ],
+)
+def test_a_relayed_setting_s_span_is_read_on_the_whole_line_a_sentence_split_inside_a_span_holds(line: str) -> None:
+    path = Path("SKILL.md")
+    assert ("model", path, 1, "printed MODEL", False) in skill_inventory.stated_settings([(path, [line])])

@@ -22,6 +22,7 @@ from language_readers import (
     PROSE_PATH_OWNER,
     language_reader_problems,
     spelled_families,
+    unread_python,
 )
 from validation_support import REPOSITORY_ROOT, parse_python, write_fixture_tree
 
@@ -149,6 +150,23 @@ class LanguageReaderFixtures(LanguageReaderCase):
             "a span starting with literal text": "import re\nP = re.compile(r'`--[\\w-]+`')\n",
             "a literal word in optional backticks": "import re\nP = re.compile(r'\\bon `?(haiku|opus)`?')\n",
             "a brace count compared": "def opens(line):\n    return line.count('{') > line.count('}')\n",
+            "the owner's pattern used line by line": (
+                "from markdown_sections import ATX_HEADING\n\n\ndef read(lines):\n"
+                "    return [ATX_HEADING.match(line) for line in lines]\n"
+            ),
+            "a span behind two lookarounds": "import re\nP = re.compile(r'`(?!-)(?!\\s)[^`]+`')\n",
+            "a span behind nested groups": "import re\nP = re.compile(r'`((?:[^`]+))`')\n",
+            "a span behind a group, then a lookahead": "import re\nP = re.compile(r'`(?:(?!`).)+`')\n",
+            "a lookaround holding a class": "import re\nP = re.compile(r'`(?=[a-z])[^`]+`')\n",
+            "a lookaround past its bound": "import re\nP = re.compile(r'`(?!" + "x" * 65 + ")[^`]+`')\n",
+            "a conditional group": "import re\nP = re.compile(r'`(?(1)[^`]|x)`')\n",
+            "a span opened by a class": "import re\nP = re.compile(r'[`]([^`]+)[`]')\n",
+            "a span opened by an escape": "import re\nP = re.compile(r'\\x60([^\\x60]+)\\x60')\n",
+            "a bare header before blanks": "import re\nP = re.compile(r'\\(\\)\\s+\\{')\n",
+            "a bare header before spaces": "import re\nP = re.compile(r'\\(\\) *\\{')\n",
+            "a bare header before a space": "import re\nP = re.compile(r'\\(\\) \\{')\n",
+            "a bare header with no body": "import re\nP = re.compile(r'^(\\w+)\\(\\)$')\n",
+            "parentheses spaced inside": "import re\nP = re.compile(r'\\( *\\)')\n",
         }
         for label, module in limits.items():
             with self.subTest(label):
@@ -162,6 +180,35 @@ class LanguageReaderFixtures(LanguageReaderCase):
         self.assertEqual(2, len(problems), problems)
         self.assertTrue(problems[0].startswith("tools/broken.py "), problems)
         self.assertTrue(problems[1].startswith(f"{READER}:4 spells a `#` comment test outside {BASH_OWNER}"), problems)
+
+    def test_a_backtick_before_any_character_is_read_as_a_span(self) -> None:
+        # A backtick followed by an unescaped `.`, as a span read by any character, is refused as one; no code here
+        # writes it.
+        problems = self.problems({READER: self.module(r'HEADER = re.compile(r"`(.+?)`")')})
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("spells a single-backtick code span", problems[0])
+
+    def test_a_module_outside_the_roots_is_reported_and_one_inside_or_left_out_is_not(self) -> None:
+        # The policy reads the duplication policy's roots and leaves out its omissions, so a module elsewhere is one its
+        # rule speaks of and it does not read; each omission holds a module here, or it would be reported as stale.
+        files = {
+            "tools/ok.py": "X = 1\n",
+            "tests/support.py": "X = 1\n",
+            "deploy.py": "X = 1\n",
+            "conftest.py": "X = 1\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {**files, "stray/tool.py": "X = 1\n"}, newline="\n")
+            paths = [root / name for name in files]
+            self.assertEqual([], unread_python(root, paths))
+            self.assertEqual(
+                [
+                    "the language reader policy does not read stray/tool.py; add its root to the policy's scope, or "
+                    "state why it is left out"
+                ],
+                unread_python(root, [*paths, root / "stray/tool.py"]),
+            )
 
     def test_suites_and_fixtures_are_not_read(self) -> None:
         pattern = self.module(FAMILY_PATTERNS["a `#` comment test"][1])

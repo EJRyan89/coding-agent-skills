@@ -3654,11 +3654,18 @@ def stated_settings(markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, P
     found: list[tuple[str, Path, int, str, bool]] = []
     for path, lines in markdown:
         for index in prose_lines(lines):
-            for sentence in sentences(lines[index]):
+            line = lines[index]
+            # A line's code spans pair by whole backtick runs across the line, never within a sentence, since a sentence
+            # may end inside a span; each belongs to the sentence it starts in.
+            spans = code_spans(line)
+            end = 0
+            for sentence in sentences(line):
+                start = line.index(sentence, end)
+                end = start + len(sentence)
                 if not DELEGATION.search(sentence):
                     continue
-                spans = (SPAN_STATUS.match(span.text) for span in code_spans(sentence))
-                for word in (match.group(1) for match in spans if match is not None):
+                statuses = (SPAN_STATUS.match(span.text) for span in spans if start <= span.start < end)
+                for word in (match.group(1) for match in statuses if match is not None):
                     found += [
                         (kind, path, index + 1, f"printed {word}", False)
                         for kind in SETTING_WORDS
