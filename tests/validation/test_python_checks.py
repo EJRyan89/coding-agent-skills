@@ -10280,6 +10280,37 @@ class Other:
         return [node, followed]
 
 
+class Drained:
+    def __init__(self):
+        self.done = set()
+
+    def drain(self, node, edges):
+        try:
+            return [self.drain(other, edges) for other in edges[node]]
+        finally:
+            self.done.discard(node)
+
+
+def outer_def(node, edges, seen):
+    def again(other):
+        return outer_def(other, edges, seen | {node})
+
+    return [again(other) for other in edges[node]]
+
+
+def outer_lambda(node, edges, seen):
+    again = lambda other: outer_lambda(other, edges, seen | {node})
+    return [again(other) for other in edges[node]]
+
+
+def outer_class(node, edges, seen):
+    class Again:
+        def step(self, other):
+            return outer_class(other, edges, seen | {node})
+
+    return [Again().step(other) for other in edges[node]]
+
+
 class PathFinder:
     def paths(self, node, path, seen):
         return [self.paths(other, [*path, other], seen | {other}) for other in path]

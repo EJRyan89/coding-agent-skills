@@ -7161,7 +7161,8 @@ def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
 # tuple or a list, as `path + (node,)`, or as a dict; a set built from a parameter by a comprehension or any other
 # call; a set the function adds to and removes from outside a `finally`; a set built from a parameter of an enclosing
 # function inside a nested function or a lambda, which the walk reads as that function's own, and a recursion through
-# `type(self)`; and a frozenset parameter rebound by `|=` before it is passed on.
+# `type(self)`; a frozenset parameter rebound by `|=` before it is passed on; and a name bound to such a set by a tuple
+# or list target that is starred, nested, or given a different number of values, or by a `for` or `with` target.
 WALK_ALLOWANCE = "WALK_ALLOWED"
 WALK_REFUSAL = (
     "carries a walk's visited set per path, so a node reached by many paths is read once on each; keep one answer "
