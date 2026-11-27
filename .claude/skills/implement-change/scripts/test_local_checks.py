@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -18,15 +21,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 # The folder removal the repository-skill and tools suites share.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "tools"))
+# The repository's top, for the deployer's Bash lookup.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import local_checks
 from bounded_process import Finished
 from fixture_template import remove_tree
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 
+from deployer import platform_support
+
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
-# The literals the script's lines are pinned against, independent of the constants that build them.
-PRE_PUSH_COMMAND = "python -B tests/run_validation.py --pre-push"
+# The literals the script's lines are pinned against, independent of the constants that build them. The interpreter is
+# this one, as Bash reads it quoted; the round trip through Bash holds the quoting itself.
+INTERPRETER = shlex.quote(sys.executable)
+RUNNER = f"{INTERPRETER} -B tests/run_validation.py"
+PRE_PUSH_COMMAND = f"GITHUB_BASE_REF=main VALIDATION_MYPY_PLATFORM='' {RUNNER} --pre-push"
+WINDOWS_VARIABLES = "GITHUB_BASE_REF=main VALIDATION_MYPY_PLATFORM=win32"
+# A stand-in for the runner that prints, as JSON, the command line it was started with, the interpreter that runs it,
+# and the variables the script gives a run.
+RUNNER_STAND_IN = """import json, os, sys
+names = ("GITHUB_BASE_REF", "VALIDATION_MYPY_PLATFORM")
+seen = {"argv": sys.orig_argv, "executable": sys.executable, "variables": {n: os.environ.get(n) for n in names}}
+print(json.dumps(seen))
+"""
 SKILL_JOB = "static type check (mypy skills/alpha/scripts)"
 SHARED_JOB = "static type check (mypy deployer, tools, deploy.py, tests, conftest.py)"
 STRICT_TESTS_JOB = "static type check (mypy --strict tests)"
@@ -59,6 +77,14 @@ class Run:
         self.cwd = cwd
         self.env = dict(env or {})
         self.stdout = stdout
+
+
+def bash() -> str:
+    """The Bash the printed commands are for: Git Bash on Windows, as validation requires."""
+    found = platform_support.find_bash()
+    if found is None:
+        raise AssertionError(f"{platform_support.BASH_MISSING} Bash reruns the printed commands")
+    return found
 
 
 class LocalChecksTests(unittest.TestCase):
@@ -101,14 +127,16 @@ class LocalChecksTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(list(command), timeout)
         return Finished(status, b"", b"")
 
-    def run_script(self, *arguments: str, git_client: GitClient | None = None) -> tuple[int, list[str]]:
+    def run_script(
+        self, *arguments: str, git_client: GitClient | None = None, base: str = "origin/main"
+    ) -> tuple[int, list[str]]:
         output = io.StringIO()
         with (
             mock.patch.object(local_checks, "run_bounded", side_effect=self.fake_run),
             mock.patch.object(local_checks, "output_stream", return_value=io.BytesIO()),
             contextlib.redirect_stdout(output),
         ):
-            code = local_checks.main(["--repository", str(self.root), "--base", "origin/main", *arguments], git_client)
+            code = local_checks.main(["--repository", str(self.root), "--base", base, *arguments], git_client)
         return code, output.getvalue().splitlines()
 
     def base_line(self) -> str:
@@ -118,7 +146,7 @@ class LocalChecksTests(unittest.TestCase):
         self.write("skills/alpha/scripts/run.py", "# changed\n")
         git(self.root, "commit", "--quiet", "-am", "change")
         self.write("tests/unit/test_new.py", "")
-        windows = f"python -B tests/run_validation.py -k '{SKILL_JOB}' -k '{SHARED_JOB}' -k '{STRICT_TESTS_JOB}'"
+        windows = f"{RUNNER} -k '{SKILL_JOB}' -k '{SHARED_JOB}' -k '{STRICT_TESTS_JOB}'"
         self.assertEqual(
             (
                 0,
@@ -126,7 +154,7 @@ class LocalChecksTests(unittest.TestCase):
                     self.base_line(),
                     f"RUN pre-push {PRE_PUSH_COMMAND}",
                     "PASSED pre-push",
-                    f"RUN windows-types VALIDATION_MYPY_PLATFORM=win32 {windows}",
+                    f"RUN windows-types {WINDOWS_VARIABLES} {windows}",
                     "PASSED windows-types",
                     "READY",
                 ],
@@ -152,7 +180,8 @@ class LocalChecksTests(unittest.TestCase):
         self.assertEqual({self.root}, {changed.cwd, types.cwd})
         # The runner compares with origin/<branch>, as GITHUB_BASE_REF names it in continuous integration.
         self.assertEqual("main", changed.env["GITHUB_BASE_REF"])
-        self.assertNotIn("VALIDATION_MYPY_PLATFORM", changed.env)
+        # Empty, which the runner reads as unset: the platform it runs on.
+        self.assertEqual("", changed.env["VALIDATION_MYPY_PLATFORM"])
         self.assertEqual("win32", types.env["VALIDATION_MYPY_PLATFORM"])
 
     def test_a_shared_module_runs_every_type_check_as_on_windows(self) -> None:
@@ -160,7 +189,7 @@ class LocalChecksTests(unittest.TestCase):
         code, lines = self.run_script()
         self.assertEqual(0, code)
         self.assertIn(
-            "RUN windows-types VALIDATION_MYPY_PLATFORM=win32 python -B tests/run_validation.py -k 'static type check'",
+            f"RUN windows-types {WINDOWS_VARIABLES} {RUNNER} -k 'static type check'",
             lines,
         )
         self.assertEqual(
@@ -188,7 +217,7 @@ class LocalChecksTests(unittest.TestCase):
         self.write("skills/alpha/scripts/run.py", "# changed\n")
         with mock.patch.dict("os.environ", {"VALIDATION_MYPY_PLATFORM": "linux", "GITHUB_BASE_REF": "other"}):
             self.assertEqual(0, self.run_script()[0])
-        self.assertNotIn("VALIDATION_MYPY_PLATFORM", self.runs[0].env)
+        self.assertEqual("", self.runs[0].env["VALIDATION_MYPY_PLATFORM"])
         self.assertEqual("main", self.runs[0].env["GITHUB_BASE_REF"])
         self.assertEqual("win32", self.runs[1].env["VALIDATION_MYPY_PLATFORM"])
 
@@ -200,7 +229,9 @@ class LocalChecksTests(unittest.TestCase):
         body.write_text("Body\n", encoding="utf-8")
         code, lines = self.run_script("--title-file", str(title), "--body-file", str(body))
         self.assertEqual(0, code)
-        self.assertIn(f'RUN pre-push {PRE_PUSH_COMMAND} --pr-title "{title}" --pr-body "{body}"', lines)
+        # Quoted as the system's temporary folder needs, since it may hold a space.
+        words = f"--pr-title {shlex.quote(str(title))} --pr-body {shlex.quote(str(body))}"
+        self.assertIn(f"RUN pre-push {PRE_PUSH_COMMAND} {words}", lines)
         self.assertEqual(
             [
                 sys.executable,
@@ -224,8 +255,62 @@ class LocalChecksTests(unittest.TestCase):
             code, lines = self.run_script("--title-file", "title.txt", "--body-file", "body.md")
         self.assertEqual(0, code)
         title, body = caller / "title.txt", caller / "body.md"
-        self.assertIn(f'RUN pre-push {PRE_PUSH_COMMAND} --pr-title "{title}" --pr-body "{body}"', lines)
+        # The caller's folder holds a space, so each path is in single quotes.
+        self.assertIn(f"RUN pre-push {PRE_PUSH_COMMAND} --pr-title '{title}' --pr-body '{body}'", lines)
         self.assertEqual(["--pr-title", str(title), "--pr-body", str(body)], self.runs[0].command[-4:])
+
+    def test_each_printed_command_rerun_in_bash_starts_the_run_again_with_its_words_and_variables(self) -> None:
+        # A base other than main, inherited values of both variables, and paths Bash would expand or split unquoted.
+        git(self.root, "push", "--quiet", "origin", "main:release/staging")
+        self.write("skills/alpha/scripts/run.py", "# changed\n")
+        files = self.temporary / "files $HOME"
+        files.mkdir()
+        title, body = files / "title $USER.txt", files / "body 'quoted' `x`.md"
+        title.write_text("feat: x\n", encoding="utf-8")
+        body.write_text("Body\n", encoding="utf-8")
+        inherited = {"GITHUB_BASE_REF": "other", "VALIDATION_MYPY_PLATFORM": "linux"}
+        with mock.patch.dict("os.environ", inherited):
+            code, lines = self.run_script(
+                "--title-file", str(title), "--body-file", str(body), base="origin/release/staging"
+            )
+        self.assertEqual(0, code)
+        printed = [line.split(" ", 2) for line in lines if line.startswith("RUN ")]
+        self.assertEqual(["pre-push", "windows-types"], [name for _, name, _ in printed])
+        self.assertEqual(
+            [["--pre-push", "--pr-title", str(title), "--pr-body", str(body)], "release/staging"],
+            [self.runs[0].command[3:], self.runs[0].env["GITHUB_BASE_REF"]],
+        )
+        stand_in = self.temporary / "rerun"
+        (stand_in / "tests").mkdir(parents=True)
+        (stand_in / "tests" / "run_validation.py").write_text(RUNNER_STAND_IN, encoding="utf-8")
+        for (_, name, command), run in zip(printed, self.runs, strict=True):
+            with self.subTest(run=name):
+                rerun = subprocess.run(
+                    [bash(), "-c", command],
+                    cwd=stand_in,
+                    env={**os.environ, **inherited, "USER": "someone", "HOME": "/elsewhere"},
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                    timeout=60,
+                )
+                self.assertEqual(0, rerun.returncode, rerun.stderr)
+                seen = json.loads(rerun.stdout)
+                self.assertEqual(run.command[1:], seen["argv"][1:])
+                self.assertTrue(Path(run.command[0]).samefile(seen["executable"]), seen["executable"])
+                self.assertEqual({variable: run.env.get(variable) for variable in seen["variables"]}, seen["variables"])
+
+    def test_a_command_no_run_line_can_carry_is_a_failure_before_any_run(self) -> None:
+        self.write("docs/guide.md", "# changed\n")
+        code, lines = self.run_script("--title-file", str(self.temporary / "title\nnext.txt"))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "FAILED the pre-push run's command holds a line break or a control character, which its RUN line could "
+            f"not carry: {self.temporary / 'title next.txt'}",
+            lines[-1],
+        )
+        self.assertEqual([], self.runs)
 
     def test_each_run_that_fails_is_named_with_its_status_and_every_run_still_runs(self) -> None:
         self.write("skills/alpha/scripts/run.py", "# changed\n")
