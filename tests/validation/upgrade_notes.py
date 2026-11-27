@@ -18,6 +18,7 @@ import json_reader
 import python_reader
 from git_client import GitError, output_line
 from implementation_profile import CONTRACT_FILES_HEADING, PROFILE
+from markdown_sections import document_headings
 from memoized_walk import MemoizedWalk
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from skill_menu import name_list
@@ -27,7 +28,6 @@ from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
     PullRequestChecks,
-    find_fences,
     is_skill_file,
     listed,
     markdown_section,
@@ -68,7 +68,6 @@ FORMATS_DOC = OPERATIONS_CONTRACT
 FORMATS_HEADING = "## Formats"
 NOTES_FIELDS = ("Level", "Contract", "User action")
 # The only sections the notes file has below its title are versions', which tools/release_notes.py writes.
-NOTES_SECTION = re.compile(r"## (.*)")
 PULL_REQUESTS = re.compile(r"#\d+(?:,? (?:and )?#\d+)*")
 
 
@@ -588,12 +587,11 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
 
 
 def notes_sections(notes: str) -> list[str]:
-    """The heading of each `## ` section of the notes file, read outside every code fence: a fenced `## ` line is the
-    fence's text, as GitHub renders it and tools/release_notes.py reads it inside an entry."""
-    lines = LINE_BREAK.split(notes)
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-    matches = (NOTES_SECTION.fullmatch(line) for index, line in enumerate(lines) if index not in fenced)
-    return [match.group(1) for match in matches if match is not None]
+    """The heading of each `## ` section of the notes file, as markdown_sections' document_headings reads the file's
+    own headings: a `## ` line a code block, a list item, or a blockquote holds is its text, as GitHub renders it and
+    tools/release_notes.py reads it inside an entry."""
+    headings = document_headings(LINE_BREAK.split(notes))
+    return [heading.group("text") for _, heading in headings if heading.group("marks") == "##"]
 
 
 def notes_layout_problems(notes: str | None) -> list[str]:

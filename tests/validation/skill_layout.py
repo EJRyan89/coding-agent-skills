@@ -22,7 +22,7 @@ from agent_skills import MAX_NAME, SKILL_FILE
 from bash_syntax import refusing
 from link_destinations import link_destinations
 from link_targets import Cover, link_spans
-from markdown_sections import CODE, EXECUTABLE_FENCES, Block, blocks, code_spans, markdown_section
+from markdown_sections import CODE, EXECUTABLE_FENCES, FENCE_LANGUAGES, Block, blocks, code_spans, markdown_section
 from path_containment import within
 from runtime_support import RUNTIME_TITLES, RUNTIMES
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
@@ -35,7 +35,6 @@ from validation_support import (
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
     SCRIPT_INTERPRETERS,
-    SHELL_FENCES,
     SIBLING_LOOKUP,
     SKILL_GUIDE,
     TEMPLATE_TOKEN,
@@ -651,9 +650,11 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 
 
 def skill_path_problems(root: Path) -> list[str]:
-    """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}. Every body line of
-    a shell fence is a shell line here, a `console` session's prompts and output included, which audit-skill reads
-    apart; no fence here is labelled `console`, and an output line read so is held to more rules, not fewer."""
+    """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}. A shell fence is one
+    markdown_sections' FENCE_LANGUAGES labels a POSIX shell's, `bash`, `sh`, `shell`, `zsh`, `ksh`, `dash`, or
+    `console`, and every body line of one is a shell line here, a `console` session's prompts and output included,
+    which audit-skill reads apart; no fence here is labelled `console`, and an output line read so is held to more
+    rules, not fewer."""
     skills = {path.parent.name for path in file_presence.matching(root / "skills", "*/SKILL.md")}
     problems: list[str] = []
     for path, dependencies, directory in _path_documents(root):
@@ -665,7 +666,7 @@ def skill_path_problems(root: Path) -> list[str]:
             if holder is not None and not fence_body_line(holder, number - 1):
                 continue  # an opening or closing line
             in_fence = holder is not None
-            in_shell_fence = holder is not None and holder.language.casefold() in SHELL_FENCES
+            in_shell_fence = holder is not None and holder.language.casefold() in FENCE_LANGUAGES["shell"]
             if path.name == "SKILL.md" and directory is not None and not in_fence:
                 problems += _prose_path_problems(name, number, line)
             problems += _line_path_problems(name, number, line, in_shell_fence, skills, dependencies, directory)

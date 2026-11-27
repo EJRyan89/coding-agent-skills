@@ -36,6 +36,7 @@ from enum import Enum
 from agent_skills import XML_TAG_PATTERN
 from hidden_comments import COMMENT_CLOSER, COMMENT_OPENER, Reading, read_comments
 from markdown_sections import (
+    ATX_HEADING,
     DELIMITER_ROW,
     ORDERED_MARKER,
     PARAGRAPH,
@@ -49,8 +50,8 @@ FIX_TYPE = "fix"
 FORMS_HEADING = "## Forms considered"
 # A pull request title: its type, an optional scope, an optional breaking-change mark, a colon, a space, and text.
 TITLE = re.compile(r"(?P<type>[A-Za-z]+)(?P<scope>\([^()\s][^()]*\))?(?P<mark>!?): \S.*")
-# The section's own heading: an ATX heading of the second level indented up to three spaces, with any closing hashes.
-FORMS_LINE = re.compile(r" {0,3}## +Forms considered(?: +#*)?[ \t]*")
+# The section's own heading's text, as markdown_sections' ATX_HEADING reads it, past its marks and any closing ones.
+FORMS_TITLE = FORMS_HEADING.removeprefix("## ")
 # The deepest heading that ends the section: one of the first or second level does, while a third-level one, such as a
 # table's caption, is inside it.
 SECTION_LEVEL = 2
@@ -99,7 +100,9 @@ def forms_section(body: str) -> str | None:
         (
             index + 1
             for index in sorted(headings)
-            if headings[index] == SECTION_LEVEL and FORMS_LINE.fullmatch(_visible_line(reading, index))
+            if headings[index] == SECTION_LEVEL
+            and (heading := ATX_HEADING.fullmatch(_visible_line(reading, index))) is not None
+            and heading.group("text") == FORMS_TITLE
         ),
         None,
     )

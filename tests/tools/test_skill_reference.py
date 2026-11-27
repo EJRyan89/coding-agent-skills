@@ -519,3 +519,12 @@ class SkillReferenceTestCase(unittest.TestCase):
 )
 def test_a_model_invocable_description_must_say_when_to_use_the_skill(description: str, expected: bool) -> None:
     assert expected is skill_reference.says_when(description)
+
+
+def test_a_skill_section_starts_at_each_heading_of_the_document_whose_text_is_one_code_span() -> None:
+    # changed: the section heading's own pattern read only `## ` and one single-backtick span at a line's start.
+    document = "# Skills\n\n ## `alpha`\na\n##\t``b`c``\nb\n- item\n  ## `held`\n## `d` and more\nd\n"
+    preamble, sections = skill_reference._split(document)
+    assert preamble == "# Skills\n"
+    assert [section.name for section in sections] == ["alpha", "b`c"]
+    assert sections[1].body == "b\n- item\n  ## `held`\n## `d` and more\nd\n"

@@ -89,6 +89,7 @@ import fsops_platform
 import job_selection
 import kinds_table
 import known_failures
+import language_readers
 import line_numbering
 import literal_escapes
 import markdown_links
@@ -155,6 +156,7 @@ POLICY_MODULES = (
     job_selection,
     kinds_table,
     known_failures,
+    language_readers,
     line_numbering,
     literal_escapes,
     markdown_links,

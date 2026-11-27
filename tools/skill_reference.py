@@ -36,7 +36,7 @@ import json_writer
 import runtime_support
 import skill_menu
 from console import run_main
-from markdown_sections import code_spans, find_fences, markdown_section
+from markdown_sections import code_spans, document_headings, markdown_section
 from text_lines import LINE_BREAK, text_lines
 
 from deployer import source as deploy_source
@@ -53,7 +53,6 @@ REFERENCE = Path("docs") / "skills.md"
 README = Path("README.md")
 SUMMARY = "summary"
 RUNTIME_SUPPORT = "runtime-support"
-SECTION_HEADING = re.compile(r"^## `([^`]+)`$")
 TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
 # Frontmatter keys this tool reads as values; the shared reader never parses the others, and reads whether only the
 # user starts the skill itself.
@@ -267,14 +266,15 @@ def _replace_block(text: str, block: str, content: str) -> str | None:
 
 
 def _split(document: str) -> tuple[str, list[Section]]:
-    """The reference's preamble and its skill sections, each cut at a skill's `## ` heading outside every code fence:
-    a fenced one is the fence's text, as GitHub renders it, such as an example in a section's hand-written prose."""
+    """The reference's preamble and its skill sections, each cut at a skill's heading: a `## ` heading whose whole text
+    is one code span, the skill's name, as markdown_sections reads the document's own headings and their spans. A
+    heading-shaped line a code block, a list item, or a blockquote holds is its text, as GitHub renders it, such as an
+    example in a section's hand-written prose."""
     lines = LINE_BREAK.split(document)
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     headings = [
-        (index, match.group(1))
-        for index, line in enumerate(lines)
-        if index not in fenced and (match := SECTION_HEADING.match(line))
+        (index, name)
+        for index, heading in document_headings(lines)
+        if heading.group("marks") == "##" and (name := sole_span(heading.group("text"))) is not None
     ]
     preamble = "\n".join(lines[: headings[0][0]] if headings else lines)
     sections = []
@@ -282,6 +282,15 @@ def _split(document: str) -> tuple[str, list[Section]]:
         stop = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         sections.append(Section(name, "\n".join(lines[start + 1 : stop])))
     return preamble, sections
+
+
+def sole_span(text: str) -> str | None:
+    """The text of the one code span that is the whole of `text`, as markdown_sections' code_spans reads it; None for
+    any other text."""
+    spans = code_spans(text)
+    if len(spans) == 1 and spans[0].start == 0 and spans[0].end == len(text):
+        return spans[0].text
+    return None
 
 
 def _prose(section: Section) -> str:

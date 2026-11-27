@@ -580,7 +580,12 @@ or removed fails validation until its pattern follows it.
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads, and
   `runtime_support:starts_git`, which reads a Python call as git's only when the function it calls starts git, and
   `audit_repository:grep_pattern`, the part of a line git grep built with PCRE takes as fixed text: no backslash-E and
-  no more than PCRE compiles
+  no more than PCRE compiles, and the one owner of each language, never a pattern of a reader's own, as "One fact has
+  one owner" holds a fact: `bash_syntax:refusing`, which turns the grammar's refusal into the caller's named one,
+  `bash_syntax:uncommented_text`, a Bash text without its comments, `markdown_sections:document_headings` and
+  `markdown_sections:top_level_sections`, a document's own headings and sections, `markdown_sections:code_spans`, a
+  line's code spans by whole backtick runs, `markdown_sections:session_commands`, a console session's commands, and
+  `prose_paths:PROSE_PATH`, a path written bare in prose
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
@@ -640,7 +645,11 @@ or removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_the_reader_binds_every_spelling_of_every_parameter_as_pwsh_s_binder_does`,
   which binds every spelling of every parameter of each cmdlet the PowerShell reader binds with pwsh's own binder, and
   `skills/ejryan89-skill-core/scripts/test_powershell_startup.py::test_the_reader_runs_the_command_pwsh_s_parser_runs_for_every_spelling_of_every_parameter`,
-  which runs pwsh's start-up parser in process over every spelling of every start-up parameter
+  which runs pwsh's start-up parser in process over every spelling of every start-up parameter, and
+  `tests/validation/language_readers.py::LanguageReaderPolicies::test_no_pattern_spells_a_language_s_structure_outside_its_owner`,
+  which refuses a pattern that spells a Bash function header, a comment test, a brace-depth count, an ATX heading, a
+  single-backtick code span, a console fence's prompt, or a prose path outside the module that owns its reading,
+  unless the module's sanction states why
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a

@@ -77,6 +77,11 @@ WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main "
 FALLBACK = "http://schemas.openxmlformats.org/markup-compatibility/2006 Fallback"
 LABEL = re.compile(r"\[(?:P(\d+)(?: R(\d+))?|p(\d+) l(\d+))\] ")
 HEADING_STYLE = re.compile(r"heading ([1-9])")
+# HEADING_MARKER reads back only the headings `_Body` itself writes, in the one shape it writes them, so it reads no
+# author's Markdown, which markdown_sections owns.
+LANGUAGE_READER_ALLOWED = {
+    "HEADING_MARKER": "reads only a heading `_Body` itself wrote, `#`s and one space, never an author's Markdown",
+}
 # A heading's line as `_Body` writes it: a `#` for each level, then one space. Body text that would start with `#` is
 # escaped with a backslash, as Markdown escapes it, so this shape is a heading's alone.
 HEADING_MARKER = re.compile(r"#{1,6} ")

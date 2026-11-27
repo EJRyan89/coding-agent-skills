@@ -95,7 +95,10 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
     fence left open runs to the end of what holds it, so its commands reach every check; unclosed_fence_problems
     reports it. Each line of a fence is read as CommonMark gives it to the fence's content, without the indentation
     of the fence and of the list items that hold it, so an indented fence's here-document closes at its delimiter,
-    and a column a check reports counts from the content's start."""
+    and a column a check reports counts from the content's start. A stated limit: a `console` fence is read whole, its
+    prompts and output included, where the renderer reads a session's commands alone through markdown_sections'
+    session_commands; no Markdown in the repository holds a `console` fence, and one read so is held to more checks,
+    not fewer."""
     context = render.SUFFIX_CONTEXT.get(path.suffix.casefold())
     text = path.read_text(encoding="utf-8", errors="replace")
     if context in SHELL_LABELS:

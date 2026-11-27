@@ -2239,9 +2239,21 @@ class StatusLineTests(TemporaryTestCase):
 class InstructionsTests(unittest.TestCase):
     def test_every_line_the_script_prints_has_a_stated_handling(self) -> None:
         # The fact names the script prints: a string, or an f-string's leading text, that starts with an upper-case
-        # name followed by a space or ending there. Tool names are data, not facts.
+        # name followed by a space or ending there. Tool names are data, not facts, and so are the keys of a
+        # module-level sanction, such as LANGUAGE_READER_ALLOWED, which name the constants it excuses.
+        tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+        sanction_keys = {
+            id(key)
+            for statement in tree.body
+            if isinstance(statement, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id.endswith("_ALLOWED") for target in statement.targets)
+            and isinstance(statement.value, ast.Dict)
+            for key in statement.value.keys
+        }
         printed: set[str] = set()
-        for node in ast.walk(ast.parse(SCRIPT.read_text(encoding="utf-8"))):
+        for node in ast.walk(tree):
+            if id(node) in sanction_keys:
+                continue
             if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
                 node = node.values[0]
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -5702,6 +5714,12 @@ def test_the_shell_file_cue_reads_each_code_span_whole(tmp_path: Path) -> None:
         ("see ``x`` and `y`", ["x", "y"]),
         ("``a`b``", []),
         ("`` `x` ``", []),
+        # A type a delegation line names, read from its code spans by whole backtick runs. changed: a double-backtick
+        # span was missed, and one holding a single-backtick name took that name.
+        ("Start a subagent of type ``reviewer``.", ["reviewer"]),
+        ("Start the ``reviewer`` subagent.", ["reviewer"]),
+        ("Start a subagent with ``run type `reviewer` now``.", []),
+        ("Start a subagent with subagent_type: reviewer.", ["reviewer"]),
     ],
 )
 def test_a_line_s_agents_are_its_code_spans_read_whole(line: str, expected: list[str]) -> None:
@@ -5889,3 +5907,29 @@ def test_the_scan_s_fence_readers_read_a_session_s_unfinished_command_on_through
     reads = skill_inventory.fence_reads(lines, 0)
     assert reads[1] == Counter({"docs/a.md": 1, "docs/b.md": 1})
     assert reads[2] == Counter()
+
+
+def test_a_relayed_setting_is_a_code_span_whose_first_word_is_a_status_word_read_whole() -> None:
+    # changed: a single-backtick reading took `MODEL` from inside the double-backtick span, whose first word is `run`.
+    path = Path("SKILL.md")
+    lines = ["Start the subagent with ``run `MODEL` here``.", "Start the subagent on `MODEL` and ``EFFORT x``."]
+    assert skill_inventory.stated_settings([(path, lines)]) == [
+        ("model", path, 2, "printed MODEL", False),
+        ("effort", path, 2, "printed EFFORT", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Pass `Read it. Then go.` When a `MODEL` line names a role, start its subagent on that model.",
+        # review-prs' review step, whose quoted prompt holds a sentence's end: a code span read within one sentence
+        # paired the prompt's closing backtick with the next span's opening one, and missed `MODEL`.
+        "Start one subagent of type `code-review-reviewer`, with exactly this prompt and nothing else: `Read <prompt "
+        "file> and follow it exactly. It is your complete task.` When a `MODEL` line names that role, start its "
+        "subagent on that model.",
+    ],
+)
+def test_a_relayed_setting_s_span_is_read_on_the_whole_line_a_sentence_split_inside_a_span_holds(line: str) -> None:
+    path = Path("SKILL.md")
+    assert ("model", path, 1, "printed MODEL", False) in skill_inventory.stated_settings([(path, [line])])

@@ -158,6 +158,11 @@ CODEX = Tool(
 # The documented probe of the sandbox Codex CLI would run a skill's scripts in, which starts no model: the
 # instructions it would send name the sandbox_mode in effect, workspace-write once the Windows sandbox setting is read.
 CODEX_SANDBOX_PROBE = ("debug", "prompt-input", "-c", "sandbox_mode=workspace-write")
+# Codex's instructions are Codex's own output, whose backticks quote a value in a sentence Codex writes, not Markdown's
+# code spans, so markdown_sections is not their reader.
+LANGUAGE_READER_ALLOWED = {
+    "CODEX_SANDBOX_MODE": "reads the sandbox mode Codex's own instructions name, quoted by backticks in its sentence",
+}
 CODEX_SANDBOX_MODE = re.compile(r"sandbox_mode` is `([a-z-]+)`")
 CODEX_WRITABLE_SANDBOX = "workspace-write"
 

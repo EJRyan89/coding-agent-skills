@@ -79,12 +79,14 @@ from git_client import GitClient, GitError, GitResult, output_lines
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import without_hidden_comments
 from markdown_sections import (
+    ATX_HEADING,
     HEADING,
     LIST_ITEM_BLOCK,
     MARKDOWN_SPACE,
     PARAGRAPH,
     blocks,
     code_spans,
+    document_headings,
     find_fences,
     markdown_section,
 )
@@ -97,10 +99,10 @@ UPGRADE_NOTES = "docs/upgrade-notes.md"
 BODY_HEADING = "## Upgrade note"
 UNRELEASED_HEADING = "## Unreleased"
 RELEASE_BRANCH = "origin/main"
-VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*")
-# A line outside every fence that starts an entry, or a heading above one that ends it.
-NOTES_ENTRY_START = re.compile(r"#{1,3} ")
+# The deepest heading that starts an entry, or that, above one, ends the entry before it, and an entry's own marks.
+ENTRY_LEVEL = 3
+ENTRY_MARKS = "#" * ENTRY_LEVEL
 # The blocks whose lines a hard wrap may split, which unwrapped joins back into one line.
 JOINED_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK})
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
@@ -195,13 +197,14 @@ def unwrapped(block: str) -> list[str]:
 
 
 def notes_blocks(text: str) -> list[str]:
-    """The text cut before each line outside every fence that opens a heading of the first three levels, as an entry
-    or a heading above one starts; a heading-shaped line inside a fence is the fence's text, as GitHub renders it."""
+    """The text cut before each heading of the first ENTRY_LEVEL levels, as an entry or a heading above one starts,
+    as markdown_sections' document_headings reads the text's own headings: a heading-shaped line a code block, a list
+    item, or a blockquote holds is its text, as GitHub renders it."""
     lines = LINE_BREAK.split(text)
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    starts = {index for index, heading in document_headings(lines) if len(heading.group("marks")) <= ENTRY_LEVEL}
     blocks: list[list[str]] = [[]]
     for index, line in enumerate(lines):
-        if index not in fenced and NOTES_ENTRY_START.match(line):
+        if index in starts:
             blocks.append([])
         blocks[-1].append(line)
     return ["\n".join(block) for block in blocks]
@@ -216,13 +219,16 @@ def entry_fields(body: list[str]) -> dict[str, str]:
 
 
 def notes_entries(text: str | None) -> list[NotesEntry]:
-    """The upgrade-notes entries: each ### heading with its field lines, read with wrapped lines joined."""
+    """The upgrade-notes entries: each third-level heading with its field lines, read with wrapped lines joined, the
+    heading's text as markdown_sections' ATX_HEADING reads it past its marks, its blanks, and any closing marks. Each
+    block notes_blocks cuts but the first starts at a heading of the text's own."""
     entries: list[NotesEntry] = []
     for block in notes_blocks(text or ""):
-        if block.startswith("### "):
-            heading, *body = unwrapped(block)
+        heading, *body = unwrapped(block)
+        match = ATX_HEADING.fullmatch(heading)
+        if match is not None and match.group("marks") == ENTRY_MARKS:
             fields = entry_fields(body)
-            entries.append(NotesEntry(heading[4:].strip(MARKDOWN_SPACE), fields, "\n".join([heading, *body])))
+            entries.append(NotesEntry(match.group("text"), fields, "\n".join([heading, *body])))
     return entries
 
 
@@ -376,12 +382,16 @@ def last_release_before(root: Path, ref: str) -> str:
 
 def insert_section(notes: str, version: str, section: str) -> str:
     """The notes with the section above the newest version's section, or at the end when there is none. A heading-shaped
-    line inside a fence is the fence's text, as GitHub renders it, so it is neither a version's section nor the place
-    the new one goes."""
+    line a code block, a list item, or a blockquote holds is its text, as GitHub renders it and markdown_sections'
+    document_headings reads it, so it is neither a version's section nor the place the new one goes."""
     lines, breaks = lines_and_breaks(notes)
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
-    headings = [index for index, line in enumerate(lines) if index not in fenced and VERSION_HEADING.fullmatch(line)]
-    if any(re.fullmatch(rf"## {re.escape(version)}[ \t]*", lines[index]) for index in headings):
+    versions = [
+        (index, heading.group("text"))
+        for index, heading in document_headings(lines)
+        if heading.group("marks") == "##" and VERSION.fullmatch(heading.group("text"))
+    ]
+    headings = [index for index, _ in versions]
+    if any(text == version for _, text in versions):
         raise ReleaseNotesError(f"{UPGRADE_NOTES} already has a ## {version} section")
     if not headings:
         return notes.rstrip("\n") + "\n\n" + section

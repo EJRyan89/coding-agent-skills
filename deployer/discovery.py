@@ -58,6 +58,11 @@ CLOSE_GRACE = 5
 CODEX_LIST_ID = 1
 # The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
 CODEX_CATALOG = ("debug", "prompt-input")
+# Codex's skills message is Codex's own output, whose backticks quote a value in a line format Codex writes, not
+# Markdown's code spans, so markdown_sections is not its reader.
+LANGUAGE_READER_ALLOWED = {
+    "CODEX_CATALOG_ROOT": "reads Codex's skills message, whose backticks quote a value in Codex's own line format",
+}
 # Each pattern reads one line of the skills message, as program_lines splits it, whole.
 CODEX_CATALOG_ROOT = re.compile(r"- `(r\d+)` = `([^`]+)`")
 # A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
