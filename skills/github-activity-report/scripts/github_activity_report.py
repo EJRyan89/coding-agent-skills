@@ -878,8 +878,12 @@ def read_history(path: Path) -> History:
     """The rows of the history file at `path`; a file that does not exist yet, or is empty, holds none.
 
     A file written before the report recorded the cap has no `capped` column; its rows read with `capped` None.
+    Anything but a regular file at `path`, such as a FIFO, whose read would block until a writer came, is refused by
+    its kind before anything opens it.
     """
     try:
+        if not file_presence.is_present(path):
+            return {}
         data = path.read_bytes()
     except FileNotFoundError:
         return {}

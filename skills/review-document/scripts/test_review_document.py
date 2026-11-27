@@ -52,6 +52,7 @@ from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
+from review_records import build_record, validate_adapter_result, write_record_pair
 from review_runtime import validate_adapter_manifest
 from test_review_documents import (
     INSTALL,
@@ -86,6 +87,53 @@ def git(directory: Path, *arguments: str) -> str:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
+
+
+def write_finalized(recorded: Path, fixture: Path) -> Path:
+    """Write at `recorded`, and its record JSON beside it, the pair finalize records of a review of the fixture at
+    `fixture`: a record naming the pull request its pull.json gives, and the Markdown its digests hold. Returns
+    `recorded`."""
+    pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
+    head = "b" * 40
+    result = validate_adapter_result(
+        {
+            "protocol_version": 1,
+            "repository": pull["repository"],
+            "pull_number": pull["number"],
+            "head_sha": head,
+            "summary": "The document reads well.",
+            "reviewer": "fixture",
+            "status": "complete",
+            "findings": [],
+            "prior_dispositions": [],
+            "usage": None,
+        },
+        expected_repository=pull["repository"],
+        expected_number=pull["number"],
+        expected_head_sha=head,
+    )
+    request = {
+        "repository": pull["repository"],
+        "pull_number": pull["number"],
+        "pull_url": "https://example.invalid/1",
+        "title": pull["title"],
+        "base_ref": pull["base_ref"],
+        "head_ref": pull["head_ref"],
+        "base_sha": "a" * 40,
+        "head_sha": head,
+        "mode": "initial",
+        "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+    }
+    record = build_record(
+        request,
+        result,
+        version=1,
+        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+        reviewed_at="2026-01-15T12:00:00+00:00",
+    )
+    recorded.parent.mkdir(parents=True, exist_ok=True)
+    write_record_pair(recorded.with_suffix(".json"), recorded, record)
+    return recorded
 
 
 def run_main(*arguments: str, github: GitHubClient | None = None) -> tuple[int, list[str]]:
@@ -2644,11 +2692,8 @@ class OutputTests(DocumentTestCase):
         document.write_bytes(b"# Plan\n")
         self.build(document)
         canary = self.root / "canary" / "review-document.local" / "document" / "pulls" / "1"
-        canary.mkdir(parents=True)
-        (canary / "review.md").write_text("# Code Review\n", encoding="utf-8")
-        pull = json.loads((self.output / "fixture" / "pull.json").read_text(encoding="utf-8"))
-        named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
-        record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
+        markdown = write_finalized(canary / "review.md", self.output / "fixture").read_bytes()
+        record = json.loads((canary / "review.json").read_text(encoding="utf-8"))
         others: tuple[Any, ...] = (
             {},
             [],
@@ -2670,7 +2715,7 @@ class OutputTests(DocumentTestCase):
         )
         self.assertEqual(0, code, lines)
         self.assertEqual([f"REPORT {self.output / 'report.md'}", f"RECORD {canary / 'review.json'}"], lines)
-        self.assertEqual("# Code Review\n", (self.output / "report.md").read_text(encoding="utf-8"))
+        self.assertEqual(markdown, (self.output / "report.md").read_bytes())
         if os.name != "nt":  # Windows keeps no permission bits but read-only
             self.assertEqual(0o644, stat.S_IMODE((self.output / "report.md").stat().st_mode))
 
@@ -2689,14 +2734,74 @@ class OutputTests(DocumentTestCase):
         document.write_bytes(b"# Plan\n")
         self.build(document)
         canary = self.root / "canary" / "review-document.local" / "document" / "pulls" / "1"
-        canary.mkdir(parents=True)
-        recorded = canary / "review.md"
-        recorded.write_text("# Code Review\n\nThe whole report.\n", encoding="utf-8")
-        pull = json.loads((self.output / "fixture" / "pull.json").read_text(encoding="utf-8"))
-        named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
-        record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
-        (canary / "review.json").write_text(json.dumps(record), encoding="utf-8")
-        return recorded
+        return write_finalized(canary / "review.md", self.output / "fixture")
+
+    def test_a_recorded_report_whose_markdown_or_record_does_not_match_its_digests_is_refused_and_never_copied(
+        self,
+    ) -> None:
+        # report copied the recorded Markdown once the record named the fixture's review, without reading the pair as
+        # every other reader does, so an edited report was copied as the one finalize wrote.
+        recorded = self.recorded_report()
+        record_path = recorded.with_suffix(".json")
+        markdown, record_text = recorded.read_bytes(), record_path.read_text(encoding="utf-8")
+        record = json.loads(record_text)
+        payload = record["artifacts"]["payload_sha256"]
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        finalized = f"FAILED {recorded} is not a report finalize recorded"
+
+        def without_marker() -> None:
+            # The record's Markdown digest names the edited report, so only the missing marker refuses it.
+            recorded.write_bytes(markdown.replace(payload.encode(), b"0" * 64))
+            digest = hashlib.sha256(recorded.read_text(encoding="utf-8").encode()).hexdigest()
+            artifacts = {**record["artifacts"], "markdown_sha256": digest}
+            record_path.write_text(json.dumps({**record, "artifacts": artifacts}), encoding="utf-8")
+
+        for name, edit, reason in (
+            (
+                "an edited report",
+                lambda: recorded.write_bytes(markdown + b"\nAdded.\n"),
+                "Review Markdown hash mismatch",
+            ),
+            ("a report without the payload marker", without_marker, "Review Markdown does not reference the JSON"),
+            (
+                "an edited record",
+                lambda: record_path.write_text(record_text.replace("reads well", "reads badly"), encoding="utf-8"),
+                "Review JSON payload hash mismatch",
+            ),
+            (
+                "a report that is not UTF-8",
+                lambda: recorded.write_bytes(markdown + b"\xff"),
+                f"Review Markdown {recorded} is not UTF-8",
+            ),
+        ):
+            with self.subTest(name):
+                edit()
+                code, lines = run_main(*arguments)
+                self.assertEqual(1, code, lines)
+                self.assertEqual(1, len(lines), lines)
+                self.assertTrue(lines[0].startswith(f"{finalized}: {reason}"), lines)
+                self.assertEqual(["fixture"], sorted(item.name for item in self.output.iterdir()))
+                recorded.write_bytes(markdown)
+                record_path.write_text(record_text, encoding="utf-8")
+        reported = [f"REPORT {self.output / 'report.md'}", f"RECORD {record_path}"]
+        self.assertEqual((0, reported), run_main(*arguments))
+        self.assertEqual(markdown, (self.output / "report.md").read_bytes())
+
+    def test_a_report_changed_after_its_pair_is_read_is_refused_and_never_copied(self) -> None:
+        recorded = self.recorded_report()
+        real = review_document.validate_record_pair
+
+        def validated_then_changed(json_path: Path, markdown_path: Path) -> Any:
+            pair = real(json_path, markdown_path)
+            markdown_path.write_bytes(markdown_path.read_bytes() + b"\nAdded.\n")
+            return pair
+
+        arguments = ("report", "--fixture", str(self.output / "fixture"), "--report", str(recorded))
+        with mock.patch.object(review_document, "validate_record_pair", validated_then_changed):
+            code, lines = run_main(*arguments)
+        reason = f"{recorded} changed after its record was checked; run report again"
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
+        self.assertEqual(["fixture"], sorted(item.name for item in self.output.iterdir()))
 
     def test_a_copy_that_fails_part_way_leaves_no_report_and_the_next_report_makes_it(self) -> None:
         recorded = self.recorded_report()

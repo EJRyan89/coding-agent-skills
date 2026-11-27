@@ -30,12 +30,14 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("repo-cleanup")))
 sys.path.insert(0, str(sibling_scripts("github-activity-report")))
+sys.path.insert(0, str(sibling_scripts("review-document")))
 
 import github_activity_report
 import repo_cleanup
 import review_batches
 import test_review_fixture
 from review_config import write_config
+from test_review_document import write_finalized
 
 AUDIT_AI_CONFIG = "skills/audit-ai-config/scripts/audit_ai_config.py"
 MCP_HANDSHAKE = "skills/audit-ai-config/scripts/mcp_handshake.py"
@@ -458,7 +460,8 @@ def document_checkout(fixture: Fixture) -> None:
 
 
 def recorded_report(fixture: Fixture) -> None:
-    """A fixture review-document built, and the report and record finalize would write of its review."""
+    """A fixture review-document built, and the report and record finalize would write of its review: a pair whose
+    record names the fixture's pull request and whose digests the report holds, as report validates it."""
     document_checkout(fixture)
     values = fixture.values()
     subprocess.run(
@@ -476,15 +479,7 @@ def recorded_report(fixture: Fixture) -> None:
         check=True,
         capture_output=True,
     )
-    pull = json.loads(Path(OUTPUT.format(**values), "fixture", "pull.json").read_text(encoding="utf-8"))
-    record = {
-        "repository": pull["repository"],
-        "pull_request": {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")},
-    }
-    recorded = Path(RECORDED.format(**values))
-    recorded.parent.mkdir(parents=True)
-    recorded.write_text("# Review\n", encoding="utf-8")
-    recorded.with_suffix(".json").write_text(json.dumps(record), encoding="utf-8")
+    write_finalized(Path(RECORDED.format(**values)), Path(OUTPUT.format(**values), "fixture"))
 
 
 def recorded_run_list(fixture: Fixture) -> None:
@@ -1369,7 +1364,6 @@ DRIVERS: list[Driver] = [
             LINK_TO_NOTHING: "a history that is a link to nothing holds no rows, as a missing one does, so the run "
             "goes on to ask GitHub, which this fault does not answer; replace_text writes the history over the link, "
             "never through it",
-            STAT_RAISES: OPENED_ONLY,
         },
     ),
     Driver(
