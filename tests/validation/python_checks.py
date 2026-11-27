@@ -23,7 +23,7 @@ import tokenize
 import tomllib
 import unittest
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, TypeGuard
@@ -2468,16 +2468,17 @@ PRINTED_NOTHING = "printed nothing"
 
 
 def _own_nodes(body: Sequence[ast.AST]) -> Iterator[ast.AST]:
-    """Each node of a block or expressions, outside a function or class it defines: a lambda's body is its own."""
-    pending: list[ast.AST] = list(body)
+    """Each node of a block or expressions, outside a function or class it defines, at its first level or below: a
+    lambda's body is its own."""
+
+    def own(nodes: Iterable[ast.AST]) -> list[ast.AST]:
+        return [node for node in nodes if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+
+    pending = own(body)
     while pending:
         node = pending.pop()
         yield node
-        pending.extend(
-            child
-            for child in ast.iter_child_nodes(node)
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        )
+        pending.extend(own(ast.iter_child_nodes(node)))
 
 
 def _is_status(node: ast.AST) -> TypeGuard[ast.Attribute]:

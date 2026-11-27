@@ -1941,6 +1941,67 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "        return 'it is not UTF-8 text'\n",
         refused=False,
     ),
+    # A message that hands its result whole to a call, where the status it names is read through a name bound to it,
+    # through two names bound to each other, and a call given another result.
+    "an exit status named through a name bound to it with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe):\n    code = result.returncode\n    return f'git exited {code}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named through a name bound to it with another result handed to a call": _form(
+        reason_problems,
+        "def f(result, other, describe):\n    code = result.returncode\n"
+        "    return f'git exited {code}: {describe(other)}'\n",
+    ),
+    "an exit status named through two names bound to each other with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe, tries):\n    a = result.returncode\n    for _ in tries:\n        b = a\n"
+        "        a = b\n    return f'git exited {b}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named through two names bound to each other with another result handed to a call": _form(
+        reason_problems,
+        "def f(result, other, describe, tries):\n    a = result.returncode\n    for _ in tries:\n        b = a\n"
+        "        a = b\n    return f'git exited {b}: {describe(other)}'\n",
+    ),
+    # A function, or a class, a function defines is a scope of its own, whose names and messages are not its definer's;
+    # a lambda's body is its definer's.
+    "an exit status named through a name a nested function binds to its output too": _form(
+        reason_problems,
+        "def f(result):\n    def said():\n        code = result.stderr\n        return code\n"
+        "    code = result.returncode\n    return f'git exited {code}'\n",
+    ),
+    "a failed read answered by a nested function's message alone": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        def explain():\n            return 'the file could not be read'\n        return explain\n",
+        refused=False,
+    ),
+    "a failed read answered by a nested class's message alone": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        class Failure:\n            note = 'the file could not be read'\n        return Failure\n",
+        refused=False,
+    ),
+    "a failed read answered with a message and its error read in a lambda": _form(
+        reason_problems,
+        "def f(path, report):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        report(lambda: exc.strerror)\n        return 'the file could not be read'\n",
+        refused=False,
+    ),
+    # flat_text's readers reached as an attribute of the module, as by name.
+    "an exit status named with the reason_line of its output reached through its module": _form(
+        reason_problems,
+        "import flat_text\n\n\ndef f(result, diagnostic):\n"
+        "    return f'git exited {result.returncode}: {flat_text.reason_line(diagnostic)}'\n",
+        refused=False,
+    ),
+    # An except* clause, as an except clause.
+    "a failed read answered by an except* clause with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except* OSError:\n"
+        "        raise RuntimeError('the file could not be read')\n",
+    ),
     # "gh's limit option, `--limit` or `-L`", alone, after =, or with digits attached.
     **{
         f"gh given {option}": _form(
