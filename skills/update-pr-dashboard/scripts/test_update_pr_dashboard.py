@@ -81,7 +81,9 @@ class FakeDetector:
         since_base: str | None = None,
     ) -> str:
         self.bases[(number, since_sha)] = since_base
-        if since_sha == head_sha:
+        # Only one comparison, the same head on the same base, is unchanged without a call, as the real detector
+        # reads it; the same head on another base, as after a retarget, is compared like any other.
+        if Query(repository, base_ref, since_sha, head_sha, since_base).one_comparison:
             return UNCHANGED
         return self.results.get((number, since_sha), CHANGED)
 
@@ -1704,6 +1706,20 @@ class ReviewIdentityTests(unittest.TestCase):
     def stale_row(self, head: str, version: int | None) -> Row:
         value = validate_items([item() | {"reviewed_head_sha": head, "reviewed_version": version}])[0]
         return Row(value, "review requested", SECTION_TO_REVIEW, "stale", False)
+
+    def test_a_retargeted_head_reviewed_on_another_base_is_compared_through_the_fake_detector_too(self) -> None:
+        # The fake detector reads the same head on another base as the real one does, as a comparison to make, so a
+        # test through it shows a retargeted head compared; only the base tip the collection read is one comparison.
+        recorded, tip = "d" * 40, "e" * 40
+        retargeted = item() | {"reviewed_head_sha": HEAD, "reviewed_base_sha": recorded, "base_sha": tip}
+        for value, detector, expected in (
+            (retargeted, FakeDetector(), ["stale"]),
+            (retargeted, FakeDetector({(1, HEAD): UNCHANGED}), []),
+            (retargeted | {"reviewed_base_sha": tip}, FakeDetector({(1, HEAD): CHANGED}), []),
+        ):
+            with self.subTest(value=value["reviewed_base_sha"], results=detector.results):
+                rows = evaluate(validate_items([value]), "reviewer", detector)
+                self.assertEqual(expected, [candidate["status"] for candidate in review_candidates(rows)])
 
     def test_a_review_written_again_at_the_same_head_that_went_stale_is_named(self) -> None:
         # The record held version 1 stale at the head; a re-review on a new base wrote version 2 at the same head,

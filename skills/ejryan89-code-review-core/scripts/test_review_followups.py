@@ -714,8 +714,10 @@ class ReviewedHeadTests(unittest.TestCase):
 
     def test_record_takes_precedence_over_legacy(self) -> None:
         self.write_legacy(verdict=None)
+        # The fields reviewed_head reads, the review's identity among them, as a validated record holds them.
         record = {
-            "pull_request": {"head_sha": "b" * 40, "base_sha": "c" * 40},
+            "repository": "example/one",
+            "pull_request": {"number": 12, "head_sha": "b" * 40, "base_sha": "c" * 40},
             "review": {
                 "version": 2,
                 "verdict": "INCOMPLETE",

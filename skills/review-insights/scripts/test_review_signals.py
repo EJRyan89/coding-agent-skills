@@ -24,6 +24,9 @@ from test_review_insights import LINE_BREAKS, LITERAL, MARKUP, UNTRUSTED, Insigh
 
 HEAD = "c" * 40
 OTHER_HEAD = "d" * 40
+BASE = "a" * 40
+# The base branch's tip a later review of an unmoved head reads once main moved.
+MOVED_BASE = "e" * 40
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 SIGNAL_PREFIXES = (
     "SEVERITY_DRIFT",
@@ -62,6 +65,7 @@ class SignalFixture(InsightFixture):
         findings: list[dict[str, Any]],
         *,
         head: str = HEAD,
+        base: str = BASE,
         mode: str = "initial",
         dispositions: tuple[tuple[str, str], ...] = (),
         reviewers: list[dict[str, Any]] | None = None,
@@ -92,7 +96,7 @@ class SignalFixture(InsightFixture):
             "pull_url": f"https://github.com/owner/repo/pull/{number}",
             "title": "Fixture",
             "base_ref": "main",
-            "base_sha": "a" * 40,
+            "base_sha": base,
             "head_sha": head,
             "mode": mode,
             "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
@@ -230,6 +234,17 @@ class VerdictFlipTests(SignalFixture):
         _, lines = self.signal_lines()
         self.assertEqual([], lines)
 
+    def test_a_forced_rerun_of_one_head_after_main_moved_is_still_a_flip(self) -> None:
+        # A record holds the base branch's tip when its review ran, not the merge base it diffed against, so a rerun of
+        # the same head after main moved reads the same diff on another tip, and its verdict changing is a flip.
+        self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
+        self.review(7, 2, [], base=MOVED_BASE, mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"VERDICT_FLIP V1 owner/repo#7 head={HEAD[:12]} v1=CHANGES_REQUESTED v2=APPROVED"],
+            [line for line in lines if line.startswith("VERDICT_FLIP")],
+        )
+
 
 class DisagreementTests(SignalFixture):
     REVIEWERS: ClassVar = [reviewer("security", "model-a"), reviewer("style", "model-b")]
@@ -253,6 +268,27 @@ class DisagreementTests(SignalFixture):
                 "DISAGREEING R1 SUGGESTION owner/repo#7 v1 F002 style",
             ],
             lines,
+        )
+
+    def test_findings_on_one_head_reviewed_again_after_main_moved_still_disagree(self) -> None:
+        # The second review read the same head on main's later tip: the same diff, so its findings compare with the
+        # first review's at one place.
+        self.review(
+            7, 1, [finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security")], reviewers=self.REVIEWERS
+        )
+        self.review(
+            7,
+            2,
+            [finding("SUGGESTION", "src/a.cs", 11, "Name the path variable", source="style")],
+            base=MOVED_BASE,
+            mode="re-review",
+            dispositions=(("v1:F001", "still_present"),),
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:10"],
+            [line for line in lines if line.startswith("REVIEWER_DISAGREEMENT")],
         )
 
     def test_a_finding_a_few_lines_earlier_never_hides_a_disagreement_one_line_away(self) -> None:

@@ -1,5 +1,6 @@
 """Each concept read in one helper is read only through it: the hub guard's place lookups, closing references, a
-checkout's status, a pull request's files, a repository path read from a snapshot, and an owner/name pattern.
+checkout's status, a pull request's files, a repository path read from a snapshot, an owner/name pattern, and a
+review's identity.
 
 Outside review passes kept finding one concept implemented twice, with one copy fixed and the other left behind. The
 duplication policy catches a copied definition, not a concept implemented again with other code, so this policy holds
@@ -146,6 +147,34 @@ stated limits, each one a fixture in tests/validation/test_one_helper.py shows:
 - A pattern joined with `+`, split by an f-string's formatted value, spelled with spaces around the `/` in a verbose
   pattern, or with a possessive quantifier, as `++`, and a bytes literal are not read.
 - A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
+
+Review identity. ejryan89-code-review-core's review_records.py is the one reader of a review's identity: its
+review_identity gives a record's repository, in the one form a repository identity is compared in, its pull request
+number, head, the base branch's tip when the review ran, and version. A reader that keys reviews by the head alone takes
+a later review of that head, as a re-review on another base is, for the one before, so it keys them by the identity or
+states why the head is its key: review-insights' verdict flips and reviewer disagreements do, since a record holds the
+base branch's tip, not the merge base its review diffed against, and a key by that tip would split every rerun of an
+unmoved head once main moved. In every non-test module ruff formats but the helper, it fails a scope that keys reviews
+by a record's head, RECORD_HEAD read as `<expression>["pull_request"]["head_sha"]`, alone or beside other fields, read
+there or through a name the scope binds by `=` to an expression holding it: a subscript's index; the first argument of a
+dictionary's setdefault, get, or pop; a dictionary display's or comprehension's key; a set display's or comprehension's
+element; the left side of an `in` or `not in` test; and the key of itertools.groupby, given by position or by keyword,
+under any name it is imported by. A head read as a value, compared with `==`, or given to a call passes. A module states
+why a scope keys one itself in a module-level
+REVIEW_IDENTITY_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its stated
+limits, each one a fixture in tests/validation/test_one_helper.py shows:
+- A head read by `.get("head_sha")`, or through the pull request bound to a name first, as `pull["head_sha"]`, is not
+  read, and neither is a head held as an attribute, as the shepherd's `Reviewed.head` or a reviewed_head answer's
+  `["head_sha"]`, which review_identity's own reader built.
+- A name bound by unpacking, as `number, head = ...`, or bound in one scope and used as a key in another, is not
+  followed, and neither is a name bound by an annotated assignment, a `for` or comprehension target, or a `match`
+  capture.
+- A head added to a set by a method, as `seen.add(...)`, is not read as a key, and neither is a head counted or
+  deduplicated by `collections.Counter(...)` or `dict.fromkeys(...)`, or looked up by `list.index`.
+- A comparison of two heads, as `since_sha == head_sha`, is not read: pr_change's Query decides it as one_comparison
+  and same_head, the same head on the same base and on another one, which the fake change detectors in the suites
+  call too.
+- A Bash or PowerShell script, a workflow, and a Markdown fence are not read.
 """
 
 from __future__ import annotations
@@ -164,6 +193,7 @@ import file_presence
 import git_client
 import git_worktrees
 import github_remote
+from kinds_table import LOOKUP_METHODS
 from python_checks import formatted_modules, sanctioned_problems
 from validation_support import (
     REPOSITORY_ROOT,
@@ -1047,6 +1077,96 @@ def repository_problems(root: Path, files: Iterable[Path] | None = None) -> list
     return problems
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Review identity
+
+REVIEW_IDENTITY_HELPER = "skills/ejryan89-code-review-core/scripts/review_records.py"
+# The helper's reader of a review's identity, its head, base, and version, which a reader of review records keys by.
+REVIEW_IDENTITY_READER = "review_records.review_identity"
+# A record's head, as a reader spells it: the record's pull request, then its head commit.
+RECORD_HEAD = ("pull_request", "head_sha")
+GROUPBY = "itertools.groupby"
+REVIEW_IDENTITY_ALLOWANCE = "REVIEW_IDENTITY_ALLOWED"
+READ_REVIEW_IDENTITY = (
+    f"key a review by {REVIEW_IDENTITY_READER}, its head, base, and version, so a later review of the same head is "
+    f"another review, or state why in {REVIEW_IDENTITY_ALLOWANCE}; see {POLICY}"
+)
+
+
+def reads_record_head(node: ast.AST) -> bool:
+    """Whether a node is a record's head as RECORD_HEAD spells it: `<expression>["pull_request"]["head_sha"]`."""
+    if not isinstance(node, ast.Subscript) or _string(node.slice) != RECORD_HEAD[1]:
+        return False
+    return isinstance(node.value, ast.Subscript) and _string(node.value.slice) == RECORD_HEAD[0]
+
+
+def _holds_head(node: ast.AST, heads: set[str]) -> bool:
+    """Whether a key holds a record's head anywhere inside it, read there or through a name its scope bound to one."""
+    return any(
+        reads_record_head(inner) or (isinstance(inner, ast.Name) and inner.id in heads) for inner in ast.walk(node)
+    )
+
+
+def _keys(node: ast.AST, resolver: CallableResolver) -> list[ast.AST]:
+    """The keys a node keys a dictionary or a set by, or groups by: a subscript's index, the first argument of a
+    dictionary's setdefault, get, or pop, a dictionary display's or comprehension's keys, a set display's or
+    comprehension's elements, the left side of a membership test, and the body of itertools.groupby's key, given by
+    position or by keyword."""
+    if isinstance(node, ast.Subscript) and not reads_record_head(node):
+        return [node.slice]
+    if isinstance(node, ast.Call):
+        function = node.func
+        if isinstance(function, ast.Attribute) and function.attr in LOOKUP_METHODS and node.args:
+            return [node.args[0]]
+        if resolver.name(function) == GROUPBY:
+            given = [*node.args[1:2], *(keyword.value for keyword in node.keywords if keyword.arg == "key")]
+            return [key.body if isinstance(key, ast.Lambda) else key for key in given]
+    if isinstance(node, ast.Dict):
+        return [key for key in node.keys if key is not None]
+    if isinstance(node, ast.DictComp):
+        return [node.key]
+    if isinstance(node, ast.Set):
+        return list(node.elts)
+    if isinstance(node, ast.SetComp):
+        return [node.elt]
+    if isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.In, ast.NotIn)):
+        return [node.left]
+    return []
+
+
+def module_review_identity_problems(name: str, tree: ast.Module) -> list[str]:
+    """Each place a scope keys reviews by a record's head itself, as its line and its refusal, that the module's
+    REVIEW_IDENTITY_ALLOWED does not sanction, and each entry of it that sanctions nothing."""
+    resolver = CallableResolver(tree)
+    nodes = list(scoped_nodes(tree.body))
+    heads: dict[str, set[str]] = {}
+    for node, scope in nodes:
+        if isinstance(node, ast.Assign) and _holds_head(node.value, set()):
+            heads.setdefault(scope, set()).update(target.id for target in node.targets if isinstance(target, ast.Name))
+    found = [
+        (getattr(key, "lineno", 0), scope, f"{scope} keys reviews by a record's head; {READ_REVIEW_IDENTITY}")
+        for node, scope in nodes
+        for key in _keys(node, resolver)
+        if _holds_head(key, heads.get(scope, set()))
+    ]
+    return sanctioned_problems(name, tree, REVIEW_IDENTITY_ALLOWANCE, found)
+
+
+def review_identity_modules(root: Path, files: Iterable[Path]) -> list[Path]:
+    """The modules the review-identity rule reads: every non-test module ruff formats but the helper."""
+    return [root / name for name in formatted_modules(root, list(files)) if name != REVIEW_IDENTITY_HELPER]
+
+
+def review_identity_problems(root: Path, files: Iterable[Path] | None = None) -> list[str]:
+    """Report each place a module other than the helper keys reviews by a record's head that it does not sanction,
+    and each sanction that holds nothing."""
+    listed = repository_files(root) if files is None else list(files)
+    problems: list[str] = []
+    for _, name, tree in python_trees(review_identity_modules(root, listed), root, problems):
+        problems += module_review_identity_problems(name, tree)
+    return problems
+
+
 class OneHelperPolicies(unittest.TestCase):
     def test_every_path_to_a_place_lookup_treats_any_git_error_as_an_unknown_place(self) -> None:
         self.assertEqual([], place_lookup_problems(REPOSITORY_ROOT))
@@ -1072,13 +1192,19 @@ class OneHelperPolicies(unittest.TestCase):
     def test_an_owner_and_name_pattern_is_built_only_on_its_one_helper(self) -> None:
         self.assertEqual([], repository_problems(REPOSITORY_ROOT))
 
-    def test_the_pull_files_snapshot_path_and_repository_rules_read_every_module_their_rules_speak_of(self) -> None:
+    def test_reviews_are_keyed_only_by_their_one_helper_s_identity(self) -> None:
+        self.assertEqual([], review_identity_problems(REPOSITORY_ROOT))
+
+    def test_the_pull_files_snapshot_path_repository_and_review_identity_rules_read_every_module_they_speak_of(
+        self,
+    ) -> None:
         listed = repository_files(REPOSITORY_ROOT)
         modules = formatted_modules(REPOSITORY_ROOT, listed)
         for policy, read_modules, helper in (
             ("the pull-files rule", pull_files_modules, PULL_FILES_HELPER),
             ("the snapshot-path rule", snapshot_path_modules, SNAPSHOT_HELPER),
             ("the repository-name rule", repository_modules, REPOSITORY_HELPER),
+            ("the review-identity rule", review_identity_modules, REVIEW_IDENTITY_HELPER),
         ):
             with self.subTest(policy):
                 read = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in read_modules(REPOSITORY_ROOT, listed)]

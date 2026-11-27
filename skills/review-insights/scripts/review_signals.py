@@ -9,6 +9,9 @@ thing disagreed with themselves or with each other, which is the main symptom of
 - Reviewer disagreement: findings at the same head commit of one pull request, in the same file within ANCHOR_WINDOW
   lines, raised by reviewers that share none of their sources, at different severities.
 
+Both compare reviews by their head commit alone, so a head GitHub retargeted to another base, with no new commit, is
+still compared with the review before it (REVIEW_IDENTITY_ALLOWED says why).
+
 The report also carries the guidance candidates `review_guidance.py` finds. Each kind keeps its SIGNALS_KEPT strongest
 items, numbered, and counts them all. Drift is strongest with the most severities, then the most findings; a flip
 between approval and requested changes, then the one with the most findings that differ; a disagreement with the
@@ -32,6 +35,13 @@ from review_synthesis import FindingKey, Pair, finding_ref, group_key, headline,
 from review_vocabularies import SEVERITIES, SEVERITY_RANK, Severity
 from typed_fields import FieldReader
 
+# Each signal that keys reviews by their head commit rather than by review_records.review_identity, with why.
+REVIEW_IDENTITY_ALLOWED = {
+    "verdict_flips": "a record names the base branch's tip, not the merge base its review diffed against, so a key "
+    "by base would split every rerun of an unmoved head after main moved; a retargeted head is compared as one",
+    "reviewer_disagreements": "a record names the base branch's tip, not the merge base its review diffed against, "
+    "so a key by base would split the reviews of an unmoved head after main moved; a retargeted head is one place",
+}
 ANCHOR_WINDOW = 3
 SIGNALS_KEPT = 20
 EXAMPLES_KEPT = 3
