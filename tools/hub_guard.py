@@ -4013,6 +4013,11 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
         return
     reader = PowerShellReader(reading, commands, depth)
     followed = all(node in POWERSHELL_UNDERSTOOD for node in nodes) and not reader.read_forms(output)
+    if followed and isinstance(statements, list) and not reader.reaches_every_command(statements):
+        # A command no statement lists would go unread, as a chain inside an expression once did, so the tree is read
+        # as one the reader does not follow.
+        reading.notes.append("a PowerShell command no statement the reader listed reaches")
+        followed = False
     if not followed or not isinstance(statements, list):
         moves = any(reader.effect(command) is not Effect.NOTHING for command in commands)
         for command in commands:
@@ -4033,6 +4038,18 @@ class PowerShellReader:
         self.commands = commands
         self.depth = depth
         self.redirections_read = 0
+
+    def reaches_every_command(self, statements: list[Any]) -> bool:
+        """Whether the statements list every command of the tree, each in a statement's pipelines or its nested
+        commands, so read_statement reads each."""
+        listed: set[object] = set()
+        for statement in statements:
+            pipelines = statement.get("pipelines") if isinstance(statement, dict) else None
+            nested = statement.get("nested") if isinstance(statement, dict) else None
+            for pipeline in pipelines if isinstance(pipelines, list) else []:
+                listed.update(pipeline if isinstance(pipeline, list) else [])
+            listed.update(nested if isinstance(nested, list) else [])
+        return listed >= set(range(len(self.commands)))
 
     def read_forms(self, output: Mapping[str, Any]) -> list[str]:
         """Each form of an understood node type that may run code the guard does not follow, which may move the
@@ -4403,7 +4420,9 @@ def guard(stream: str) -> int:
             elif (protected := hub_protected(resolve(target, cwd))) is not False:
                 closing = closing_step(cwd)
                 written = hub_write_refusal(f"The {tool} tool writes", resolve(target, cwd), protected)
-                refused = closing or (f"{written} {HUB_ELSEWHERE_IT}" if protected else written)
+                # The refusal names its target before its step, as a redirection's does: from the hub, the hub's step;
+                # elsewhere, the hub's own sentence for a hub's file, and the repair a file that may be one ends with.
+                refused = closed(written, closing or (HUB_ELSEWHERE_IT if protected else ""))
             else:
                 reason = file_tool_refusal(tool, resolve(target, cwd), cwd, environment)
                 closing = closing_step(cwd) if reason is not None else closing

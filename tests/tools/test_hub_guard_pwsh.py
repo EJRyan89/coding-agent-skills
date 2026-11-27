@@ -61,7 +61,8 @@ NODE_SAMPLES = {
     "MergingRedirectionAst": "Get-Date 2>&1",
     "VariableExpressionAst": "Write-Output $x",
     "ParenExpressionAst": "Write-Output (1)",
-    "SubExpressionAst": "Write-Output $(1)",
+    # A chain inside an expression, whose commands run within the statement holding it, not as its own.
+    "SubExpressionAst": "Write-Output $(Get-Date && Get-Date)",
     "ArrayExpressionAst": "Write-Output @(1)",
     "ArrayLiteralAst": "Write-Output 1,2",
     "HashtableAst": "Write-Output @{a=1}",
@@ -130,6 +131,9 @@ UNSAMPLED = {
 }
 
 
+UNLISTED = "a PowerShell command no statement the reader listed reaches"
+
+
 def pwsh(script: str, stdin: str = "") -> str:
     found = platform_support.find_pwsh("")
     if found is None:
@@ -190,6 +194,63 @@ class NodeCatalogueTests(unittest.TestCase):
                 self.assertEqual([], reading.unread)
                 [call] = reading.calls
                 self.assertEqual(place, call.place.start)
+
+    def test_a_command_no_statement_lists_has_its_git_call_read_from_a_location_left_unknown(self) -> None:
+        # The reader once left a chain inside an expression out of both a statement's pipelines and its nested
+        # commands, so its git call went unread; any command the statements leave out is read as in a tree the reader
+        # does not follow, from where the text does not settle once a command in the tree may move the location.
+        hub = Path.cwd()
+        commands = [
+            {"elements": [{"kind": "word", "text": "Set-Location"}, {"kind": "word", "text": str(hub)}]},
+            {"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]},
+        ]
+        # Listed as nested, the git call runs before the statement's own Set-Location, where the command started.
+        for statements, place, notes in (
+            ([{"pipelines": [[0]], "operators": [], "nested": [1]}], Path("/elsewhere"), []),
+            ([{"pipelines": [[0]], "operators": [], "nested": []}], None, [UNLISTED]),
+            ([{"pipelines": [], "operators": [], "nested": []}], None, [UNLISTED]),
+            ([], None, [UNLISTED]),
+        ):
+            with self.subTest(statements=statements):
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, statements)
+                self.assertEqual(notes, reading.notes)
+                [call] = reading.calls
+                self.assertEqual(place, call.place.start)
+
+    def test_every_command_of_every_sample_is_one_a_statement_lists(self) -> None:
+        # Each command pwsh's reader finds is in a statement's pipelines or its nested commands, so none goes unread,
+        # for every node sample and for a chain inside each expression form and body.
+        chain = "Get-Date && Get-Item x || Get-Date"
+        forms = (
+            "Write-Output $({chain})",
+            "Write-Output @({chain})",
+            "Write-Output ({chain})",
+            'Write-Output "a $({chain}) b"',
+            "$({chain})",
+            "$x = {chain}",
+            "Write-Output ($x = {chain})",
+            "Write-Output @{{ a = $({chain}) }}",
+            "Write-Output $({chain}) | Out-String && Write-Output $({chain})",
+            "if ({chain}) {{ {chain} }}",
+            "ForEach-Object -InputObject 1 {{ {chain} }}",
+        )
+        samples = [
+            *(sample for sample in NODE_SAMPLES.values() if sample),
+            *(form.format(chain=chain) for form in forms),
+        ]
+        listed = 0
+        for sample in samples:
+            with self.subTest(sample=sample):
+                reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, sample)
+                with process_limits_held():
+                    events = hub_guard.powershell_events(sample, reading)
+                if events is None or events.get("statements") is None:
+                    continue
+                listed += 1
+                reader = hub_guard.PowerShellReader(reading, events["commands"])
+                self.assertTrue(reader.reaches_every_command(events["statements"]), events)
+        # Every chain form above is one the reader lists statement by statement.
+        self.assertGreaterEqual(listed, len(forms))
 
     def read(self, nodes: list[str], commands: list[Any], statements: list[Any]) -> hub_guard.Reading:
         """The reader's reading of a tree of these node types, commands, and statements."""

@@ -611,7 +611,10 @@ The configuration's limits:
   compute, which leave their word one the text does not settle, as Bash's expansions do; `if` and `foreach`, whose
   conditions and bodies are read; a cast to a type `POWERSHELL_CASTS` names, such as `[int]` or `[string]`; and a
   script block handed to `ForEach-Object`, `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each
-  command inside an expression or a body is read as a command that runs within the statement holding it. A command
+  command inside an expression or a body is read as a command that runs within the statement holding it, a chain of
+  `&&` and `||` inside a subexpression, a list, parentheses, a string, or an assignment's value among them: a chain
+  is a statement's own only where it is the statement. A tree in which any command is in neither a statement's own
+  pipelines nor its nested commands is read as one holding a node type the guard does not read. A command
   holding any other node type or form, a method call, a static member such as `[IO.File]::Delete`, a member the text
   does not name, a cast to another type, a script block handed to any other command, or an assignment to the
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
@@ -675,7 +678,8 @@ refuses:
 
 The refusal names what it could not settle or place, and asks for the git call to be written with literal words, or
 for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded hub in view, the same is
-allowed with a note on stderr. Each refusal ends with the step that works where the session is: from the hub's own
+allowed with a note on stderr. Each refusal, a file tool's as a command's, names what it refused, then ends with the
+step that works where the session is, which never stands in for the reason or its repair: from the hub's own
 checkout or git directory, to create a worktree and work there; from anywhere else, a worktree included, the step of
 what it refused. Where that is a git form the hub does not allow, a write into a guarded hub, or a git call that acts on
 one and is refused for its own words or for a part of the command the guard does not settle, the step is that the hub

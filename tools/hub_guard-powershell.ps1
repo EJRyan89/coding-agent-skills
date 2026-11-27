@@ -117,18 +117,13 @@ function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] 
     [ordered]@{ pipelines = @(, @($indexes)); operators = @() }
 }
 
-# The commands inside a statement's own expressions, as the arguments of its commands and an assignment's value
-# hold them, which are not the statement's pipeline elements.
-function Get-Nested([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] $Commands) {
+# The commands inside a statement's expressions and bodies: every command in it but the elements of its own
+# pipelines, which Get-Chain listed. A chain is the statement's own only where it is the statement; one inside an
+# expression, a body, or an assignment's value runs within the statement, so each of its commands is nested.
+function Get-Nested([Ast] $Statement, $Chain, [Collections.Generic.List[CommandBaseAst]] $Commands) {
     $own = [Collections.Generic.HashSet[int]]::new()
-    # An assignment's value and a control statement's bodies are all nested: none is a pipeline of its own.
-    $pipelines = if ($Statement -isnot [PipelineBaseAst]) { @() } else {
-        $Statement.FindAll({ param($node) $node -is [PipelineAst] }, $false)
-    }
-    foreach ($pipeline in $pipelines) {
-        if ($pipeline -eq $Statement -or $pipeline.Parent -is [PipelineChainAst]) {
-            foreach ($element in $pipeline.PipelineElements) { [void] $own.Add($Commands.IndexOf($element)) }
-        }
+    foreach ($pipeline in $Chain.pipelines) {
+        foreach ($index in $pipeline) { [void] $own.Add($index) }
     }
     foreach ($node in $Statement.FindAll({ param($node) $node -is [CommandBaseAst] }, $true)) {
         $index = $Commands.IndexOf($node)
@@ -164,7 +159,7 @@ if ($blocks.Count -eq 0 -and $null -ne $ast.EndBlock) {
             break
         }
         $chain['background'] = $statement -is [PipelineBaseAst] -and [bool] $statement.Background
-        $chain['nested'] = @(Get-Nested $statement $commands)
+        $chain['nested'] = @(Get-Nested $statement $chain $commands)
         $statements.Add($chain)
     }
 }

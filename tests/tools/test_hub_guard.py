@@ -9,6 +9,7 @@ import itertools
 import json
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -240,6 +241,13 @@ class GuardTestCase(HubTestCase):
         else, where a git call the guard read acts on the hub, the step is the hub's, but where the refusal keeps a
         remedy of its own or places no call."""
         place = Path(cwd) if isinstance(cwd, str) else self.root
+        # Every refusal says what it refused before its step: a closing step alone, the hub's sentence above all, once
+        # stood for a refusal whose reason and repair it dropped.
+        step = next(
+            (step for step in (hub_guard.DENY_REASON, *ELSEWHERE_STEPS, *KEPT_STEPS) if self.reason.endswith(step)),
+            "",
+        )
+        self.assertTrue(self.reason.removesuffix(step).strip(), f"the refusal is its step alone: {self.reason}")
         if self.in_hub(place):
             # Where git cannot tell that the session is in the hub, a refusal ends with a step that holds anywhere.
             self.assertTrue(self.reason.endswith((HUB_STEP, *ELSEWHERE_STEPS)), self.reason)
@@ -1828,8 +1836,38 @@ class RefusalStepTests(GuardTestCase):
         )
         self.assertEqual("deny", self.edit(target, cwd=self.tree))
         self.assertEqual(f"The Edit tool writes {target}, a file of a guarded hub. {self.ELSEWHERE}", self.reason)
-        self.assertEqual("deny", self.edit(target, cwd=self.hub))
-        self.assertEqual(self.IN_HUB, self.reason)
+        # From the hub, the refusal names what it refused before the hub's step, as a redirection's does.
+        self.assertEqual("deny", self.bash(f'echo x > "{target}"', self.hub))
+        self.assertEqual(
+            f"The command redirects its output into {target}, a file of a guarded hub. {self.IN_HUB}", self.reason
+        )
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertEqual("deny", self.edit(target, cwd=self.hub, tool=tool))
+                self.assertEqual(
+                    f"The {tool} tool writes {target}, a file of a guarded hub. {self.IN_HUB}", self.reason
+                )
+
+    def test_a_file_tool_edit_from_the_hub_into_a_checkout_git_cannot_read_keeps_its_repair(self) -> None:
+        # The hub is healthy and the other checkout's configuration holds a line git refuses, so git answers with an
+        # error for it. The refusal once dropped its target and its repair for the hub's step alone, which a worktree
+        # does not lift.
+        other = self.other_repository()
+        config = other / ".git" / "config"
+        config.write_text(config.read_text(encoding="utf-8") + "[broken\n", encoding="utf-8")
+        status = run_git(other, self.environment, "status")
+        self.assertEqual(128, status.returncode, status.stderr)
+        target = other / "README.md"
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertEqual("deny", self.edit(target, cwd=self.hub, tool=tool))
+                self.assertEqual(f"{self.unread_file_refusal(tool, target)} {self.IN_HUB}", self.reason)
+                self.assertEqual("deny", self.edit(target, cwd=self.tree, tool=tool))
+                self.assertEqual(self.unread_file_refusal(tool, target), self.reason)
+        # The redirection's twin from the hub keeps its repair alike.
+        self.assertEqual("deny", self.bash(f'echo x > "{target}"', self.hub))
+        self.assertTrue(self.reason.startswith(f"The command redirects its output into {target}, in a checkout"))
+        self.assertTrue(self.reason.endswith(f"then run the command again. {self.IN_HUB}"), self.reason)
 
     def test_a_write_into_a_checkout_git_answers_with_an_error_for_asks_for_its_repair(self) -> None:
         # A file in a checkout or git directory git answered with an error for may be a guarded hub's, so each write is
@@ -4524,6 +4562,49 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.powershell(command, cwd))
+
+    def test_a_chain_inside_an_expression_has_each_of_its_commands_read(self) -> None:
+        # A && or || chain is the statement's own only where it is the statement; one inside an expression runs within
+        # the statement, so each of its commands is read as nested, from the PowerShell tool and through pwsh -c alike.
+        # The guard once read neither side of such a chain, and the commit ran in the hub.
+        forms = (
+            "Write-Output $({chain})",
+            "Write-Output @({chain})",
+            "Write-Output ({chain})",
+            'Write-Output "a $({chain}) b"',
+            "$({chain})",
+            "@({chain})",
+            "({chain})",
+            "$x = $({chain})",
+            "$x = {chain}",
+            "Write-Output ($x = {chain})",
+            "Write-Output -InputObject:$({chain})",
+            "Write-Output 1, $({chain})",
+            "Write-Output @{{ a = $({chain}) }}",
+            "Write-Output ($true ? $({chain}) : 1)",
+            "Write-Output (1 + $({chain}))",
+            "$({chain}).Length",
+            "$a[$({chain})]",
+            "Write-Output $(Write-Output $({chain}))",
+            "Write-Output $({chain}) | Out-String",
+            "git status && Write-Output $({chain})",
+            "Write-Output $({chain}) || git status",
+            "if ($true) {{ Write-Output $({chain}) }}",
+            "foreach ($c in $({chain})) {{ }}",
+            "if ({chain}) {{ }}",
+            "ForEach-Object -InputObject 1 {{ {chain} }}",
+        )
+        for operator in ("&&", "||"):
+            chain = f"git status {operator} git commit -m x"
+            for form in forms:
+                command = form.format(chain=chain)
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.powershell(command, self.hub))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+                    wrapped = "pwsh -NoProfile -c " + shlex.quote(command)
+                    self.assertEqual("deny", self.bash(wrapped, self.hub))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+                    self.assertIsNone(self.powershell(command.replace("git commit -m x", "git log"), self.hub))
 
     def test_a_file_redirection_is_read_in_every_statement_that_can_carry_one(self) -> None:
         readme = self.hub / "README.md"
