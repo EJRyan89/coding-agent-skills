@@ -1504,7 +1504,15 @@ class ReviewIdentityTests(unittest.TestCase):
                 problems = self.problems({"skills/x/scripts/reader.py": text})
                 self.assertEqual(1, len(problems), problems)
                 self.assertIn("f keys reviews by a record's head", problems[0])
-                self.assertIn("by review_records.review_identity", problems[0])
+                # The remedy, pinned against a literal: key by the helper's identity, which has no subject, or say why.
+                self.assertTrue(
+                    problems[0].endswith(
+                        "f keys reviews by a record's head; key a review by review_records.review_identity, its head, "
+                        "base, and version, so a later review of the same head is another review, or state why in "
+                        "REVIEW_IDENTITY_ALLOWED; see tests/validation/one_helper.py"
+                    ),
+                    problems[0],
+                )
 
     def test_each_passed_form_passes(self) -> None:
         for name, text in PASSED_REVIEW_KEYS.items():

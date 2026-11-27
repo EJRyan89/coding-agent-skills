@@ -1088,8 +1088,8 @@ RECORD_HEAD = ("pull_request", "head_sha")
 GROUPBY = "itertools.groupby"
 REVIEW_IDENTITY_ALLOWANCE = "REVIEW_IDENTITY_ALLOWED"
 READ_REVIEW_IDENTITY = (
-    f"key a review by {REVIEW_IDENTITY_READER}, its head, base, and version, or by its subject, so the same head on "
-    f"another base is another review, or state why in {REVIEW_IDENTITY_ALLOWANCE}; see {POLICY}"
+    f"key a review by {REVIEW_IDENTITY_READER}, its head, base, and version, so a later review of the same head is "
+    f"another review, or state why in {REVIEW_IDENTITY_ALLOWANCE}; see {POLICY}"
 )
 
 
