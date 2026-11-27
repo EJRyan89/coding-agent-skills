@@ -306,8 +306,8 @@ def tracker_item(
     # the one before it; a legacy review has none.
     item["reviewed_version"] = reviewed["version"] if reviewed else None
     # The base the reviewed head was compared with, so a rebase that leaves the diff as it was is not a change. It is
-    # the latest record's, the one `reviewed_head` read; a legacy review recorded none.
-    item["reviewed_base_sha"] = records[-1]["pull_request"]["base_sha"] if reviewed and records else None
+    # the latest record's, the one `reviewed_head` read through its identity; a legacy review recorded none.
+    item["reviewed_base_sha"] = reviewed["base_sha"] if reviewed else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
     item["ai_review"] = {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
     # A legacy review has no records to read a ledger from, so its row shows only its counts.
