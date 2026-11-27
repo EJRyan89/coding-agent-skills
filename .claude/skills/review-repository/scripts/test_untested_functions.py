@@ -449,6 +449,31 @@ class ConditionTests(unittest.TestCase):
         before = {"tools/tool.sh": f"{kept}\ng() {{\n  echo 2\n}}\n"}
         self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, {"tools/tool.sh": kept}))
 
+    def test_removed_bash_lines_the_grammar_cannot_read_alone_change_the_function_around_them(self) -> None:
+        # `if true; then` and `fi`, each removed alone, are no Bash the grammar reads, so neither is a definition of
+        # its own, and each is a change to the function that held it.
+        before = {"tools/tool.sh": "#!/usr/bin/env bash\nf() {\n  echo 1\n  if true; then\n    echo 2\n  fi\n}\n"}
+        after = {"tools/tool.sh": "#!/usr/bin/env bash\nf() {\n  echo 1\n    echo 2\n}\n"}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(
+            written.startswith("UNTESTED tools/tool.sh:2 function f, added lines none (it only removes lines), "),
+            written,
+        )
+
+    def test_a_bash_test_s_comment_inside_a_substitution_or_an_array_names_nothing(self) -> None:
+        tool = {"tools/report.sh": "#!/usr/bin/env bash\ndays_old() {\n  echo 1\n}\n"}
+        changed = {"tools/report.sh": tool["tools/report.sh"].replace("echo 1", "echo 2")}
+        test = {
+            "tests/test-report.sh": (
+                "#!/usr/bin/env bash\nout=$(\n  # days_old is not run here\n  bash tools/report.sh --check\n)\n"
+                "args=(\n  # days_old\n  --flag\n)\n"
+            )
+        }
+        code, out, written = self.run_condition({**tool, **test}, {**changed, **test})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED tools/report.sh:2 function days_old, "), written)
+
     def test_a_bash_file_the_grammar_refuses_is_listed_as_unparsed(self) -> None:
         before = {"tools/broken.sh": "#!/usr/bin/env bash\nf() {\n  echo 1\n}\n"}
         after = {"tools/broken.sh": "#!/usr/bin/env bash\nf() {\n  echo 'x\n}\n"}
@@ -762,7 +787,7 @@ class PresenceReadTests(unittest.TestCase):
         code = self.module._code_text("tests/test_x.sh", "run_thing # days_old\necho '# kept'\n").split()
         self.assertIn("run_thing", code)
         self.assertNotIn("days_old", code)
-        self.assertIn("kept'", code)
+        self.assertIn("kept", code)
 
     def test_a_bash_test_the_grammar_refuses_raises_rather_than_naming_anything(self) -> None:
         with self.assertRaises(ValueError):

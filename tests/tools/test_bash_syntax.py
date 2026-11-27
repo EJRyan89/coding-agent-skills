@@ -776,13 +776,26 @@ def test_a_function_spans_from_the_line_bash_defines_it_on_to_the_last_line_its_
     assert defined == {name: start for name, (start, _) in FUNCTION_SPANS.items()}
 
 
-def test_a_function_followed_by_a_here_document_ends_on_its_operator_s_line_as_the_module_states() -> None:
-    text = "f() { cat; } <<EOF\nbody\nEOF\n"
+@pytest.mark.parametrize(
+    ("text", "span"),
+    [
+        # A here-document after the body, or one opened on the body's closing line, ends the function on the
+        # operator's line, as the module states.
+        ("f() { cat; } <<EOF\nbody\nEOF\n", (1, 1)),
+        ("f() { cat <<EOF; }\nbody\nEOF\n", (1, 1)),
+        # A header a continuation splits starts on its first word's line, where Bash reports the next.
+        ("f \\\n() { :; }\n", (1, 2)),
+        ("function \\\nf { :; }\n", (1, 2)),
+    ],
+)
+def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_header(
+    text: str, span: tuple[int, int]
+) -> None:
     bash_agreement.assert_reader_agrees([text])
     [definition] = [
         command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
     ]
-    assert (definition.line, definition.end) == (1, 1)
+    assert (definition.line, definition.end) == span
 
 
 @pytest.mark.parametrize(
@@ -790,8 +803,21 @@ def test_a_function_followed_by_a_here_document_ends_on_its_operator_s_line_as_t
     [
         ("run_thing # days_old\n", {"run_thing"}, {"days_old"}),
         ("# days_old\rrun_thing\n", set(), {"days_old", "run_thing"}),
-        ("echo '# kept' x#y\n", {"'#", "kept'", "x#y"}, set()),
-        ("cat <<EOF\ndays_old # in the body\nEOF\n", {"days_old", "#"}, set()),
+        # A quoted `#` and one inside a word start no comment; a word's quotes are not kept.
+        ("echo '# kept' x#y\n", {"#", "kept", "x#y"}, set()),
+        # A comment inside a command or process substitution, in backquotes, in double quotes, or inside a ${ }, is
+        # one Bash reads in the subshell, and so is one among an array assignment's elements.
+        ('out=$(\n  # days_old\n  "$S" --check\n)\n', {"--check"}, {"days_old"}),
+        ("echo `true # days_old`\n", {"true"}, {"days_old"}),
+        ("cat <(echo # days_old\n)\n", {"echo"}, {"days_old"}),
+        ('echo "$(f # days_old\n)"\n', {"f"}, {"days_old"}),
+        ('echo "${x:-$(f # days_old\n)}"\n', {"f"}, {"days_old"}),
+        ("a=( x # days_old\n y )\n", {"x", "y"}, {"days_old"}),
+        # A here-document's body that is Bash, as a script handed to a shell is, loses its comments too; one that is
+        # not is data, kept whole.
+        ("bash <<'EOF'\n# days_old\nrun_thing\nEOF\n", {"run_thing"}, {"days_old"}),
+        ("cat <<EOF\ndays_old # in the body\nEOF\n", {"days_old"}, {"body"}),
+        ("cat <<EOF\nit's days_old\nEOF\n", {"it's", "days_old"}, set()),
     ],
 )
 def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(

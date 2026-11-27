@@ -94,8 +94,13 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A `for` or `select` loop whose body is a `{ }` group rather than `do ... done`, arithmetic or not, which Bash reads,
   raises NotRead.
 - A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
-- A function whose body is followed by a here-document, as `f() { cat; } <<EOF`, ends on the line of the here-document's
-  operator, not on its delimiter line, since a here-document's body keeps no line of its own.
+- A function whose last token is a here-document's operator, after its body as `f() { cat; } <<EOF` or inside it on
+  its closing line as `f() { cat <<EOF; }`, ends on that operator's line, not on the delimiter line, since a
+  here-document's body keeps no line of its own, though the body's lines belong to the function.
+- A function header a line continuation splits, a backslash ending the line after its name or its `function` word,
+  starts on the line of its first word, where Bash reports the line of the `(` or of the name after it.
+- Bash 3.2 reports a function holding a nested definition, as `outer() { inner() { :; }; }` written over lines, on the
+  nested definition's line; the reader gives the line Bash 4 and later report, the outer header's.
 - A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Bash 3.2 ends a `${ }` at a `}` inside a command substitution it holds, as in `${x:-$(: })}`, and a `$( )` in
   double quotes at a `)` inside a `${ }` it holds, as in `"$(echo ${x+ )})"`, each of which Bash 4 and later read
@@ -1918,14 +1923,42 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
 
 
 def uncommented_text(text: str) -> str:
-    """Text's words and operators, each as written, and its here-documents' bodies, joined by spaces: everything Bash
-    reads in it but its comments, for a reader that searches what a script names outside one. Raises BashSyntaxError
-    where the words cannot be read, as an unclosed quote."""
+    """Everything Bash reads in text but its comments, joined by spaces, for a reader that searches what a script names
+    outside one: each operator, and each word's text without its quotes, with the body of every command or process
+    substitution it holds read the same way, as the subshell Bash runs it in reads it, and an array assignment's
+    elements read so too. A here-document's body that is Bash the grammar reads, as a script handed to a shell is, is
+    read the same way, and any other body is data, kept whole. Raises BashSyntaxError where the words cannot be read,
+    as an unclosed quote."""
     tokens = Lexer(text, lines=source_lines(text)).run()
-    return " ".join(
-        token.raw if isinstance(token, Word) else token.text if isinstance(token, Operator) else token.body
-        for token in tokens
-    )
+    return " ".join(_uncommented_token(token) for token in tokens)
+
+
+# A word's dynamic parts that name a substitution's form alone, whose body the word's substitutions hold.
+SUBSTITUTION_FORMS = frozenset({"$(", "`", "<(", ">("})
+
+
+def _uncommented_token(token: Token) -> str:
+    if isinstance(token, Operator):
+        return token.text
+    if isinstance(token, HereDocument):
+        try:
+            return uncommented_text(token.body)
+        except BashSyntaxError:
+            return token.body
+    if token.array:
+        name, opened, elements = token.raw.partition("(")
+        return f"{name}{opened} {uncommented_text(elements.removesuffix(')'))} )"
+    pieces: list[str] = []
+    for part in token.parts:
+        if part.kind != "dynamic" or part.text in SUBSTITUTION_FORMS:
+            pieces.append(part.text)
+            continue
+        # A braced expansion's text holds each substitution inside it, which is read below.
+        braced = part.text
+        for body in token.substitutions:
+            braced = braced.replace(body, " ")
+        pieces.append(braced)
+    return " ".join(["".join(pieces), *(uncommented_text(body) for body in token.substitutions)])
 
 
 def simple_commands(text: str) -> list[Simple]:

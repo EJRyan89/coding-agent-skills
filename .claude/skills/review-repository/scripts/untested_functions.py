@@ -711,7 +711,8 @@ def excluded_entry(change: FileChange, reason: str) -> str:
 
 def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | None = None) -> list[str]:
     """One block for each changed script the snapshot leaves out by a recorded exclusion, then for each changed
-    definition no test names, and for each changed Python file `ast` cannot read; `unreadable` gains each test it
+    definition no test names, and for each changed Python file `ast` cannot read or changed Bash file the Bash grammar
+    refuses; `unreadable` gains each test it
     consulted and could not read, with the reason. A changed script the snapshot lacks without a recorded exclusion,
     a link to nothing included, raises MissingEvidence naming it as not held, and one of another kind, or that a stat
     cannot examine, raises it naming that."""
