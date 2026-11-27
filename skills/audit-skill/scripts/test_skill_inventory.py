@@ -2239,9 +2239,21 @@ class StatusLineTests(TemporaryTestCase):
 class InstructionsTests(unittest.TestCase):
     def test_every_line_the_script_prints_has_a_stated_handling(self) -> None:
         # The fact names the script prints: a string, or an f-string's leading text, that starts with an upper-case
-        # name followed by a space or ending there. Tool names are data, not facts.
+        # name followed by a space or ending there. Tool names are data, not facts, and so are the keys of a
+        # module-level sanction, such as LANGUAGE_READER_ALLOWED, which name the constants it excuses.
+        tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+        sanction_keys = {
+            id(key)
+            for statement in tree.body
+            if isinstance(statement, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id.endswith("_ALLOWED") for target in statement.targets)
+            and isinstance(statement.value, ast.Dict)
+            for key in statement.value.keys
+        }
         printed: set[str] = set()
-        for node in ast.walk(ast.parse(SCRIPT.read_text(encoding="utf-8"))):
+        for node in ast.walk(tree):
+            if id(node) in sanction_keys:
+                continue
             if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
                 node = node.values[0]
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
