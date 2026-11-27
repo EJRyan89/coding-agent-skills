@@ -247,6 +247,8 @@ class NodeCatalogueTests(unittest.TestCase):
         statements.append({"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[1]], "nested": [1]})
         statements += [
             {"pipelines": [], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [0, 1]},
+            # A statement with no pipelines of its own, whose stages are empty but whose blocks are not.
+            {"pipelines": [], "operators": [], "stages": [], "blocks": [[1]], "nested": [0, 1]},
             {"pipelines": [0], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
             {"pipelines": [["0"]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
             {"pipelines": [[0]], "operators": None, "stages": [[1]], "blocks": [[]], "nested": [1]},
@@ -274,6 +276,32 @@ class NodeCatalogueTests(unittest.TestCase):
                 self.assertEqual([], reading.notes)
                 [call] = reading.calls
                 self.assertEqual(place, call.place.start)
+
+    def test_read_statement_reads_no_statement_it_could_not_list_whole(self) -> None:
+        # read_statement checks each statement's shape again, though reaches_every_command has refused every shape
+        # it refuses: a statement it could not list whole is noted and leaves the location unknown, and none of its
+        # commands is read, whichever part of it is not the list it reads.
+        commands = [{"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]}]
+        whole: dict[str, Any] = {"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []}
+        reading = hub_guard.Reading({}, "x")
+        self.assertEqual(
+            Path("/elsewhere"),
+            hub_guard.PowerShellReader(reading, commands)
+            .read_statement(whole, hub_guard.Directory(Path("/elsewhere")))
+            .cwd,
+        )
+        self.assertEqual([], reading.notes)
+        malformed: list[Any] = [{**whole, key: None} for key in whole]
+        malformed.append({**whole, "stages": [[5]]})
+        malformed.append("statement")
+        for statement in malformed:
+            with self.subTest(statement=statement):
+                reading = hub_guard.Reading({}, "x")
+                reader = hub_guard.PowerShellReader(reading, commands)
+                place = reader.read_statement(statement, hub_guard.Directory(Path("/elsewhere")))
+                self.assertIs(hub_guard.UNKNOWN, place)
+                self.assertEqual(["a PowerShell statement the reader could not list"], reading.notes)
+                self.assertEqual([], reading.calls)
 
     def test_every_command_of_every_sample_is_one_a_statement_lists(self) -> None:
         # Each command pwsh's reader finds is in a statement's pipelines or its nested commands, so none goes unread,

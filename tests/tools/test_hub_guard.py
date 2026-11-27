@@ -4666,6 +4666,21 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo "$(git status && git commit -m x)"', self.tree))
         self.assertIn(WRITES.format("commit"), self.reason)
 
+    def test_a_chain_follows_each_operator_to_the_side_it_runs_on(self) -> None:
+        # The pipeline after && runs where the one before it succeeded, and the one after || where it failed. A move to
+        # a folder that is not there yet may do either: after &&, the commit runs in that folder, outside every
+        # repository, and after ||, where the move failed, in the hub.
+        missing = self.root / "not there yet"
+        for tail, expected in (
+            ("&& git commit -m x", None),
+            ("|| git commit -m x", "deny"),
+            ("&& Write-Output $(git commit -m x)", None),
+            ("|| Write-Output $(git commit -m x)", "deny"),
+        ):
+            command = f"Set-Location '{missing}' {tail}"
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.powershell(command, self.hub))
+
     def test_a_background_job_leaves_the_session_where_it_was_but_for_a_nested_command_that_may_move_it(self) -> None:
         # A pipeline run as a background job moves its job's location, never the session's, so the statement after it
         # runs where the session was; a nested command in it is read as one that may move the session, which leaves
