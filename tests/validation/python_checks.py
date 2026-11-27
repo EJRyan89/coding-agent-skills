@@ -48,6 +48,7 @@ from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_client import GLOBAL_VALUE_OPTIONS
 from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
+from memoized_walk import MemoizedWalk
 from path_containment import posix_within, relative_within
 from python_names import TYPE_PARAMETERS, chosen_callee
 from runtime_support import names_git
@@ -2523,6 +2524,7 @@ class _FunctionReads:
                 self.messages.append(node)
         self.status_names = self._closure(self.reads_status)
         self.output_names = self._closure(self.reads_output)
+        self._name_receivers = MemoizedWalk(self._receivers_of_name, frozenset[str]())
 
     def _closure(self, reads: Callable[[ast.AST, Set[str]], bool]) -> frozenset[str]:
         names: set[str] = set()
@@ -2548,16 +2550,19 @@ class _FunctionReads:
         """Whether an expression reads a command's output, itself or through `names`."""
         return any(_is_output(found) or (isinstance(found, ast.Name) and found.id in names) for found in ast.walk(node))
 
-    def receivers(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> set[str]:
+    def receivers(self, node: ast.AST) -> set[str]:
         """The results whose exit status an expression reads, by their spelling, through the names it reads too."""
         found: set[str] = set()
         for part in ast.walk(node):
             if _is_status(part):
                 found.add(ast.dump(part.value))
-            elif isinstance(part, ast.Name) and part.id in self.status_names and part.id not in seen:
-                for value in self.values[part.id]:
-                    found |= self.receivers(value, seen | {part.id})
+            elif isinstance(part, ast.Name) and part.id in self.status_names:
+                found |= self._name_receivers(part.id)
         return found
+
+    def _receivers_of_name(self, name: str, walk: MemoizedWalk[str, frozenset[str]]) -> frozenset[str]:
+        """The results whose exit status a name's values read, each name answered once through `walk`."""
+        return frozenset().union(*(self.receivers(value) for value in self.values[name]))
 
     def status(self, node: ast.AST) -> bool:
         return self.reads_status(node, self.status_names) or any(_is_status(found) for found in ast.walk(node))
