@@ -17,6 +17,16 @@ table, through globals(), vars(), or setattr, or through a call that takes the t
 `dict.update(NOT_READ, ...)` or `operator.setitem(NOT_READ, ...)`; and a rebinding of the name by an import, a `def`,
 a `class`, an `except ... as`, or a `match` capture. It takes a write to a class's own NOT_READ through an attribute,
 as `self.NOT_READ[key] = reason`, for one to a module's table.
+
+Such a module names each catalogue it decides, with the test that holds every entry of it, in a module-level
+CATALOGUE_TESTS = {catalogue: "<suite path>::<test>"}, which ejryan89-skill-core's catalogue_tests.py reads: a module
+that binds NOT_READ names at least one, each value names a test its tracked suite defines, a top-level function or a
+method of a top-level class, and the table is held to its one literal as NOT_READ is. A module that decides a
+catalogue under another table's name, as the hub guard's builtins, declares it too, and is held once it does. Which
+entries a named test holds is review's judgment: the policy reads no test's body, so a test of another module passes.
+A test counts only by a name starting with `test`, as pytest and unittest collect one. Stated limits: a suite under
+tests/fixtures/, which no run collects, is still a tracked suite a reference may name; and a test defined under a
+platform `if` is no top-level function or method, so it cannot be named.
 """
 
 from __future__ import annotations
@@ -26,9 +36,12 @@ import re
 import unittest
 from pathlib import Path
 
+import catalogue_tests
+import python_reader
 from duplication import DUPLICATION_ROOTS
 from path_containment import posix_within
 from python_checks import FORMAT_ROOTS, ISSUE_REFERENCE_EXCLUDED, file_comments
+from suite_names import is_suite_name
 from validation_support import (
     MODULE_SCOPE,
     REPOSITORY_ROOT,
@@ -45,6 +58,8 @@ ALLOWANCE = "SKIP_ALLOWED"
 # or the policy it excuses, in the repository's own Python but its suites and fixtures, DUPLICATION_ROOTS; a suite and
 # a fault driver under tests/ name their own rows, which may share the name, as a fault driver's NOT_READ reason does.
 NOT_READ_TABLE = "NOT_READ"
+# The table in which such a module names each catalogue it decides with the test that holds it.
+CATALOGUE_TESTS_TABLE = catalogue_tests.TABLE
 # The methods of a dictionary that change nothing; a call of any other on the table is a write to it.
 READING_METHODS = frozenset({"get", "keys", "values", "items", "copy", "__contains__", "__getitem__", "__len__"})
 # What skips a test or expects it to fail, by the dotted name the module's imports resolve it to.
@@ -199,10 +214,10 @@ def skip_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def not_read_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each module-level NOT_READ of a reader or a policy that does not map each catalogue entry to its reason."""
-    problems: list[str] = []
-    paths = sorted(
+def table_modules(root: Path, files: list[Path]) -> list[Path]:
+    """The modules whose NOT_READ and CATALOGUE_TESTS validation reads: the repository's own Python under
+    DUPLICATION_ROOTS but its suites and fixtures."""
+    return sorted(
         (
             path
             for path in files
@@ -212,7 +227,12 @@ def not_read_problems(root: Path, files: list[Path]) -> list[str]:
         ),
         key=lambda path: path.relative_to(root).as_posix(),
     )
-    for _, name, tree in python_trees(paths, root, problems):
+
+
+def not_read_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each module-level NOT_READ of a reader or a policy that does not map each catalogue entry to its reason."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(table_modules(root, files), root, problems):
         if module_allowance(tree, NOT_READ_TABLE) is None:
             problems.append(
                 f"{name} {NOT_READ_TABLE} must map each catalogue entry the module leaves unread to its reason, as a "
@@ -226,40 +246,93 @@ def not_read_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def names_table(node: ast.expr) -> bool:
-    """Whether an expression names a NOT_READ table: the name, or an attribute of that name on a module."""
-    return (isinstance(node, ast.Name) and node.id == NOT_READ_TABLE) or (
-        isinstance(node, ast.Attribute) and node.attr == NOT_READ_TABLE
-    )
+def suite_defines(root: Path, suites: set[str], path: str, test: str) -> str | None:
+    """Why a reference's suite does not define its test: the suite is no tracked suite, cannot be read, does not parse,
+    or does not define the test, each named with its reason; None when it does."""
+    if path not in suites:
+        return "which is no tracked suite"
+    try:
+        text = (root / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return f"whose suite cannot be read ({error})"
+    try:
+        tree = python_reader.parse(text, filename=path)
+    except python_reader.PythonRefused as error:
+        return f"whose suite does not parse ({error})"
+    return None if catalogue_tests.defines(tree, test) else "whose suite defines no test of that name"
 
 
-def table_assignment(tree: ast.Module) -> ast.stmt | None:
+def catalogue_test_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each module-level CATALOGUE_TESTS that is no literal dictionary of texts, names a test its tracked suite does not
+    define, or is written after its assignment, and each module that binds NOT_READ but names no catalogue test."""
+    problems: list[str] = []
+    suites = {path.relative_to(root).as_posix() for path in files if path.suffix == ".py" and is_suite_name(path.name)}
+    for _, name, tree in python_trees(table_modules(root, files), root, problems):
+        declared = catalogue_tests.declared(tree)
+        if declared is None:
+            problems.append(
+                f"{name} {CATALOGUE_TESTS_TABLE} must map each catalogue the module decides to the test that holds "
+                f"it, as a literal dictionary of non-empty texts, each <suite path>{catalogue_tests.SEPARATOR}<test>"
+            )
+            declared = {}
+        elif not declared and table_assignment(tree) is not None:
+            problems.append(
+                f"{name} binds {NOT_READ_TABLE} but names no catalogue test; map each catalogue it decides to the "
+                f"test that holds it in {CATALOGUE_TESTS_TABLE}"
+            )
+        for catalogue, value in declared.items():
+            found = catalogue_tests.reference(value)
+            fault = (
+                f"which is not <suite path>{catalogue_tests.SEPARATOR}<test>"
+                if found is None
+                else suite_defines(root, suites, *found)
+            )
+            if fault is not None:
+                problems.append(
+                    f"{name} {CATALOGUE_TESTS_TABLE} names {value} for {catalogue}, {fault}; name the test that "
+                    "decides every entry of that catalogue"
+                )
+        problems += [
+            f"{name}:{line} writes {CATALOGUE_TESTS_TABLE} after the assignment validation reads it from; add each "
+            "entry to that literal instead"
+            for line in table_writes(tree, CATALOGUE_TESTS_TABLE)
+        ]
+    return problems
+
+
+def names_table(node: ast.expr, table: str = NOT_READ_TABLE) -> bool:
+    """Whether an expression names a module's table, NOT_READ unless `table` names another: the name, or an attribute
+    of that name on a module."""
+    return (isinstance(node, ast.Name) and node.id == table) or (isinstance(node, ast.Attribute) and node.attr == table)
+
+
+def table_assignment(tree: ast.Module, table: str = NOT_READ_TABLE) -> ast.stmt | None:
     """The module-level assignment module_allowance reads the table from: the first that binds the name."""
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id == NOT_READ_TABLE for target in targets):
+            if any(isinstance(target, ast.Name) and target.id == table for target in targets):
                 return node
     return None
 
 
-def binds_table_name(scope: ast.AST) -> bool:
+def binds_table_name(scope: ast.AST, table: str = NOT_READ_TABLE) -> bool:
     """Whether a function's or a class's own body binds the name, making it a local one there rather than the table: a
     parameter of any kind, or a name stored or deleted."""
     pending = list(ast.iter_child_nodes(scope))
     while pending:
         node = pending.pop()
-        if isinstance(node, ast.arg) and node.arg == NOT_READ_TABLE:
+        if isinstance(node, ast.arg) and node.arg == table:
             return True
-        if isinstance(node, ast.Name) and node.id == NOT_READ_TABLE and isinstance(node.ctx, ast.Store | ast.Del):
+        if isinstance(node, ast.Name) and node.id == table and isinstance(node.ctx, ast.Store | ast.Del):
             return True
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
             pending.extend(ast.iter_child_nodes(node))
     return False
 
 
-def declares_table_global(scope: ast.AST) -> bool:
-    return any(isinstance(node, ast.Global) and NOT_READ_TABLE in node.names for node in ast.walk(scope))
+def declares_table_global(scope: ast.AST, table: str = NOT_READ_TABLE) -> bool:
+    return any(isinstance(node, ast.Global) and table in node.names for node in ast.walk(scope))
 
 
 def written_expression(node: ast.AST) -> ast.expr | None:
@@ -275,28 +348,29 @@ def written_expression(node: ast.AST) -> ast.expr | None:
     return None
 
 
-def table_writes(tree: ast.Module) -> list[int]:
-    """The line of each write to a module's NOT_READ table after the assignment its entries are read from: a binding of
-    the name at module level, or in a function that declares it global; a subscript stored or deleted; and a call of
-    a method that changes a dictionary. The bare name is the table wherever Python resolves it to the module's: not in
-    a function or a class whose own body binds it without declaring it global."""
-    first = table_assignment(tree)
+def table_writes(tree: ast.Module, name: str = NOT_READ_TABLE) -> list[int]:
+    """The line of each write to a module's table, NOT_READ unless `name` names another, after the assignment its
+    entries are read from: a binding of the name at module level, or in a function that declares it global; a
+    subscript stored or deleted; and a call of a method that changes a dictionary. The bare name is the table wherever
+    Python resolves it to the module's: not in a function or a class whose own body binds it without declaring it
+    global."""
+    first = table_assignment(tree, name)
     held = set() if first is None else {id(target) for target in ast.walk(first)}
     lines: list[int] = []
 
     def table(node: ast.expr, table_here: bool) -> bool:
-        return names_table(node) and (table_here or isinstance(node, ast.Attribute))
+        return names_table(node, name) and (table_here or isinstance(node, ast.Attribute))
 
     def visit(node: ast.AST, table_here: bool, functions_inherit: bool) -> None:
         # A class's own names are not seen from the functions it defines, so a method resolves the bare name as the
         # scope around the class does: functions_inherit carries that past a class body.
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
-            inner = declares_table_global(node) or (functions_inherit and not binds_table_name(node))
+            inner = declares_table_global(node, name) or (functions_inherit and not binds_table_name(node, name))
             for child in ast.iter_child_nodes(node):
                 visit(child, inner, inner)
             return
         if isinstance(node, ast.ClassDef):
-            inner = declares_table_global(node) or (table_here and not binds_table_name(node))
+            inner = declares_table_global(node, name) or (table_here and not binds_table_name(node, name))
             for child in ast.iter_child_nodes(node):
                 visit(child, inner, functions_inherit)
             return
@@ -332,6 +406,9 @@ class WorkaroundPolicies(unittest.TestCase):
 
     def test_repository_gives_every_catalogue_entry_left_unread_its_reason(self) -> None:
         self.assertEqual([], not_read_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_names_a_test_its_suite_defines_for_every_catalogue_a_module_decides(self) -> None:
+        self.assertEqual([], catalogue_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_leaves_no_work_for_later_in_a_comment(self) -> None:
         self.assertEqual([], later_comment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

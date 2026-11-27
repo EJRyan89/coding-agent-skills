@@ -289,6 +289,22 @@ IMPORT_FIELDS = frozenset(
 # The fields of a call call_arguments and resolved_calls read: each positional argument, a `*` unpacking among them,
 # each keyword argument, and a `**` unpacking, the keyword whose name is None.
 ARGUMENT_FIELDS = frozenset({"Call.func", "Call.args", "Call.keywords", "keyword.arg", "keyword.value"})
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "the expressions Python's ast writes as a call's function": (
+        "tests/validation/test_python_forms.py::"
+        "test_every_form_the_runners_ast_or_the_newest_python_defines_is_decided_once"
+    ),
+    "the fields of Python's import statements": (
+        "tests/validation/test_python_forms.py::"
+        "test_every_form_the_runners_ast_or_the_newest_python_defines_is_decided_once"
+    ),
+    "the fields of a Python call's arguments": (
+        "tests/validation/test_python_forms.py::"
+        "test_every_form_the_runners_ast_or_the_newest_python_defines_is_decided_once"
+    ),
+}
 # Each form of the catalogue above that the shared readers neither read nor refuse, with why.
 NOT_READ = {
     "callee Await": (

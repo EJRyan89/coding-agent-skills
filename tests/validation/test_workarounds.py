@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from validation_support import write_fixture_tree
-from workarounds import later_comment_problems, not_read_problems, skip_problems
+from workarounds import catalogue_test_problems, later_comment_problems, not_read_problems, skip_problems
 
 SUITE = "tests/test_fixture.py"
 
@@ -320,3 +320,163 @@ def test_each_not_read_problem_names_its_module_its_line_and_what_to_do() -> Non
         "tools/reader.py NOT_READ must map each catalogue entry the module leaves unread to its reason, as a literal "
         "dictionary of non-empty texts",
     ]
+
+
+def fixture_catalogue_tests(files: dict[str, str]) -> list[str]:
+    """The CATALOGUE_TESTS problems of a fixture tree."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository with spaces"
+        write_fixture_tree(root, files)
+        return catalogue_test_problems(root, [root / name for name in files])
+
+
+# A suite the fixtures' CATALOGUE_TESTS name: a top-level test, a test method, and a function nested in a test; and a
+# file of the same text whose name is no suite's.
+CATALOGUE_SUITE = (
+    "import unittest\n\n\ndef test_words():\n    def test_nested():\n        pass\n\n\n"
+    "class Catalogue(unittest.TestCase):\n    def test_options(self):\n        pass\n\n"
+    "    def setUp(self):\n        pass\n"
+)
+SUITES = {"tests/tools/test_reader.py": CATALOGUE_SUITE, "skills/a/scripts/helper.py": CATALOGUE_SUITE}
+# The refusal of a reference to a name its suite defines no test by: none, one nested, a class, or a method no runner
+# collects.
+NO_TEST = "whose suite defines no test of that name"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
+        "CATALOGUE_TESTS: dict[str, str] = {'options': 'tests/tools/test_reader.py::Catalogue.test_options'}\n",
+        "NOT_READ = {'coproc': 'why'}\nCATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
+        "NOT_READ: dict[str, str] = {}\nCATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
+        # A module that decides no catalogue declares none.
+        "WORDS = ['coproc']\n",
+        "CATALOGUE_TESTS = {}\n",
+    ],
+)
+def test_a_catalogue_test_table_naming_a_test_its_suite_defines_passes(source: str) -> None:
+    for name in (READER, "tools/reader.py", "deployer/reader.py", ".claude/skills/a/scripts/reader.py"):
+        assert fixture_catalogue_tests({name: source, **SUITES}) == [], (name, source)
+
+
+@pytest.mark.parametrize(
+    ("source", "fault"),
+    [
+        ("CATALOGUE_TESTS = {'words': ''}\n", "must map each catalogue"),
+        ("CATALOGUE_TESTS = {'words': 1}\n", "must map each catalogue"),
+        ("CATALOGUE_TESTS = ['tests/tools/test_reader.py::test_words']\n", "must map each catalogue"),
+        ("CATALOGUE_TESTS = {'words': TEST}\n", "must map each catalogue"),
+        ("NOT_READ = {'coproc': 'why'}\n", "binds NOT_READ but names no catalogue test"),
+        ("NOT_READ: dict[str, str] = {}\nCATALOGUE_TESTS = {}\n", "binds NOT_READ but names no catalogue test"),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py'}\n", "which is not <suite path>::<test>"),
+        ("CATALOGUE_TESTS = {'words': 'test_words'}\n", "which is not <suite path>::<test>"),
+        (
+            "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::A.B.test_x'}\n",
+            "which is not <suite path>::<test>",
+        ),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_gone.py::test_words'}\n", "which is no tracked suite"),
+        ("CATALOGUE_TESTS = {'words': 'skills/a/scripts/helper.py::test_words'}\n", "which is no tracked suite"),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_gone'}\n", NO_TEST),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_nested'}\n", NO_TEST),
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue'}\n", NO_TEST),
+        # A method the suite defines but no runner collects as a test, as unittest's setUp.
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.setUp'}\n", NO_TEST),
+        (
+            "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.test_gone'}\n",
+            NO_TEST,
+        ),
+        (
+            "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\nCATALOGUE_TESTS['x'] = 'y'\n",
+            "writes CATALOGUE_TESTS after the assignment",
+        ),
+        (
+            "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n"
+            "def add() -> None:\n    CATALOGUE_TESTS.update(x='y')\n",
+            "writes CATALOGUE_TESTS after the assignment",
+        ),
+    ],
+)
+def test_a_catalogue_test_table_that_names_no_test_its_suite_defines_fails(source: str, fault: str) -> None:
+    for name in (READER, "tools/reader.py", "tests/validation/policy.py"):
+        problems = fixture_catalogue_tests({name: source, **SUITES})
+        assert len(problems) == 1, (name, problems)
+        assert problems[0].startswith(name), (name, problems)
+        assert fault in problems[0], (name, problems)
+
+
+CATALOGUE_TABLE = "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "CATALOGUE_TESTS = {}\n",
+        "def rebind() -> None:\n    global CATALOGUE_TESTS\n    CATALOGUE_TESTS = {}\n",
+        "def add() -> None:\n    global CATALOGUE_TESTS\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "class Reader:\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "import reader\nreader.CATALOGUE_TESTS = {}\n",
+    ],
+)
+def test_a_rebinding_of_catalogue_tests_after_its_assignment_fails_as_one_of_not_read_does(write: str) -> None:
+    for table, text in (
+        ("CATALOGUE_TESTS", CATALOGUE_TABLE + write),
+        ("NOT_READ", TABLE + write.replace("CATALOGUE_TESTS", "NOT_READ")),
+    ):
+        problems = (
+            fixture_catalogue_tests({READER: text, **SUITES})
+            if table == "CATALOGUE_TESTS"
+            else fixture_not_read({READER: text})
+        )
+        assert [problem for problem in problems if f"writes {table} after the assignment" in problem] == problems
+        assert len(problems) == 1, (table, problems)
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "def local() -> None:\n    CATALOGUE_TESTS = {}\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "def add(CATALOGUE_TESTS: dict[str, str]) -> None:\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "class Reader:\n    def add(self) -> None:\n        CATALOGUE_TESTS = {}\n        CATALOGUE_TESTS['x'] = 'y'\n",
+    ],
+)
+def test_a_local_name_spelled_catalogue_tests_is_no_write_to_the_table(use: str) -> None:
+    assert fixture_catalogue_tests({READER: CATALOGUE_TABLE + use, **SUITES}) == []
+
+
+def test_a_suite_a_fault_driver_and_a_fixture_declare_no_catalogue_tests() -> None:
+    text = "NOT_READ = 'a reason a fault driver shares'\nCATALOGUE_TESTS = {'words': 'gone.py::test_x'}\n"
+    files = {
+        "skills/a/scripts/test_reader.py": text,
+        "tests/malformed_input/faults_x.py": text,
+        "tests/tools/agreement.py": text,
+        "tests/fixtures/repo/skills/a/scripts/reader.py": text,
+    }
+    assert fixture_catalogue_tests(files) == []
+
+
+def test_each_problem_names_the_module_the_reference_why_and_what_to_do() -> None:
+    files = {
+        "tools/reader.py": "NOT_READ = {'x': 'why'}\nCATALOGUE_TESTS = {'words': 'tests/test_reader.py::test_x'}\n",
+        "tests/test_reader.py": "def test_y():\n    pass\n",
+    }
+    assert fixture_catalogue_tests(files) == [
+        "tools/reader.py CATALOGUE_TESTS names tests/test_reader.py::test_x for words, whose suite defines no test of "
+        "that name; name the test that decides every entry of that catalogue",
+    ]
+
+
+def test_a_suite_that_does_not_parse_or_cannot_be_read_is_named_with_the_reason() -> None:
+    reader = "CATALOGUE_TESTS = {'words': 'tests/test_broken.py::test_x'}\n"
+    [problem] = fixture_catalogue_tests({"tools/reader.py": reader, "tests/test_broken.py": "def test_x(:\n"})
+    assert problem.startswith("tools/reader.py CATALOGUE_TESTS names tests/test_broken.py::test_x for words, whose ")
+    assert "whose suite does not parse (" in problem
+    assert "line 1" in problem
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository with spaces"
+        write_fixture_tree(root, {"tools/reader.py": reader})
+        (root / "tests").mkdir()
+        (root / "tests" / "test_broken.py").write_bytes(b"def test_x():\n    return '\xff'\n")
+        [problem] = catalogue_test_problems(root, [root / "tools" / "reader.py", root / "tests" / "test_broken.py"])
+    assert "whose suite cannot be read (" in problem
+    assert "utf-8" in problem

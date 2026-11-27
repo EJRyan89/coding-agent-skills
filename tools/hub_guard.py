@@ -495,6 +495,38 @@ TEMPORARY_VARIABLES = frozenset({"TMP", "TEMP", "TMPDIR"})
 # Files a redirection may write that are no file of a checkout.
 DEVICE_FILES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul", "NUL"})
 
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "Bash's builtins, as `compgen -b` prints them": (
+        "tests/tools/test_hub_guard.py::test_every_builtin_bash_prints_is_followed_not_followed_or_moves_nothing"
+    ),
+    "git's options that take a path": (
+        "tests/tools/test_hub_guard_git_options.py::CatalogueTests.test_every_option_git_lists_with_a_path_is_decided"
+    ),
+    "the operands git's usage names with a path": (
+        "tests/tools/test_hub_guard_git_options.py::CatalogueTests."
+        "test_every_operand_git_s_usage_names_with_a_path_is_decided"
+    ),
+    "git's boolean options its documentation says write": (
+        "tests/tools/test_hub_guard_git_options.py::CatalogueTests.test_every_boolean_option_git_says_writes_is_decided"
+    ),
+    "PowerShell's AST node types": (
+        "tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests."
+        "test_every_node_type_powershell_has_has_a_sample_and_each_understood_one_is_a_type_it_has"
+    ),
+    "PowerShell's aliases, its own functions, and its verbs": (
+        "tests/tools/test_hub_guard_pwsh.py::CommandNameTests."
+        "test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands"
+    ),
+    "git's builtin commands, as `git --list-cmds=builtins` prints them": (
+        "tests/tools/test_hub_guard_git_options.py::ReadOnlyCatalogueTests.test_every_builtin_no_row_names_is_refused_in_a_hub"
+    ),
+    "each operand writer's and unread mode's options that take a value, as `git <command> -h` lists them": (
+        "tests/tools/test_hub_guard_git_options.py::CatalogueTests."
+        "test_each_operand_writer_and_unread_mode_skips_the_value_of_every_option_git_lists_with_one"
+    ),
+}
 # Every Bash builtin is followed, not followed, or one that moves nothing, a decision tests/tools/test_hub_guard.py
 # holds to each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's.
 # The builtins the guard follows: cd, pushd, and popd move the shell, and dirs -c clears the stack a later popd reads.

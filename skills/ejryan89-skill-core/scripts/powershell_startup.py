@@ -99,6 +99,17 @@ READ_MODES = {
     "alias": "each alias pwsh's parser takes, as -ep and -cwa, is an entry of PARAMETERS",
     "remaining arguments": "the words after the command's script, or a file, are its arguments and run no command",
 }
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "the parameters pwsh takes at start-up": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_startup.py::test_every_parameter_pwsh_takes_is_decided"
+    ),
+    "pwsh's parameter-binding modes": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::"
+        "test_every_binding_mode_is_read_refused_or_not_read_and_every_parameter_property_is_decided"
+    ),
+}
 # Each binding mode, and each start-up parameter, the reader leaves unread, with why.
 NOT_READ = {
     "colon-joined": (

@@ -30,6 +30,19 @@ VERDICTS: dict[str, tuple[bool, str]] = {}
 VERDICTS_LOCK = threading.Lock()
 WORKSPACE = tempfile.TemporaryDirectory(prefix="bash-agreement.")
 NAMES = itertools.count()
+# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
+# /bin/bash 3.2, which has no mapfile, still holds every reader's decisions to each one: the one catalogue
+# command_wrappers' suite and the hub guard's are held to. PINNED_FROM_BASH is the release every pinned Bash catalogue
+# was printed by, the builtins here and the reserved words, options, and expansion forms test_bash_syntax.py pins, from
+# which on every pinned entry must still be one the runner's Bash prints.
+PINNED_BUILTINS = frozenset(
+    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
+    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
+    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
+    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
+    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
+)
+PINNED_FROM_BASH = (5, 3)
 
 # One Bash reads every unchecked text, since a start costs far more than a reading: each text in a subshell whose
 # function turns on `set -n`, read but do not run, before `eval` parses the text, so its status is the one `bash -n`

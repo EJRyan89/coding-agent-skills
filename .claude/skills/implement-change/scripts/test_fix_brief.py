@@ -241,6 +241,86 @@ def test_an_issue_that_names_neither_a_path_nor_a_symbol_still_carries_the_const
     assert result.brief.endswith(fix_brief.RULES.read_text(encoding="utf-8"))
 
 
+# The construct section's request for the catalogue by hand, written out rather than read from the script.
+BY_HAND = (
+    "Name the construct the issue's rule is about and the catalogue its spellings come from, such as builtins, options "
+    "and their bundled forms, binding modes, import forms, error kinds, exit codes, keys, characters, path spellings, "
+    "or shells, as the sibling-spellings reviewer, `.claude/skills/review-repository/references/sibling-spellings.md`, "
+    "will. Then decide, for each entry, whether the change handles it, and name what it leaves in the pull request."
+)
+# What the construct section adds for a file that lists, in CATALOGUE_TESTS, the catalogues it decides.
+HELD_BY_A_TEST = (
+    "Each file below lists, in `CATALOGUE_TESTS`, the catalogues it decides, each with the test that holds every entry "
+    "of it: read, refused, or named with why in the module's tables, as `NOT_READ`. For a construct among the "
+    "catalogues listed, name its test, and decide there only the entries the change moves; any other construct the "
+    "file reads, another of its tables included, is listed by hand."
+)
+
+
+def test_a_file_s_catalogue_tests_are_listed_each_with_the_test_that_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(
+        tmp_path,
+        {
+            "tools/catalogued.py": (
+                "NOT_READ = {'coproc': 'why'}\n"
+                "CATALOGUE_TESTS = {'reserved words': 'tests/test_catalogued.py::test_words', "
+                "'options': 'tests/test_catalogued.py::Options.test_every_option'}\n"
+            ),
+            "tools/annotated.py": "CATALOGUE_TESTS: dict[str, str] = {'exits': 'tests/test_gate.py::test_exits'}\n",
+            # A NOT_READ alone, an empty table, one bound inside a function, one that is no dictionary of texts, and
+            # source that does not parse each list no catalogue.
+            "tools/bare.py": "NOT_READ = {'coproc': 'why'}\n",
+            "tools/empty.py": "CATALOGUE_TESTS = {}\n",
+            "tools/nested.py": "def f():\n    CATALOGUE_TESTS = {'a': 'tests/test_a.py::test_a'}\n",
+            "tools/malformed.py": "CATALOGUE_TESTS = {'a': 1}\n",
+            "tools/broken.py": "CATALOGUE_TESTS = {\n",
+            # Text that is no Python file's lists none either.
+            "docs/catalogue.md": "CATALOGUE_TESTS = {'a': 'tests/test_a.py::test_a'}\n",
+        },
+    )
+    files = [
+        *("tools/catalogued.py", "tools/annotated.py", "tools/bare.py", "tools/empty.py", "tools/nested.py"),
+        *("tools/malformed.py", "tools/broken.py", "docs/catalogue.md", "tools/reader.py"),
+    ]
+    body = "Read every form: " + ", ".join(f"`{name}`" for name in files) + "."
+    # A Python file given with --path that is not there yet lists none.
+    result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7", "--path", "tools/new.py")
+    assert result.code == 0
+    assert result.section("Construct and its spellings (to complete)") == (
+        f"{BY_HAND}\n\n{HELD_BY_A_TEST}\n\n"
+        "- `tools/catalogued.py`: `reserved words`, held by `tests/test_catalogued.py::test_words`\n"
+        "- `tools/catalogued.py`: `options`, held by `tests/test_catalogued.py::Options.test_every_option`\n"
+        "- `tools/annotated.py`: `exits`, held by `tests/test_gate.py::test_exits`"
+    )
+
+
+def test_a_construct_no_catalogue_test_holds_is_still_listed_by_hand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path, {"tools/bare.py": "NOT_READ = {'coproc': 'why'}\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/reader.py` and `tools/bare.py`."), "7")
+    assert result.code == 0
+    assert result.section("Construct and its spellings (to complete)") == BY_HAND
+
+
+def test_a_file_s_catalogues_past_the_bound_are_cut_with_where_the_rest_are_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = {
+        f"catalogue {index:02}": f"tests/test_held.py::test_{index:02}"
+        for index in range(fix_brief.MAX_CALLER_FILES + 2)
+    }
+    root = repository(tmp_path, {"tools/held.py": f"CATALOGUE_TESTS = {entries!r}\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/held.py`."), "7")
+    shown = list(entries.items())[: fix_brief.MAX_CALLER_FILES]
+    assert result.section("Construct and its spellings (to complete)").endswith(
+        "\n".join(f"- `tools/held.py`: `{name}`, held by `{test}`" for name, test in shown)
+        + "\n- `tools/held.py`: and 2 more catalogues, which its `CATALOGUE_TESTS` lists"
+    )
+
+
 def test_a_name_several_files_hold_is_left_for_the_author_and_a_given_path_not_there_yet_is_new(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

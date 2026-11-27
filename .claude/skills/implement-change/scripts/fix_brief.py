@@ -28,7 +28,10 @@ own twin.
 The brief, a Markdown file written to a new private folder under the temporary directory, holds:
 
 - the files, each named by the issue or by `--path`, or not there yet;
-- the construct and its spellings, for the author to name, as the sibling-spellings reviewer will;
+- the construct and its spellings, for the author to name, as the sibling-spellings reviewer will, and the catalogues
+  each Python file among the brief's files lists in its module-level `CATALOGUE_TESTS`, read through
+  ejryan89-skill-core's `catalogue_tests`, each with the test that holds it, since for a construct among them the author
+  decides there only the entries the change moves;
 - for each symbol, the tracked files holding it as a whole word, as `git grep -w -F` matches one, with their line
   numbers, each file read through lessons_patterns' `Corpus`, which judges its name inside the repository first;
 - for each file, its twin in the other shell, `<name>.sh` beside `<name>.ps1`, each other tracked file of its name in
@@ -55,7 +58,8 @@ Limits: a file or a symbol the issue names in its prose, outside a code span, is
 no file; a symbol's callers are the files that hold its name as a word, which counts a definition, a comment, and a
 different name spelled the same, and misses a call through another name; a tracked file that is refused inside the
 repository, not there, or not UTF-8 holds no caller; a symbol is the issue's identifiers as written, so one spelled as
-words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; a
+words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; the
+catalogues listed are the ones a file declares, so one it decides without declaring is listed by hand; a
 tracked file whose name holds a `\\`, which a POSIX file system allows and Windows does not, is never named by a span
 or a `--path`, since a path is read with each `\\` as `/`, as the lister reads one; a `--path` in another case than
 the name git tracks, which a file system that folds case opens as the tracked file, is a second file, not there yet,
@@ -89,9 +93,11 @@ from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import catalogue_tests
 import file_presence
 import lessons_patterns
 import private_folder
+import python_reader
 import whole_number
 from console import run_main
 from flat_text import fact_line, flat_text
@@ -402,8 +408,28 @@ def _files_section(named_files: Named, given: Sequence[str], tracked: frozenset[
     return lines
 
 
-def _construct_section() -> list[str]:
-    return [
+def catalogued(corpus: lessons_patterns.Corpus, files: Sequence[str]) -> dict[str, dict[str, str]]:
+    """Each Python file of `files` that lists catalogues in a module-level CATALOGUE_TESTS, read through
+    ejryan89-skill-core's catalogue_tests, with each catalogue and the test that holds it; a file that is not there,
+    does not parse, or holds no such literal lists none. The OSError of a file that cannot be examined or read."""
+    found: dict[str, dict[str, str]] = {}
+    for name in files:
+        if not name.endswith(".py"):
+            continue
+        text = corpus.text(name)
+        if text is None:
+            continue
+        try:
+            declared = catalogue_tests.declared(python_reader.parse(text, filename=name))
+        except python_reader.PythonRefused:
+            continue
+        if declared:
+            found[name] = declared
+    return found
+
+
+def _construct_section(held: dict[str, dict[str, str]]) -> list[str]:
+    lines = [
         "## Construct and its spellings (to complete)",
         "",
         "Name the construct the issue's rule is about and the catalogue its spellings come from, such as builtins, "
@@ -411,6 +437,27 @@ def _construct_section() -> list[str]:
         f"path spellings, or shells, as the sibling-spellings reviewer, {code(SPELLINGS_REVIEWER)}, will. Then "
         "decide, for each entry, whether the change handles it, and name what it leaves in the pull request.",
     ]
+    if not held:
+        return lines
+    lines += [
+        "",
+        f"Each file below lists, in {code(catalogue_tests.TABLE)}, the catalogues it decides, each with the test that "
+        "holds every entry of it: read, refused, or named with why in the module's tables, as `NOT_READ`. For a "
+        "construct among the catalogues listed, name its test, and decide there only the entries the change moves; "
+        "any other construct the file reads, another of its tables included, is listed by hand.",
+        "",
+    ]
+    for name, tests in held.items():
+        entries = list(tests.items())
+        lines += [
+            f"- {code(name)}: {code(catalogue)}, held by {code(test)}" for catalogue, test in entries[:MAX_CALLER_FILES]
+        ]
+        if len(entries) > MAX_CALLER_FILES:
+            lines.append(
+                f"- {code(name)}: and {len(entries) - MAX_CALLER_FILES} more catalogues, which its "
+                f"{code(catalogue_tests.TABLE)} lists"
+            )
+    return lines
 
 
 def search_command(symbol: Symbol) -> str:
@@ -551,7 +598,7 @@ def write_brief(
     facts = lessons_patterns.listing(root, [name for name in files if name != CATALOGUE], lambda: tracked)
     sections = [
         _files_section(found, given, tracked_set, issue.number),
-        _construct_section(),
+        _construct_section(catalogued(corpus, files)),
         _callers_section(callers, found.symbols_cut, issue.number),
         _twins_section(files, tracked_set, names),
         _lessons_section(facts, files),

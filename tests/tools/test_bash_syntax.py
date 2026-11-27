@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import bash_agreement
 import bash_syntax
+from bash_agreement import PINNED_FROM_BASH
 from bash_syntax import BashSyntaxError
 
 from deployer import platform_support
@@ -1276,13 +1277,12 @@ def test_a_substitution_and_a_body_keep_the_script_line_of_each_character() -> N
 
 
 # Bash's reserved words as the newest Bash prints them with `compgen -k`, pinned so a runner whose Bash is older, as
-# macOS's /bin/bash 3.2, which has no coproc, still holds the reader to every one, and the Bash release they were
-# printed by, from which on every pinned word must still be one the runner's Bash prints.
+# macOS's /bin/bash 3.2, which has no coproc, still holds the reader to every one; from bash_agreement's
+# PINNED_FROM_BASH on, every pinned word must still be one the runner's Bash prints.
 PINNED_RESERVED_WORDS = frozenset(
     {"if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do", "done", "in"}
     | {"function", "time", "{", "}", "!", "[[", "]]", "coproc"}
 )
-PINNED_FROM_BASH = (5, 3)
 
 
 def runner_bash() -> tuple[tuple[int, int], frozenset[str]]:
