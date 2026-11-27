@@ -1854,6 +1854,26 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(result):\n    said = result.stderr.strip()\n    return f'git exited {result.returncode}: {said}'\n",
         refused=False,
     ),
+    # A name its function binds by an annotated assignment or an assignment expression, as by a plain one.
+    "an exit status named through a name an annotated assignment binds to it": _form(
+        reason_problems, "def f(result):\n    code: int = result.returncode\n    return f'git exited {code}'\n"
+    ),
+    "an exit status named through a name an assignment expression binds to it": _form(
+        reason_problems,
+        "def f(result):\n    if (code := result.returncode) != 0:\n        return f'git exited {code}'\n"
+        "    return None\n",
+    ),
+    "an exit status named with a name an annotated assignment binds to its output": _form(
+        reason_problems,
+        "def f(result):\n    said: str = result.stderr\n    return f'git exited {result.returncode}: {said}'\n",
+        refused=False,
+    ),
+    "an exit status named with a name an assignment expression binds to its output": _form(
+        reason_problems,
+        "def f(result):\n    if (said := result.stderr.strip()):\n"
+        "        return f'git exited {result.returncode}: {said}'\n    return None\n",
+        refused=False,
+    ),
     "an exit status named with the result handed whole to a call": _form(
         reason_problems,
         "def f(result, describe):\n    return f'git exited {result.returncode}: {describe(result)}'\n",
