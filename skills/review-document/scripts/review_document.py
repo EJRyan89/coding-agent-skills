@@ -987,7 +987,7 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     try:
         # The pair as every reader of it reads it: a record of the review schema whose digests the Markdown holds.
         digest = artifact_hashes(validate_record_pair(record, recorded))["markdown_sha256"]
-    except RecordError as exc:
+    except (RecordError, PersistenceError, json_writer.JsonWriteRefused) as exc:
         raise DocumentError(f"{finalized}: {exc}") from exc
     target = directory / REPORT_NAME
     content = recorded.read_bytes()

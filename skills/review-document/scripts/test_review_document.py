@@ -52,7 +52,7 @@ from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
-from review_records import build_record, validate_adapter_result, write_record_pair
+from review_records import build_record, validate_adapter_result, validate_record_pair, write_record_pair
 from review_runtime import validate_adapter_manifest
 from test_review_documents import (
     INSTALL,
@@ -2789,7 +2789,7 @@ class OutputTests(DocumentTestCase):
 
     def test_a_report_changed_after_its_pair_is_read_is_refused_and_never_copied(self) -> None:
         recorded = self.recorded_report()
-        real = review_document.validate_record_pair
+        real = validate_record_pair
 
         def validated_then_changed(json_path: Path, markdown_path: Path) -> Any:
             pair = real(json_path, markdown_path)
