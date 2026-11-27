@@ -182,7 +182,7 @@ import whole_number
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from file_presence import is_present
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, output_line
 from link_probe import is_plain_directory
 from path_containment import resolved_path, within
@@ -1053,7 +1053,12 @@ def verdict(
     elif completed.timed_out:
         reason = f"timed out after {timeout:g} seconds before running a script from the skill"
     elif completed.returncode != 0:
-        reason = f"exited with code {completed.returncode} before running a script from the skill"
+        # What the runtime said on stderr, on one bounded line, as the reason it gave; its stdout is the event stream
+        # the verdict above reads.
+        said = reason_line(completed.stderr)
+        reason = f"exited with code {completed.returncode} before running a script from the skill" + (
+            f": {said}" if said else " and printed nothing on stderr"
+        )
     else:
         reason = "never ran a script from the skill"
     if denials:

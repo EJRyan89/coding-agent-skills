@@ -7,6 +7,7 @@ import errno
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -368,7 +369,11 @@ class WithheldInputTests(GuardFixture):
                 (self.run_directory / "run.json").write_bytes(content)
                 with self.assertRaises(guard.Denied) as caught:
                     guard._restricted(self.run_directory)
-                self.assertEqual(f"the review run {self.run_directory} could not be read", str(caught.exception))
+                # The denial names what the JSON reader refused.
+                self.assertRegex(
+                    str(caught.exception),
+                    rf"^the review run {re.escape(str(self.run_directory))} could not be read: \S",
+                )
 
     def test_a_malformed_restriction_denies_every_read(self) -> None:
         self.claim("csharp-review")
@@ -1181,9 +1186,10 @@ class ClaimTests(GuardFixture):
         for reason, content in UNPARSEABLE_JSON.items():
             with self.subTest(reason=reason):
                 run_file.write_bytes(content)
-                self.assertEqual(
-                    f"Code-review reviewer boundary: the review run {self.run_directory} could not be read.",
-                    self.decide("Read", file_path=self.prompt()),
+                self.assertRegex(
+                    self.decide("Read", file_path=self.prompt()) or "",
+                    rf"^Code-review reviewer boundary: the review run {re.escape(str(self.run_directory))} could not "
+                    r"be read: \S.*\.$",
                 )
                 run_file.write_bytes(run)
                 self.claims.mkdir(exist_ok=True)
@@ -1470,7 +1476,9 @@ class PruneTests(GuardFixture):
             return stale, UNREADABLE_CLAIM
         gone = self.root / "code-review-run-gone"
         stale.write_text(json.dumps({"run": str(gone), "role": "csharp-review"}), encoding="utf-8")
-        return stale, f"Code-review reviewer boundary: the review run {gone} could not be read."
+        return stale, (
+            f"Code-review reviewer boundary: the review run {gone} could not be read: {os.strerror(errno.ENOENT)}."
+        )
 
     def test_no_guard_prunes_while_another_does_so_a_claim_made_meanwhile_is_never_removed(self) -> None:
         # Guard A judges agent X's claim one to prune. Just before A removes it, guard B prunes it and X's next read
@@ -1816,7 +1824,8 @@ class FieldKindTests(GuardFixture):
                 self.assertEqual(reason, self.decide(tool, **tool_input))
 
     def test_run_fields_of_the_wrong_kind_deny_with_the_unreadable_run(self) -> None:
-        reason = f"Code-review reviewer boundary: the review run {self.run_directory} could not be read."
+        # The denial names the field the run holds of the wrong kind.
+        reason = f"Code-review reviewer boundary: the review run {self.run_directory} could not be read: run"
         role = {
             "id": "csharp-review",
             "prompt_file": self.prompt(),
@@ -1845,7 +1854,8 @@ class FieldKindTests(GuardFixture):
         for run in runs:
             with self.subTest(run=run):
                 (self.run_directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
-                self.assertEqual(reason, self.decide("Read", file_path=self.prompt()))
+                denial = self.decide("Read", file_path=self.prompt()) or ""
+                self.assertTrue(denial.startswith(reason), denial)
         self.assert_no_claim("a denied first read claims nothing")
 
     def test_claim_fields_of_the_wrong_kind_deny_with_the_unreadable_claim(self) -> None:

@@ -16,7 +16,22 @@ from pathlib import Path
 import file_presence
 import frontmatter
 import whole_number
-from bash_syntax import BashSyntaxError, CommandList, Word, every_command, expanded_words, here_documents, parse
+from bash_syntax import (
+    BashSyntaxError,
+    Command,
+    CommandList,
+    FunctionDefinition,
+    If,
+    Pipeline,
+    Simple,
+    Word,
+    command_bodies,
+    every_command,
+    expanded_words,
+    here_documents,
+    parse,
+    settled_text,
+)
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
 from text_lines import LINE_BREAK, LINE_FEED, line_index, line_starts, program_lines
@@ -40,6 +55,7 @@ from validation_support import (
     relative,
     repository_files,
     repository_skill_directories,
+    under,
 )
 
 from deployer import config, platform_support, render, tools
@@ -674,6 +690,147 @@ def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
     return [f"{problem}; fix the cause instead" for problem in found]
 
 
+# A shell presence test is false alike for nothing there, something of another kind, a link to nothing, and a path a
+# stat cannot examine, so a branch it takes that prints a FAILED line names the last three as missing, where
+# ejryan89-skill-core's file_presence names each as itself. A shipped Bash script names the kind it found through one
+# presence function instead, as update.sh's file_presence does. The policy reads each test of a file's presence or
+# kind, a `[`, `[[`, or `test` command holding one unary operator of PRESENCE_TEST_OPERATORS and its operand, after
+# any `!`s, and refuses it where its False reaches a FAILED line: in an `if` or `elif` condition whose branch, taken
+# when the test is false, prints one, the `then` branch after a negated test and the later branches after a plain one,
+# or before a `&&` after a negated test or a `||` after a plain one whose next command prints one. A FAILED line is a
+# word, after the command's name, whose text starts with FAILED and a space or ends there. Stated limits: a test
+# compound of `-a`, `-o`, or parentheses is not read, nor a FAILED line a function the branch calls prints, one a
+# here-document's body holds, or one held in a variable the branch prints, nor a test whose False reaches FAILED
+# through `A && B || C`, a test inside `{ }` or `( )` in a condition, or a `$?` read later; no shipped script writes
+# any of them.
+PRESENCE_TEST_OPERATORS = frozenset({"-a", "-b", "-c", "-d", "-e", "-f", "-h", "-L", "-p", "-S", "-s"})
+# A word gh reads as its limit, which a Bash test operator spells too.
+GH_LIMIT_ALLOWED = {
+    "PRESENCE_TEST_OPERATORS": "-L is Bash's test for a symbolic link among the presence tests, a word no gh command "
+    "is given"
+}
+TEST_COMMANDS = {"[": "]", "[[": "]]", "test": None}
+FAILED_WORD = re.compile(r"FAILED(?: |$)")
+
+
+def _presence_test(pipeline: Pipeline) -> tuple[Simple, str, bool] | None:
+    """The test of a file's presence or kind a pipeline runs alone, as its command, its operator, and whether it is
+    true when the test itself is false, by the `!`s before it, the pipeline's included; or None."""
+    if len(pipeline.commands) != 1 or not isinstance(command := pipeline.commands[0], Simple):
+        return None
+    words = [settled_text(word) for word in command.words]
+    if not words or words[0] not in TEST_COMMANDS:
+        return None
+    closing = TEST_COMMANDS[words[0]]
+    arguments = words[1:]
+    if closing is not None:
+        if not arguments or arguments[-1] != closing:
+            return None
+        arguments = arguments[:-1]
+    negated = pipeline.negated
+    while arguments and arguments[0] == "!":
+        negated = not negated
+        arguments = arguments[1:]
+    if len(arguments) != 2 or arguments[0] not in PRESENCE_TEST_OPERATORS:
+        return None
+    return command, str(arguments[0]), negated
+
+
+def _prints_failed(node: CommandList | Command) -> bool:
+    """Whether a list or a command runs a simple command, at any depth of the compound commands it holds, one of whose
+    words after the command's name starts a FAILED line."""
+    if isinstance(node, CommandList):
+        return any(
+            _prints_failed(command)
+            for and_or, _ in node.items
+            for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]
+            for command in pipeline.commands
+        )
+    if isinstance(node, Simple):
+        return any(
+            word.parts and word.parts[0].kind == "text" and FAILED_WORD.match(word.parts[0].text)
+            for word in node.words[1:]
+        )
+    if isinstance(node, FunctionDefinition):
+        return False
+    return any(_prints_failed(body) for body in command_bodies(node))
+
+
+def _presence_refusals(lists: list[CommandList], commands: list[Command]) -> Iterator[tuple[Simple, str]]:
+    """Each presence test whose False reaches a FAILED line, with its operator: in an `if` condition, or before a
+    `&&` or a `||` in a list."""
+    for command in commands:
+        if not isinstance(command, If):
+            continue
+        for index, (condition, body) in enumerate(command.clauses):
+            later = [part for _, part in command.clauses[index + 1 :]] + (
+                [command.otherwise] if command.otherwise else []
+            )
+            for and_or, _ in condition.items:
+                for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
+                    if (test := _presence_test(pipeline)) is None:
+                        continue
+                    simple, operator, negated = test
+                    if any(_prints_failed(branch) for branch in ([body] if negated else later)):
+                        yield simple, operator
+    for listed in lists:
+        for and_or, _ in listed.items:
+            chain = [("", and_or.first), *and_or.rest]
+            for (_, pipeline), (joiner, following) in itertools.pairwise(chain):
+                if (test := _presence_test(pipeline)) is None:
+                    continue
+                simple, operator, negated = test
+                if joiner == ("&&" if negated else "||") and any(
+                    _prints_failed(command) for command in following.commands
+                ):
+                    yield simple, operator
+
+
+def shell_presence_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each test of a file's presence or kind in a Bash script of a skill whose False reaches a FAILED line, which
+    names something of another kind, a link to nothing, or a path a stat cannot examine as missing."""
+    problems: list[str] = []
+    scripts = sorted(
+        (
+            path
+            for path in files
+            if is_shell_script(path)
+            and not is_test_script(path)
+            and under(path.relative_to(root).as_posix(), ("skills", ".claude/skills"))
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    if not scripts:
+        return ["could not measure: no skill's Bash script was given, so no presence test was read"]
+    for path in scripts:
+        name = path.relative_to(root).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            problems.append(
+                f"{name} cannot be read ({error.strerror or error}), so its presence tests cannot be judged"
+            )
+            continue
+        except UnicodeDecodeError:
+            problems.append(f"{name} is not UTF-8 text, so its presence tests cannot be judged")
+            continue
+        try:
+            commands = every_command(text)
+            lists = [parse(text)] + [body for command in commands for body in command_bodies(command)]
+        except BashSyntaxError as error:
+            problems.append(
+                f"{name} holds Bash validation cannot read ({error}), so its presence tests cannot be judged"
+            )
+            continue
+        problems += [
+            f"{name}:{simple.line} reads a {operator} test's False as missing before a FAILED line, which a folder, a "
+            "link to nothing, and a path a stat cannot examine give alike; name what is there through one presence "
+            "function, as update.sh's file_presence does"
+            for simple, operator in _presence_refusals(lists, commands)
+        ]
+    return problems
+
+
 class ShellTargetsPolicies(unittest.TestCase):
     def test_every_markdown_fence_is_closed(self) -> None:
         self.assertEqual([], unclosed_fence_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
@@ -688,6 +845,9 @@ class ShellTargetsPolicies(unittest.TestCase):
         # Pinned against the names the port renders, not the deployer's own constant.
         self.assertEqual({"PYTHON": frozenset({"python", "python3"})}, config.INTERPRETER_VARIABLES)
         self.assertEqual("python" if platform_support.WINDOWS else "python3", platform_support.PYTHON)
+
+    def test_no_shell_presence_test_reads_another_kind_as_missing(self) -> None:
+        self.assertEqual([], shell_presence_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_suppresses_no_shellcheck_or_psscriptanalyzer_rule(self) -> None:
         self.assertEqual([], shell_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

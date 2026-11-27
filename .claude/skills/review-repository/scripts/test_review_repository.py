@@ -204,6 +204,10 @@ OUTSIDE_THE_BOUNDARY = {
         "reads the tables of docs/skill-evaluations.md from text it is given, opening and starting nothing"
     ),
     f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
+    f"{SKILL_CORE}/hidden_comments.py": (
+        "reads where GitHub hides an HTML comment in text it is given, opening and starting nothing; audit-ai-config "
+        "blanks those comments only to read CLAUDE.md's headings"
+    ),
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
     f"{SKILL_CORE}/link_destinations.py": (
         "reads link destinations in text it is given, opening and starting nothing; each importer judges the path"

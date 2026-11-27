@@ -99,6 +99,7 @@ import json_writer
 import private_folder
 from console import run_main
 from executable_locator import PYTHON
+from flat_text import reason_line
 from path_containment import relative_within, resolved_path, within
 from path_keys import path_key, same_parts
 from skill_roots import plugin_name
@@ -365,11 +366,19 @@ def _roles(run: Path) -> list[dict[str, Any]]:
     try:
         state = json_reader.read_file(run / RUN_FILE)
     except (OSError, ValueError) as exc:
-        raise Denied(f"the review run {run} could not be read") from exc
+        raise _unread_run(run, exc) from exc
     try:
         return READ.array(READ.json_object(state, "run").get("roles"), "run.roles", _role)
     except FieldError as exc:
-        raise Denied(f"the review run {run} could not be read") from exc
+        raise _unread_run(run, exc) from exc
+
+
+def _unread_run(run: Path, error: Exception) -> Denied:
+    """The denial of a read when the run's `run.json` could not be read, naming why on one bounded line: the operating
+    system's reason, or what the JSON reader or the field reader refused. It changes no decision, only what the
+    denial says."""
+    said = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
+    return Denied(f"the review run {run} could not be read: {reason_line(said) or type(error).__name__}")
 
 
 def _role(value: Any, path: str) -> dict[str, Any]:
@@ -599,7 +608,7 @@ def _restricted(run: Path) -> dict[str, list[str]]:
             for path, roles in restricted.items()
         }
     except (OSError, ValueError, FieldError) as exc:
-        raise Denied(f"the review run {run} could not be read") from exc
+        raise _unread_run(run, exc) from exc
 
 
 def _check_allowed(tool: str, path: Path, claim: Claim) -> None:

@@ -1042,6 +1042,16 @@ def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) ->
         bash_syntax.simple_commands(text)
 
 
+def test_a_here_document_delimiter_a_backslash_ends_the_text_on_is_read_with_a_body_never_closed() -> None:
+    # Bash reads the delimiter `EOF\` and a body the text's end delimits, with a warning; the reader once indexed
+    # past the text's end there and raised IndexError.
+    text = "cat <<EOF\\"
+    bash_agreement.assert_reader_agrees([text])
+    [here] = bash_syntax.here_documents(bash_syntax.simple_commands(text)[0])
+    assert (here.body, here.closed) == ("", False)
+    assert bash_syntax.awaits_more(text)
+
+
 def test_simple_commands_raise_where_nesting_runs_past_the_recursion_limit() -> None:
     with pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"):
         bash_syntax.simple_commands("echo $(" * DEPTH + "git am" + ")" * DEPTH)

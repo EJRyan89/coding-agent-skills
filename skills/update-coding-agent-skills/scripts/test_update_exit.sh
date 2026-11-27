@@ -89,7 +89,45 @@ for CHANNEL in main release; do
   run_subject "$CLONE" "$CHANNEL"
   expect_named_exit "directory in place of deploy.py on $CHANNEL"
   expect_not_deployed "directory in place of deploy.py on $CHANNEL"
+  expect_failed "FAILED deploy.py in $CLONE is not a file" "directory in place of deploy.py on $CHANNEL"
 done
+
+# A link to nothing in deploy.py's place is nothing there, and a link that leads to itself a path the stat cannot
+# examine, named with the operating system's reason, never as missing. Git for Windows makes no such link unasked.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    begin_case 'links in place of deploy.py'
+    new_clone
+    rm -f -- "$CLONE/deploy.py"
+    ln -s "nowhere" "$CLONE/deploy.py"
+    run_subject "$CLONE" main
+    expect_failed "FAILED no deploy.py in $CLONE" "link to nothing in place of deploy.py"
+    rm -f -- "$CLONE/deploy.py"
+    ln -s "deploy.py" "$CLONE/deploy.py"
+    run_subject "$CLONE" main
+    expect_failed "FAILED deploy.py in $CLONE cannot be examined: Too many levels of symbolic links" \
+      "link loop in place of deploy.py"
+    expect_not_deployed "link loop in place of deploy.py"
+    ;;
+esac
+
+# A clone whose folder refuses a stat, mode 000, holds a deploy.py the update cannot examine: named with the operating
+# system's reason, never as missing. Windows judges no folder's mode, and root's stat passes any mode.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    if [ "$(id -u)" != 0 ]; then
+      begin_case 'clone that cannot be examined'
+      new_clone
+      chmod 000 "$CLONE"
+      run_subject "$CLONE" main
+      chmod 755 "$CLONE"
+      expect_failed "FAILED deploy.py in $CLONE cannot be examined: Permission denied" "clone that cannot be examined"
+      expect_not_deployed "clone that cannot be examined"
+    fi
+    ;;
+esac
 
 # A TMPDIR below a shared folder that is not sticky, where another account could rename a folder above the copy of
 # update.sh and swap it between the cp and the exec: refused, naming the folder, before any copy is made. Windows judges

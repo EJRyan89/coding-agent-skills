@@ -246,7 +246,7 @@ def _open_package(content: bytes) -> zipfile.ZipFile:
         package = zipfile.ZipFile(io.BytesIO(content))
         members = package.infolist()
     except PACKAGE_ERRORS as exc:
-        raise ExtractionRefused("it is not a readable zip package") from exc
+        raise ExtractionRefused(f"it is not a readable zip package ({_package_reason(exc)})") from exc
     if len(members) > MAX_DOCUMENT_MEMBERS:
         raise ExtractionRefused(f"the package has more than {MAX_DOCUMENT_MEMBERS} members")
     names: set[str] = set()
@@ -260,6 +260,12 @@ def _open_package(content: bytes) -> zipfile.ZipFile:
         if member.flag_bits & 0x1:
             raise ExtractionRefused("a member is encrypted")
     return package
+
+
+def _package_reason(error: BaseException) -> str:
+    """Why a package or a part could not be read: the error's type alone, since a zip or LZMA error's message may quote
+    the document's own bytes, such as a local header's name, which no refusal carries."""
+    return type(error).__name__
 
 
 def _escapes(name: str) -> bool:
@@ -280,7 +286,7 @@ def _read_part(package: zipfile.ZipFile, name: str) -> bytes | None:
         with package.open(member) as stream:
             data = stream.read(MAX_DOCUMENT_PART_BYTES + 1)
     except PACKAGE_ERRORS as exc:
-        raise ExtractionRefused(f"{name} cannot be read") from exc
+        raise ExtractionRefused(f"{name} cannot be read ({_package_reason(exc)})") from exc
     if len(data) > MAX_DOCUMENT_PART_BYTES:
         raise ExtractionRefused(f"{name} is over {_size(MAX_DOCUMENT_PART_BYTES)}")
     return data

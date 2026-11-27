@@ -71,6 +71,33 @@ esac
 expect_failed "FAILED no ejryan89-skill-core $MISSING_CORE deployed beside update.sh: " "no core beside the script"
 expect_nothing_run "no core beside the script"
 
+# A folder in the place of the core's script, and a link to nothing there, are named as what they are: the folder as
+# no file, the link as nothing there, never the folder as missing.
+begin_case 'core script of another kind'
+new_clone
+INSTALLED_SKILLS="$FIXTURE/installed (core folder)/skills"
+install_update "$INSTALLED_SKILLS"
+CORE_SCRIPT="$INSTALLED_SKILLS/ejryan89-skill-core/scripts/$MISSING_CORE"
+rm -f -- "$CORE_SCRIPT"
+mkdir -- "$CORE_SCRIPT"
+SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" release
+expect_failed "FAILED ejryan89-skill-core $MISSING_CORE beside update.sh at " "core script folder"
+case "$OUTPUT" in
+  *"/$MISSING_CORE is not a file") ;;
+  *) fail "core script folder: the folder was not named as no file: $OUTPUT" ;;
+esac
+expect_nothing_run "core script folder"
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    rmdir -- "$CORE_SCRIPT"
+    ln -s "nowhere" "$CORE_SCRIPT"
+    SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" release
+    expect_failed "FAILED no ejryan89-skill-core $MISSING_CORE deployed beside update.sh: " "core script link to nothing"
+    expect_nothing_run "core script link to nothing"
+    ;;
+esac
+
 # A remote_refs.py that fails on its own, never origin's failure, here an installed copy whose import fails, one that
 # prints nothing, and one that ends with run_main's FAILED line for an unhandled error, never reads as success or as a
 # fetch origin refused: the update stops with one FAILED line naming remote_refs.py and the command, and deploys

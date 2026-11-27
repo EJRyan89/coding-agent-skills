@@ -78,6 +78,11 @@ from type_check_roots import (
     strict_type_check_areas,
 )
 
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "run_check": "NOT_PASSED names the runner's exit status as the line its contract gives; the runner's own output, "
+    "its reason, is streamed to this process's output above the line as it runs"
+}
 # The one remote the runner compares with, as `origin/<GITHUB_BASE_REF>`.
 RUNNER_REMOTE = "origin"
 # The variable that names the base branch to the runner, as continuous integration sets it on a pull request.
