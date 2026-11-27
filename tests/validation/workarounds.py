@@ -27,8 +27,11 @@ too, and is held once it does. Which entries a named test holds is review's judg
 so a test of another module passes. catalogue_tests.refusal says which tests pytest collects, and why it refuses any
 other, and this module's suite holds it to what pytest itself collects. Stated limits: a suite under tests/fixtures/,
 which no run collects, is still a tracked suite a reference may name; a test defined under a platform `if` is no
-top-level function or method, so it cannot be named; and neither can a test bound by assignment, a method a class
-inherits, or a method of a class whose lineage the suite alone does not settle, though pytest may collect each.
+top-level function or method, so it cannot be named; neither can a test bound by assignment, a method a class
+inherits, or a method of a class whose lineage the suite alone does not settle, though pytest may collect each; and a
+test the suite defines and then rebinds or deletes (`test_x = None`, `del TestA`), decorates into something other
+than a function (`@property`, `@pytest.fixture`), or switches off by `__test__`, `__init__`, or `__new__` bound at
+module level, on the function, under an `if`, or by unpacking, is read as collected though pytest skips it.
 """
 
 from __future__ import annotations

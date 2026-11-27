@@ -232,6 +232,13 @@ class TestOffBase(OffBase):
         pass
 
 
+class TestAnnotatedOff:
+    __test__: bool = False
+
+    def test_guard(self):
+        pass
+
+
 test_assigned = test_function
 """
 
@@ -266,7 +273,8 @@ DECIDED: list[tuple[str, str | None]] = [
     ("Catalogue.helper", NO_TEST),
     ("Catalogue.setUp", NO_TEST),
     # A method of a class pytest never collects: a plain class of another name, a `Test` class that defines __init__
-    # or __new__ or inherits one, and a class that sets __test__ or inherits it set.
+    # or __new__ or inherits one, and a class that sets __test__, by an assignment or an annotated one, or inherits it
+    # set.
     ("Helper.test_guard", UNCOLLECTED),
     ("TestInit.test_guard", UNCOLLECTED),
     ("TestNew.test_guard", UNCOLLECTED),
@@ -274,6 +282,7 @@ DECIDED: list[tuple[str, str | None]] = [
     ("TestOff.test_guard", UNCOLLECTED),
     ("CaseOff.test_guard", UNCOLLECTED),
     ("TestOffBase.test_guard", UNCOLLECTED),
+    ("TestAnnotatedOff.test_guard", UNCOLLECTED),
 ]
 # The tests pytest collects from SUITE that refusal refuses as NO_TEST, which a reference cannot name: one bound by
 # assignment, and a method a class inherits, since the method is read in the class's own body alone.
@@ -319,6 +328,16 @@ def decorate(cls):
 class TestDecorated:
     def test_guard(self):
         pass
+
+
+class TestOnElsewhere(TestElsewhere):
+    def test_guard(self):
+        pass
+
+
+class TestOnMeta(TestMeta):
+    def test_guard(self):
+        pass
 """
 UNSETTLED = [
     "Elsewhere.test_guard",
@@ -326,6 +345,9 @@ UNSETTLED = [
     "TestLater.test_guard",
     "TestMeta.test_guard",
     "TestDecorated.test_guard",
+    # A class whose base is the suite's own, but whose base's lineage the suite does not settle.
+    "TestOnElsewhere.test_guard",
+    "TestOnMeta.test_guard",
 ]
 
 
