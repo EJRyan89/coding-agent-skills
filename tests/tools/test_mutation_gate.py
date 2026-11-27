@@ -56,6 +56,7 @@ from tools.mutation_gate import (
     NOT_REACHED,
     NOT_RUN,
     PASSED,
+    REACH_TIMED_OUT,
     SURVIVED,
     TIMED_OUT,
     UNCONFIRMED,
@@ -67,6 +68,7 @@ from tools.mutation_gate import (
     Outcome,
     Reach,
     ReachRunner,
+    ReachTimedOut,
     RecordError,
     RecordFieldError,
     Report,
@@ -1071,6 +1073,96 @@ def test_a_coverage_step_that_exits_anything_but_0_fails_but_json_reporting_no_d
         assert found["json"] == f"failed in `coverage json` with exit code {exit_read(code)}: `No data to report.`"
 
 
+def test_only_a_suites_own_run_past_its_limit_is_the_reach_timing_out() -> None:
+    """The suite's pytest run is the one step the limit it is given bounds; a coverage step that times out under its
+    own bound failed, and is named with that step."""
+
+    def suite_times_out(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
+        raise subprocess.TimeoutExpired(list(command), timeout)
+
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", side_effect=suite_times_out),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0) is REACH_TIMED_OUT
+    for step in ("combine", "json"):
+        with (
+            mock.patch.object(mutation_gate, "run_bounded", side_effect=coverage_step_timing_out(step)),
+            mock.patch("deployer.platform_support.process_tree"),
+        ):
+            found = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
+        assert found == f"timed out in `coverage {step}`"
+
+
+def coverage_step_timing_out(step: str) -> Callable[..., types.SimpleNamespace]:
+    """A bounded runner whose suite passes and whose coverage step `step` runs past its bound."""
+
+    def run(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
+        if step in command:
+            raise subprocess.TimeoutExpired(list(command), timeout)
+        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    return run
+
+
+def test_a_canary_suite_that_runs_past_its_limit_is_named_as_timed_out_unmutated() -> None:
+    assert mutation_gate.measurement_problem(lambda tree, suite, modules, timeout: REACH_TIMED_OUT) == (
+        "the reach run's canary suite timed out unmutated, so no suite's reach can be measured"
+    )
+
+
+def reach_ending_at(ended: float, result: Reach | str | ReachTimedOut) -> tuple[Any, ...]:
+    """measure_reach over one suite with a reach deadline of 100 seconds, whose reach starts at 0 and gives `result`
+    at `ended`."""
+    times = itertools.chain([0.0], itertools.repeat(ended))
+    workers = Workers([Path("tree")], lambda: next(times))
+    return mutation_gate.measure_reach(
+        workers, ["tests/x.py"], ["tools/calc.py"], 100.0, lambda tree, suite, modules, timeout: result
+    )
+
+
+@pytest.mark.parametrize("ended", [50.0, 100.0, 150.0])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "failed unmutated with exit code 1: `1 failed`",
+        "failed in `coverage combine` with exit code 1: `No data to combine`",
+        "failed in `coverage json` with exit code 2",
+        "failed in `coverage json`, which wrote no report",
+        "timed out in `coverage json`",
+    ],
+)
+def test_a_reach_that_fails_is_named_with_its_reason_on_either_side_of_the_reach_deadline(
+    ended: float, reason: str
+) -> None:
+    assert reach_ending_at(ended, reason) == ({}, {"tests/x.py": reason}, [])
+
+
+@pytest.mark.parametrize("ended", [50.0, 100.0, 150.0])
+def test_only_a_suite_whose_run_reached_its_limit_is_left_unmeasured_on_either_side_of_the_reach_deadline(
+    ended: float,
+) -> None:
+    assert reach_ending_at(ended, REACH_TIMED_OUT) == ({}, {}, ["tests/x.py"])
+
+
+@pytest.mark.parametrize("ended", [50.0, 150.0])
+def test_a_reach_measured_on_either_side_of_the_reach_deadline_is_kept(ended: float) -> None:
+    measured = Reach(1.0, {"tools/calc.py": frozenset({6})})
+    assert reach_ending_at(ended, measured) == ({"tests/x.py": measured}, {}, [])
+
+
+def test_a_suite_the_reach_deadline_leaves_no_time_is_unmeasured_without_running() -> None:
+    asked: list[float] = []
+
+    def reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> str:
+        asked.append(timeout)
+        return "failed unmutated with exit code 1"
+
+    workers = Workers([Path("tree")], lambda: 100.0)
+    found = mutation_gate.measure_reach(workers, ["tests/x.py"], ["tools/calc.py"], 100.0, reach)
+    assert (found, asked) == (({}, {}, ["tests/x.py"]), [])
+
+
 def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replaced(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1431,7 +1523,7 @@ class CoverageReachFixtures(unittest.TestCase):
         report: object = None,
         passes: bool = True,
         test: str | None = None,
-    ) -> Reach | str:
+    ) -> Reach | ReachTimedOut | str:
         """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
         for the CONTEXT_SUITE the tree holds, or else `report` when one is given. Unless `recorded`, the suite is one
         test, which passes or fails as `passes` says, or whose text is `test` when one is given."""

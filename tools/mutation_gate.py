@@ -96,8 +96,10 @@ When no changed line yields a mutant, no suite runs. Otherwise each leg is bound
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
 starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap
-left unmeasured is named. A mutant not run leaves the run unfinished, which is no verdict, and so do a leg's unmeasured
-suites while a mutant that leg ran survived or went unreached, since one of them might have killed it; a mutant killed
+left unmeasured, one the reach pass's share left no time to start or whose unmutated run reached the time it left, is
+named; a suite that failed is named with its reason however late it ended. A mutant not run leaves the run
+unfinished, which is no verdict, and so do a leg's unmeasured suites while a mutant that leg ran survived or went
+unreached, since one of them might have killed it; a mutant killed
 on either leg keeps its verdict, so unmeasured suites beside only such mutants leave the run finished, and the summary
 says so beside their names. An unfinished run's summary says so on its first line, naming each module's mutants not
 run and how many of them lie on lines that run at import, in a sentence for each cause, with its own advice: a leg step
@@ -532,6 +534,17 @@ class Reach:
 
 
 @dataclass(frozen=True)
+class ReachTimedOut:
+    """A suite's unmutated run that reached the time limit its reach was given, which alone of the reach's ends the
+    limit causes: its coverage steps have bounds of their own, and a failure says why in a string. measure_reach gives
+    each suite what the reach pass's share of the run has left, so there this is the cap leaving the suite's reach
+    unmeasured, and the measurement canary, which gives its suite a fixed limit, names it as timed out unmutated."""
+
+
+REACH_TIMED_OUT = ReachTimedOut()
+
+
+@dataclass(frozen=True)
 class Outcome:
     mutant: Mutant
     status: str
@@ -710,8 +723,9 @@ Generator = Callable[[str, str, frozenset[int]], list[str]]
 # Runs a suite in a worktree within a time limit, only the tests whose node ids it is given when it is given any, and
 # says whether they passed, failed (KILLED), or timed out.
 SuiteRunner = Callable[[Path, str, float, Sequence[str]], str]
-# Runs a suite unmutated in a worktree, measuring the changed modules, and gives its Reach or why it has none.
-ReachRunner = Callable[[Path, str, Sequence[str], float], "Reach | str"]
+# Runs a suite unmutated in a worktree, measuring the changed modules, and gives its Reach, REACH_TIMED_OUT when the
+# suite reached the time limit it was given, or why it has none.
+ReachRunner = Callable[[Path, str, Sequence[str], float], "Reach | ReachTimedOut | str"]
 Clock = Callable[[], float]
 T = TypeVar("T")
 # A module's count of changed lines, the mutants of those lines, and each changed sanction table with its policy.
@@ -1047,6 +1061,8 @@ def measurement_problem(reach: ReachRunner) -> str | None:
         (tree / MEASUREMENT_MODULE).write_bytes(MEASUREMENT_SOURCE.encode())
         (tree / MEASUREMENT_SUITE).write_bytes(MEASUREMENT_TESTS.encode())
         result = reach(tree, MEASUREMENT_SUITE, [MEASUREMENT_MODULE], MINIMUM_SUITE_SECONDS)
+    if isinstance(result, ReachTimedOut):
+        result = "timed out unmutated"
     if isinstance(result, str):
         return f"the reach run's canary suite {result}, so no suite's reach can be measured"
     tests = result.tests.get(MEASUREMENT_MODULE, {})
@@ -1299,9 +1315,9 @@ def output_end(output: bytes) -> str:
     return flat_text(output.decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
 
 
-def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
+def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | ReachTimedOut | str:
     """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed and the tests that
-    ran each, or why not."""
+    ran each, REACH_TIMED_OUT when the suite ran past `timeout`, or why not."""
     python = [sys.executable, "-B", "-m"]
     with tempfile.TemporaryDirectory(prefix="mutation-reach-", dir=private_folder.temporary_directory()) as temporary:
         folder = Path(temporary)
@@ -1330,7 +1346,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 written.seek(max(0, written.seek(0, os.SEEK_END) - OUTPUT_LIMIT))
                 end = written.read()
         except subprocess.TimeoutExpired:
-            return "timed out unmutated"
+            return REACH_TIMED_OUT
         seconds = time.monotonic() - started
         if finished.returncode != 0:
             output = output_end(end)
@@ -1459,8 +1475,9 @@ class Workers:
 def measure_reach(
     workers: Workers, suites: Sequence[str], modules: Sequence[str], deadline: float, reach: ReachRunner
 ) -> tuple[dict[str, Reach], dict[str, str], list[str]]:
-    """Each suite's unmutated reach, the longest-recorded suites first, and the suites that failed unmutated or that
-    the reach pass's share of the run left unmeasured."""
+    """Each suite's unmutated reach, the longest-recorded suites first, and the suites that failed unmutated, each with
+    why, and those the reach pass's share of the run left unmeasured: each it left no time to start, and each whose run
+    reached the time that share left it. Only REACH_TIMED_OUT is the cap's; a failure is named whenever it ends."""
     recorded = host_job_seconds()
     ordered = sorted(suites, key=lambda suite: (-recorded.get(suite, 0.0), suite))
 
@@ -1469,7 +1486,7 @@ def measure_reach(
         if left <= 0:
             return None
         result = reach(tree, ordered[index], modules, left)
-        if isinstance(result, str) and workers.clock() >= deadline:
+        if isinstance(result, ReachTimedOut):
             return None
         print(f"reach {ordered[index]}: {result if isinstance(result, str) else 'measured'}", flush=True)
         return result
