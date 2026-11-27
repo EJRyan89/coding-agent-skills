@@ -105,6 +105,14 @@ REFERENCES_READ = {
     "leave open",
     "https://github.com/o/r/pull/1/files": "a pull request URL to one of its tabs, which GitHub's pages leave open",
 }
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "GitHub's closing keywords, separators, and reference forms": (
+        "skills/ejryan89-skill-core/scripts/test_closing_references.py::"
+        "test_every_documented_and_open_keyword_separator_and_reference_is_decided_once"
+    ),
+}
 # Each spelling of a closing reference the reader neither reads nor refuses, with why; the docstring states them.
 NOT_READ = {
     "Closes\n#1": "a keyword and its reference on different lines: GitHub's pages write them on one, and read across a "

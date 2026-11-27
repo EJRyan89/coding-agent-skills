@@ -28,10 +28,10 @@ own twin.
 The brief, a Markdown file written to a new private folder under the temporary directory, holds:
 
 - the files, each named by the issue or by `--path`, or not there yet;
-- the construct and its spellings, for the author to name, as the sibling-spellings reviewer will, and each Python file
-  among the brief's files that binds a module-level `NOT_READ`, read through ejryan89-skill-core's `python_reader`,
-  with the suites holding that table and the module's name, as a symbol's callers are found, since a catalogue test
-  holds that file's catalogue and the author decides only the entries the change moves there;
+- the construct and its spellings, for the author to name, as the sibling-spellings reviewer will, and the catalogues
+  each Python file among the brief's files lists in its module-level `CATALOGUE_TESTS`, read through
+  ejryan89-skill-core's `catalogue_tests`, each with the test that holds it, since for a construct among them the author
+  decides there only the entries the change moves;
 - for each symbol, the tracked files holding it as a whole word, as `git grep -w -F` matches one, with their line
   numbers, each file read through lessons_patterns' `Corpus`, which judges its name inside the repository first;
 - for each file, its twin in the other shell, `<name>.sh` beside `<name>.ps1`, each other tracked file of its name in
@@ -58,9 +58,8 @@ Limits: a file or a symbol the issue names in its prose, outside a code span, is
 no file; a symbol's callers are the files that hold its name as a word, which counts a definition, a comment, and a
 different name spelled the same, and misses a call through another name; a tracked file that is refused inside the
 repository, not there, or not UTF-8 holds no caller; a symbol is the issue's identifiers as written, so one spelled as
-words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; a
-catalogue test is a suite holding `NOT_READ` and the module's name as words, so one that reads the table through
-another name is missed, and a suite that names both for another reason is listed; a
+words, or written inside an HTML comment, reaches the brief as a symbol, inside the brief's issue-data framing; the
+catalogues listed are the ones a file declares, so one it decides without declaring is listed by hand; a
 tracked file whose name holds a `\\`, which a POSIX file system allows and Windows does not, is never named by a span
 or a `--path`, since a path is read with each `\\` as `/`, as the lister reads one; a `--path` in another case than
 the name git tracks, which a file system that folds case opens as the tracked file, is a second file, not there yet,
@@ -82,7 +81,6 @@ Exit status:
 from __future__ import annotations
 
 import argparse
-import ast
 import re
 import shlex
 import sys
@@ -95,6 +93,7 @@ from typing import Any, override
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import catalogue_tests
 import file_presence
 import lessons_patterns
 import private_folder
@@ -108,7 +107,6 @@ from implementation_profile import CONTRACT_FILES_HEADING, PROFILE
 from lessons_catalogue import CATALOGUE, CatalogueError
 from markdown_sections import code_block_lines, code_spans, prose_code_spans
 from path_containment import posix_within
-from suite_names import is_suite_name
 from text_lines import text_lines
 
 # The checkout this script belongs to, whose files the brief names.
@@ -142,9 +140,6 @@ WORD_CHARACTER = "[A-Za-z0-9_]"
 STATUS_WORD = re.compile(r"[A-Z]+")
 # A file name a shell command may hold in single quotes and a glob pathspec reads as itself.
 PLAIN_NAME = re.compile(r"[A-Za-z0-9._-]+")
-# The module-level table in which a reader or a policy names, with why, each entry of a published catalogue it leaves
-# unread; the module's catalogue test holds every entry of that catalogue read, refused, or named there.
-NOT_READ_TABLE = "NOT_READ"
 # The lister of the lessons patterns, which lists in full what the brief's bound left out.
 LISTER = ".claude/skills/implement-change/scripts/lessons_patterns.py"
 
@@ -413,46 +408,27 @@ def _files_section(named_files: Named, given: Sequence[str], tracked: frozenset[
     return lines
 
 
-def binds_not_read(text: str) -> bool:
-    """Whether Python source binds NOT_READ_TABLE at module level, by an assignment or an annotated one; source that
-    python_reader refuses binds nothing."""
-    try:
-        tree = python_reader.parse(text)
-    except python_reader.PythonRefused:
-        return False
-    targets = [
-        target
-        for statement in tree.body
-        for target in (
-            statement.targets
-            if isinstance(statement, ast.Assign)
-            else [statement.target]
-            if isinstance(statement, ast.AnnAssign)
-            else []
-        )
-    ]
-    return any(isinstance(target, ast.Name) and target.id == NOT_READ_TABLE for target in targets)
-
-
-def catalogued(corpus: lessons_patterns.Corpus, files: Sequence[str]) -> dict[str, list[str]]:
-    """Each Python file of `files` that binds a module-level NOT_READ_TABLE, with the suites holding that table and
-    the module's name, as `holders` finds a symbol's, the file itself left out; the OSError of a file that cannot be
-    examined or read."""
-    found: dict[str, list[str]] = {}
+def catalogued(corpus: lessons_patterns.Corpus, files: Sequence[str]) -> dict[str, dict[str, str]]:
+    """Each Python file of `files` that lists catalogues in a module-level CATALOGUE_TESTS, read through
+    ejryan89-skill-core's catalogue_tests, with each catalogue and the test that holds it; a file that is not there,
+    does not parse, or holds no such literal lists none. The OSError of a file that cannot be examined or read."""
+    found: dict[str, dict[str, str]] = {}
     for name in files:
         if not name.endswith(".py"):
             continue
         text = corpus.text(name)
-        if text is None or not binds_not_read(text):
+        if text is None:
             continue
-        table = Symbol(NOT_READ_TABLE, PurePosixPath(name).stem)
-        found[name] = sorted(
-            holder for holder in holders(corpus, table) if holder != name and is_suite_name(PurePosixPath(holder).name)
-        )
+        try:
+            declared = catalogue_tests.declared(python_reader.parse(text, filename=name))
+        except python_reader.PythonRefused:
+            continue
+        if declared:
+            found[name] = declared
     return found
 
 
-def _construct_section(held: dict[str, list[str]]) -> list[str]:
+def _construct_section(held: dict[str, dict[str, str]]) -> list[str]:
     lines = [
         "## Construct and its spellings (to complete)",
         "",
@@ -465,20 +441,22 @@ def _construct_section(held: dict[str, list[str]]) -> list[str]:
         return lines
     lines += [
         "",
-        f"Each file below binds a module-level {code(NOT_READ_TABLE)}, so a catalogue test holds every entry of the "
-        "catalogue it reads: read, refused, or named in that table with why. For a construct such a file reads, name "
-        "that test, and decide there only the entries the change moves, rather than listing the catalogue here; list "
-        "it by hand only for a construct no catalogue test holds.",
+        f"Each file below lists, in {code(catalogue_tests.TABLE)}, the catalogues it decides, each with the test that "
+        "holds every entry of it: read, refused, or named in `NOT_READ` with why. For a construct among the "
+        "catalogues listed, name its test, and decide there only the entries the change moves; any other construct "
+        "the file reads, another of its tables included, is listed by hand.",
         "",
     ]
-    for name, suites in held.items():
-        search = code(search_command(Symbol(NOT_READ_TABLE, PurePosixPath(name).stem)))
-        if not suites:
-            lines.append(f"- {code(name)}: no suite names it beside {code(NOT_READ_TABLE)}; {search} lists what does")
-            continue
-        shown = ", ".join(code(suite) for suite in suites[:MAX_CALLER_FILES])
-        more = suites[MAX_CALLER_FILES:]
-        lines.append(f"- {code(name)}: {shown}" + (f", and {len(more)} more, which {search} lists" if more else ""))
+    for name, tests in held.items():
+        entries = list(tests.items())
+        lines += [
+            f"- {code(name)}: {code(catalogue)}, held by {code(test)}" for catalogue, test in entries[:MAX_CALLER_FILES]
+        ]
+        if len(entries) > MAX_CALLER_FILES:
+            lines.append(
+                f"- {code(name)}: and {len(entries) - MAX_CALLER_FILES} more catalogues, which its "
+                f"{code(catalogue_tests.TABLE)} lists"
+            )
     return lines
 
 

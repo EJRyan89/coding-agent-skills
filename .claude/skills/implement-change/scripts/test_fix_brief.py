@@ -248,67 +248,74 @@ BY_HAND = (
     "or shells, as the sibling-spellings reviewer, `.claude/skills/review-repository/references/sibling-spellings.md`, "
     "will. Then decide, for each entry, whether the change handles it, and name what it leaves in the pull request."
 )
-# What the construct section adds for a file that binds a module-level NOT_READ, whose catalogue test holds its
-# catalogue.
+# What the construct section adds for a file that lists, in CATALOGUE_TESTS, the catalogues it decides.
 HELD_BY_A_TEST = (
-    "Each file below binds a module-level `NOT_READ`, so a catalogue test holds every entry of the catalogue it reads: "
-    "read, refused, or named in that table with why. For a construct such a file reads, name that test, and decide "
-    "there only the entries the change moves, rather than listing the catalogue here; list it by hand only for a "
-    "construct no catalogue test holds."
+    "Each file below lists, in `CATALOGUE_TESTS`, the catalogues it decides, each with the test that holds every entry "
+    "of it: read, refused, or named in `NOT_READ` with why. For a construct among the catalogues listed, name its "
+    "test, and decide there only the entries the change moves; any other construct the file reads, another of its "
+    "tables included, is listed by hand."
 )
 
 
-def test_a_file_that_binds_a_module_level_not_read_is_named_with_the_suites_holding_its_catalogue(
+def test_a_file_s_catalogue_tests_are_listed_each_with_the_test_that_holds_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = repository(
         tmp_path,
         {
-            "tools/catalogued.py": 'NOT_READ = {"coproc": "why"}\n',
-            "tools/annotated.py": 'NOT_READ: dict[str, str] = {"-x": "why"}\n',
-            # NOT_READ bound inside a function, or only read from another module, binds no table of the file's own.
-            "tools/nested.py": "def f():\n    NOT_READ = {}\n    return NOT_READ\n",
-            "tools/reads.py": "import catalogued\n\nprint(catalogued.NOT_READ)\n",
-            "tools/broken.py": "NOT_READ = {\n",
-            "tests/test_catalogued.py": "import catalogued\n\n\ndef test_x():\n    assert catalogued.NOT_READ\n",
-            "tests/test_other.py": "import catalogued\n\n\ndef test_y():\n    assert catalogued\n",
+            "tools/catalogued.py": (
+                "NOT_READ = {'coproc': 'why'}\n"
+                "CATALOGUE_TESTS = {'reserved words': 'tests/test_catalogued.py::test_words', "
+                "'options': 'tests/test_catalogued.py::Options.test_every_option'}\n"
+            ),
+            "tools/annotated.py": "CATALOGUE_TESTS: dict[str, str] = {'exits': 'tests/test_gate.py::test_exits'}\n",
+            # A NOT_READ alone, an empty table, one bound inside a function, one that is no dictionary of texts, and
+            # source that does not parse each list no catalogue.
+            "tools/bare.py": "NOT_READ = {'coproc': 'why'}\n",
+            "tools/empty.py": "CATALOGUE_TESTS = {}\n",
+            "tools/nested.py": "def f():\n    CATALOGUE_TESTS = {'a': 'tests/test_a.py::test_a'}\n",
+            "tools/malformed.py": "CATALOGUE_TESTS = {'a': 1}\n",
+            "tools/broken.py": "CATALOGUE_TESTS = {\n",
+            # Text that is no Python file's lists none either.
+            "docs/catalogue.md": "CATALOGUE_TESTS = {'a': 'tests/test_a.py::test_a'}\n",
         },
     )
-    files = ("catalogued", "annotated", "nested", "reads", "broken", "reader")
-    body = "Read every form: " + ", ".join(f"`tools/{name}.py`" for name in files) + "."
-    result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7")
+    files = ("tools/catalogued.py", "tools/annotated.py", "tools/bare.py", "tools/empty.py", "tools/nested.py")
+    files += ("tools/malformed.py", "tools/broken.py", "docs/catalogue.md", "tools/reader.py")
+    body = "Read every form: " + ", ".join(f"`{name}`" for name in files) + "."
+    # A Python file given with --path that is not there yet lists none.
+    result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7", "--path", "tools/new.py")
     assert result.code == 0
     assert result.section("Construct and its spellings (to complete)") == (
         f"{BY_HAND}\n\n{HELD_BY_A_TEST}\n\n"
-        "- `tools/catalogued.py`: `tests/test_catalogued.py`\n"
-        "- `tools/annotated.py`: no suite names it beside `NOT_READ`; "
-        "`git grep -n -w -F -e 'NOT_READ' -- $(git grep -l -w -F -e 'annotated') ':(glob)**/annotated.py'` lists "
-        "what does"
+        "- `tools/catalogued.py`: `reserved words`, held by `tests/test_catalogued.py::test_words`\n"
+        "- `tools/catalogued.py`: `options`, held by `tests/test_catalogued.py::Options.test_every_option`\n"
+        "- `tools/annotated.py`: `exits`, held by `tests/test_gate.py::test_exits`"
     )
 
 
 def test_a_construct_no_catalogue_test_holds_is_still_listed_by_hand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root = repository(tmp_path)
-    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/reader.py` once."), "7")
+    root = repository(tmp_path, {"tools/bare.py": "NOT_READ = {'coproc': 'why'}\n"})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/reader.py` and `tools/bare.py`."), "7")
     assert result.code == 0
     assert result.section("Construct and its spellings (to complete)") == BY_HAND
 
 
-def test_a_catalogued_file_s_suites_past_the_bound_are_cut_with_the_command_that_lists_them(
+def test_a_file_s_catalogues_past_the_bound_are_cut_with_where_the_rest_are_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    suites = {
-        f"tests/test_held_{index:02}.py": "import held\n\n\ndef test_x():\n    assert held.NOT_READ\n"
+    entries = {
+        f"catalogue {index:02}": f"tests/test_held.py::test_{index:02}"
         for index in range(fix_brief.MAX_CALLER_FILES + 2)
     }
-    root = repository(tmp_path, {"tools/held.py": 'NOT_READ = {"a": "why"}\n', **suites})
+    root = repository(tmp_path, {"tools/held.py": f"CATALOGUE_TESTS = {entries!r}\n"})
     result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/held.py`."), "7")
-    shown = ", ".join(f"`{name}`" for name in sorted(suites)[: fix_brief.MAX_CALLER_FILES])
+    shown = list(entries.items())[: fix_brief.MAX_CALLER_FILES]
     assert result.section("Construct and its spellings (to complete)").endswith(
-        f"- `tools/held.py`: {shown}, and 2 more, which "
-        "`git grep -n -w -F -e 'NOT_READ' -- $(git grep -l -w -F -e 'held') ':(glob)**/held.py'` lists"
+        "\n".join(f"- `tools/held.py`: `{name}`, held by `{test}`" for name, test in shown)
+        + "\n- `tools/held.py`: and 2 more catalogues, which its `CATALOGUE_TESTS` lists"
     )
 
 

@@ -330,6 +330,13 @@ COLLECTION_EXITS = frozenset({2, 4})
 INTERNAL_ERROR_EXIT = 3
 # pytest's exits that judge no mutant, each with what it means, which the log gives beside the exit.
 UNJUDGED_EXITS = {5: "no test collected"}
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "the exit codes pytest and coverage.py document": (
+        "tests/tools/test_mutation_gate.py::test_every_documented_exit_is_read_or_named_not_read_and_never_both"
+    ),
+}
 # Each exit pytest or coverage.py documents that the gate gives no reading of its own, by the program and the exit,
 # with why. Every other documented exit is read: pytest's 0, TESTS_FAILED_EXIT, COLLECTION_EXITS, INTERNAL_ERROR_EXIT,
 # and UNJUDGED_EXITS, where a mutant runs, and coverage.py's 0 and COVERAGE_ERROR_EXIT in a reach. Elsewhere pytest's 0

@@ -196,6 +196,14 @@ REFUSED_MODES = {
     "pipeline property name": "as a pipeline value",
     "end of parameters": "-- names no parameter, so the command is unread",
 }
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "pwsh's parameter-binding modes": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::"
+        "test_every_binding_mode_is_read_refused_or_not_read_and_every_parameter_property_is_decided"
+    ),
+}
 # The binding modes the reader leaves unread, each with why; every one is read or refused today.
 NOT_READ: dict[str, str] = {}
 

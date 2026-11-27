@@ -188,6 +188,21 @@ RUNS_NOTHING = frozenset(
     | {"ulimit", "umask", "break", "continue", "return", "exit", "logout", "shift", "bg", "fg"}
     | {"disown", "kill", "suspend", "set", "shopt", "compopt"}
 )
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+CATALOGUE_TESTS = {
+    "Bash's builtins, as `compgen -b` prints them": (
+        "tests/tools/test_command_wrapper_catalogues.py::test_every_builtin_bash_prints_is_decided_once"
+    ),
+    "each wrapper's options, as its GNU and Rust coreutils builds list them": (
+        "tests/tools/test_command_wrapper_catalogues.py::CatalogueTests."
+        "test_each_wrapper_row_reads_every_option_its_gnu_and_rust_builds_list_as_they_take_it"
+    ),
+    "each wrapper's options, as macOS's builds list them": (
+        "tests/tools/test_command_wrapper_catalogues.py::CatalogueTests."
+        "test_each_wrapper_row_reads_every_option_a_macos_build_lists_that_it_reads_as_that_build_takes_it"
+    ),
+}
 # The builtins that run text in a way no script reaches, or change what a later word runs, each with why; no reader
 # judges them.
 NOT_READ = {

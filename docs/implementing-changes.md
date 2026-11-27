@@ -341,12 +341,12 @@ fix corrects and the catalogue its spellings come from, such as builtins, option
 keywords, exit codes, or keys, with a decision for each entry, read, refused, or out of scope and why, an out-of-scope
 entry also named in the contract's or policy's limits; the other callers of the helper it changes and the other
 skills, shells, or modules holding the same construct; the lessons pattern and what its **Search for** found; and the
-regression test that fails with the fix reverted. Where the construct is read by a module that binds a module-level
-`NOT_READ`, its catalogue test already holds every entry decided, so the section names that test and the entries the
-fix moves rather than the whole catalogue, which `implement-change`'s fix brief lists such modules for; the catalogue
-is listed by hand only for a construct no catalogue test holds. A fix that closes the spellings its issue showed leaves
-the equivalent ones open, and the section is where the author shows the whole family was weighed. Any other type keeps
-the template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, reads the section through
+regression test that fails with the fix reverted. For a construct among the catalogues the module reading it lists in
+its `CATALOGUE_TESTS`, the test listed already holds every entry decided, so the section names that test and the
+entries the fix moves rather than the whole catalogue, and `implement-change`'s fix brief lists those catalogues for
+the files it names; any other construct, another table of the same module included, is listed by hand. A fix that
+closes the spellings its issue showed leaves the equivalent ones open, and the section is where the author shows the
+whole family was weighed. Any other type keeps the template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, reads the section through
 ejryan89-skill-core's `forms_considered.py`, the reader `implement-change`'s `pull_request.py check` shares, so a fix
 body its check passes is one this check passes; it holds the section's shape,
 never its judgment: it refuses a body whose title is a `fix`, or with no title, whose branch is a `fix/<name>` one, when

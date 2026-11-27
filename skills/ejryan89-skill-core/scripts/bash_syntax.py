@@ -322,6 +322,23 @@ TRANSLATED_REASON = (
     "`}`: with extquote on, as by default, Bash puts the text it spells into the word as it reads it, unquoted, so "
     "what it spells is expanded and may end the expansion"
 )
+# The catalogues this module decides, each with the test that holds every entry of it, which ejryan89-skill-core's
+# catalogue_tests.py reads.
+# Its redirection operators (REDIRECTIONS) and the words that end a case item (CASE_ENDS) are no catalogue a test
+# holds.
+CATALOGUE_TESTS = {
+    "Bash's reserved words, as `compgen -k` prints them": (
+        "tests/tools/test_bash_syntax.py::"
+        "test_every_reserved_word_bash_prints_is_read_refused_or_not_read_with_a_reason"
+    ),
+    "Bash's `set -o` and `shopt` options": (
+        "tests/tools/test_bash_syntax.py::test_every_option_bash_prints_is_read_refused_or_not_read_with_a_reason"
+    ),
+    "the expansion forms Bash's manual names": (
+        "tests/tools/test_bash_syntax.py::"
+        "test_every_expansion_form_bash_names_is_read_refused_or_not_read_with_a_reason"
+    ),
+}
 # Each reserved word, `set -o` option, `shopt` option, and expansion form the reader neither reads nor refuses, with
 # why.
 NOT_READ: dict[str, str] = {
