@@ -840,6 +840,16 @@ def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_els
     assert [word for word in sorted(dropped) if names(word)] == []
 
 
+def test_a_quoted_copy_of_a_substitution_cut_in_its_place_leaves_the_same_names() -> None:
+    # The quoted copy stands first, so it is the one cut: the word keeps the substitution's text where the copy stood,
+    # the same words as cutting the substitution itself would keep, the copy's `# x` being data that names `x`.
+    text = "echo '$(d # x\n)'\"$(d # x\n)\"\n"
+    bash_agreement.assert_reader_agrees([text])
+    found = bash_syntax.uncommented_text(text)
+    cut_in_place = "echo '$(d # x\n)'\"$( )\" d"
+    assert sorted(re.findall(r"[\w-]+", found)) == sorted(re.findall(r"[\w-]+", cut_in_place))
+
+
 @pytest.mark.parametrize("text", ["echo 'unclosed\n", 'echo "$(f\n', "cat <(echo\n"])
 def test_uncommented_text_raises_on_text_the_grammar_cannot_read(text: str) -> None:
     with pytest.raises(BashSyntaxError):

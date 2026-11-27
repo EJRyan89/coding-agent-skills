@@ -1929,8 +1929,10 @@ def uncommented_text(text: str) -> str:
     the same way, as the subshell Bash runs it in reads it, and an array assignment's elements read so too. A
     here-document's body that is Bash the grammar reads, as a script handed to a shell is, is read the same way, and
     any other body is data, kept whole. A limit: a backquoted body holding an escape Bash removes is not written in the
-    word as Bash reads it, so the word keeps it, a comment in it included. Raises BashSyntaxError where the words
-    cannot be read, as an unclosed quote."""
+    word as Bash reads it, so the word keeps it, a comment in it included. Where a quoted copy of a substitution's form
+    and body stands earlier in the word, as a single-quoted copy before its double-quoted substitution, the copy is
+    cut instead, which leaves the word the same text in another order, the copy's text being the substitution's.
+    Raises BashSyntaxError where the words cannot be read, as an unclosed quote."""
     tokens = Lexer(text, lines=source_lines(text)).run()
     return " ".join(_uncommented_token(token) for token in tokens)
 
