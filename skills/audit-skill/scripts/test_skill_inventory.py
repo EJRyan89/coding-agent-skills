@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import check_provenance
 import dotnet_solution
 import exit_constants
+import markdown_sections
 import powershell_commands
 import skill_inventory
 import skill_menu
@@ -5883,7 +5884,7 @@ def test_the_scan_s_fence_readers_read_a_session_s_unfinished_command_on_through
     # fence_reads and first_word_commands read a console session through session_commands, given the Bash grammar's
     # awaits_more, so a quoted path a command carries onto an unprompted line is the command's, never output's.
     lines = ["```console", '$ grep -c x "docs/a.md', 'docs/b.md"', "2", "```"]
-    (fence,) = skill_inventory.find_fences(lines)
+    (fence,) = markdown_sections.find_fences(lines)
     assert skill_inventory.first_word_commands(fence, lines) == [(1, 'grep -c x "docs/a.md\ndocs/b.md"')]
     reads = skill_inventory.fence_reads(lines, 0)
     assert reads[1] == Counter({"docs/a.md": 1, "docs/b.md": 1})
