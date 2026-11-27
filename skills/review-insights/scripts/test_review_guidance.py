@@ -1129,11 +1129,15 @@ class LinkDestinationTests(unittest.TestCase):
             "  `docs/d.md`",
             "  ```",
             "",
+            "> ```text",
+            "> `docs/f.md`",
+            "> ```",
+            "",
             "See `docs/e.md`.",
         ]
         sources = {"security": rg.Source("2026-01-01", None, {"dir/g.md": "h"})}
         found = rg.unsupplied("r", {("dir/g.md", "h"): "\n".join(lines) + "\n"}, sources)
-        self.assertEqual([(18, "docs/e.md")], [(item["line"], item["reference"]) for item in found])
+        self.assertEqual([(22, "docs/e.md")], [(item["line"], item["reference"]) for item in found])
 
     def test_a_link_names_the_file_commonmark_reads_its_destination_as(self) -> None:
         # The pattern before link_destinations kept `%20` and a backslash escape, refused `<…>`, read no definition,

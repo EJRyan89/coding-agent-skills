@@ -332,7 +332,9 @@ def regenerate(document: str, skills: list[Entry]) -> str:
 
 
 def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[str]:
-    """What keeps the README's 'Included skills' table from having one row per menu item, linked to live sections."""
+    """What keeps the README's 'Included skills' table from having one row per menu item, linked to live sections.
+
+    Limit: a link shown inside a code span counts as the table's link."""
     # markdown_section reads a fenced `## ` line as the fence's text, never as the section's end.
     section = markdown_section(readme, "## Included skills")
     if section is None:

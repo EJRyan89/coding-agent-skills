@@ -445,6 +445,7 @@ class MemoryAuditTests(unittest.TestCase):
             memory(
                 "paths",
                 "Prose.\n\n~~~\n`docs/tilde.md`\n~~~\n\n    `docs/indented.md`\n\n```text\n`docs/fenced.md`\n```\n\n"
+                "- Item:\n\n  ~~~\n  `docs/listed.md`\n  ~~~\n\n> ~~~\n> `docs/quoted.md`\n> ~~~\n\n"
                 "See `docs/prose.md`.\n",
             ),
         )
