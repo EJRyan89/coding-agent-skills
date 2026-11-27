@@ -6,6 +6,8 @@ the policies, which read comments and names, find nothing in this file itself.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,8 +18,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import catalogue_tests
+import python_reader
+import test_catalogue_tests
+from suite_discovery import PYTEST_ENVIRONMENT, PYTEST_INI, pytest_base, pytest_command
 from validation_support import write_fixture_tree
 from workarounds import catalogue_test_problems, later_comment_problems, not_read_problems, skip_problems
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+# How long pytest may take to collect one small fixture suite.
+COLLECT_SECONDS = 120
 
 SUITE = "tests/test_fixture.py"
 
@@ -335,12 +345,19 @@ def fixture_catalogue_tests(files: dict[str, str]) -> list[str]:
 CATALOGUE_SUITE = (
     "import unittest\n\n\ndef test_words():\n    def test_nested():\n        pass\n\n\n"
     "class Catalogue(unittest.TestCase):\n    def test_options(self):\n        pass\n\n"
-    "    def setUp(self):\n        pass\n"
+    "    def setUp(self):\n        pass\n\n\n"
+    "class TestPlain:\n    def test_plain(self):\n        pass\n\n\n"
+    "class Helper:\n    def test_guard(self):\n        pass\n\n\n"
+    "from harness import HarnessCase\n\n\nclass Elsewhere(HarnessCase):\n    def test_guard(self):\n        pass\n"
 )
 SUITES = {"tests/tools/test_reader.py": CATALOGUE_SUITE, "skills/a/scripts/helper.py": CATALOGUE_SUITE}
 # The refusal of a reference to a name its suite defines no test by: none, one nested, a class, or a method no runner
 # collects.
 NO_TEST = "whose suite defines no test of that name"
+# The refusal of a reference to a test method of a class pytest does not collect.
+UNCOLLECTED = "whose suite defines it in a class pytest does not collect"
+# The refusal of a reference to a test method of a class whose base another module defines.
+UNSETTLED = "whose suite defines it in a class whose collection the suite alone does not settle"
 
 
 @pytest.mark.parametrize(
@@ -348,6 +365,7 @@ NO_TEST = "whose suite defines no test of that name"
     [
         "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
         "CATALOGUE_TESTS: dict[str, str] = {'options': 'tests/tools/test_reader.py::Catalogue.test_options'}\n",
+        "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::TestPlain.test_plain'}\n",
         "NOT_READ = {'coproc': 'why'}\nCATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
         "NOT_READ: dict[str, str] = {}\nCATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n",
         # A module that decides no catalogue declares none.
@@ -382,6 +400,10 @@ def test_a_catalogue_test_table_naming_a_test_its_suite_defines_passes(source: s
         ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue'}\n", NO_TEST),
         # A method the suite defines but no runner collects as a test, as unittest's setUp.
         ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.setUp'}\n", NO_TEST),
+        # A test method of a class pytest never collects, a plain class whose name does not start with `Test`.
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Helper.test_guard'}\n", UNCOLLECTED),
+        # A test method of a class whose base another module defines, which the suite alone does not settle.
+        ("CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Elsewhere.test_guard'}\n", UNSETTLED),
         (
             "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::Catalogue.test_gone'}\n",
             NO_TEST,
@@ -480,3 +502,47 @@ def test_a_suite_that_does_not_parse_or_cannot_be_read_is_named_with_the_reason(
         [problem] = catalogue_test_problems(root, [root / "tools" / "reader.py", root / "tests" / "test_broken.py"])
     assert "whose suite cannot be read (" in problem
     assert "utf-8" in problem
+
+
+def pytest_collected(source: str) -> set[str]:
+    """The tests pytest itself, at its defaults, collects from a suite of source, each as a reference names it: a
+    function's name, or a class's and its method's joined by a dot. The suite sits in a folder of its own beside a
+    pytest.ini, so pytest roots there and reads no configuration of the repository's."""
+    with tempfile.TemporaryDirectory(prefix="catalogue-collect-") as temporary:
+        (Path(temporary) / PYTEST_INI).write_text("[pytest]\n", encoding="utf-8")
+        suite = Path(temporary) / "test_collected.py"
+        suite.write_text(source, encoding="utf-8")
+        with pytest_base() as basetemp:
+            completed = subprocess.run(
+                [
+                    *pytest_command(str(suite), basetemp=basetemp),
+                    "--collect-only",
+                    "-q",
+                    "-W",
+                    "ignore::pytest.PytestCollectionWarning",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, **PYTEST_ENVIRONMENT},
+                cwd=REPOSITORY_ROOT,
+                timeout=COLLECT_SECONDS,
+                check=False,
+            )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    prefix = f"{suite.name}::"
+    lines = completed.stdout.splitlines()
+    return {line.removeprefix(prefix).replace("::", ".") for line in lines if line.startswith(prefix)}
+
+
+def test_a_suite_defines_exactly_the_tests_pytest_itself_collects_but_those_it_states() -> None:
+    decided, stricter = test_catalogue_tests.DECIDED, test_catalogue_tests.STRICTER
+    collected = pytest_collected(test_catalogue_tests.SUITE)
+    tree = python_reader.parse(test_catalogue_tests.SUITE)
+    # Every test pytest collects from the fixture is a row of it, so no form pytest collects goes undecided.
+    assert collected == {name for name, refused in decided if refused is None} | set(stricter)
+    assert {name: catalogue_tests.refusal(tree, name) is None for name, _ in decided} == {
+        name: name in collected for name, _ in decided
+    }
+    assert all(catalogue_tests.refusal(tree, name) is not None for name in stricter)

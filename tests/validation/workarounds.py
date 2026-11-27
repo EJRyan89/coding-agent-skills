@@ -20,13 +20,18 @@ as `self.NOT_READ[key] = reason`, for one to a module's table.
 
 Such a module names each catalogue it decides, with the test that holds every entry of it, in a module-level
 CATALOGUE_TESTS = {catalogue: "<suite path>::<test>"}, which ejryan89-skill-core's catalogue_tests.py reads: a module
-that binds NOT_READ names at least one, each value names a test its tracked suite defines, a top-level function or a
-method of a top-level class, and the table is held to its one literal as NOT_READ is. A module that decides a
-catalogue under another table's name, as the hub guard's builtins, declares it too, and is held once it does. Which
-entries a named test holds is review's judgment: the policy reads no test's body, so a test of another module passes.
-A test counts only by a name starting with `test`, as pytest and unittest collect one. Stated limits: a suite under
-tests/fixtures/, which no run collects, is still a tracked suite a reference may name; and a test defined under a
-platform `if` is no top-level function or method, so it cannot be named.
+that binds NOT_READ names at least one, each value names a test its tracked suite defines that pytest collects, a
+top-level function or a method of a top-level class pytest collects, and the table is held to its one literal as
+NOT_READ is. A module that decides a catalogue under another table's name, as the hub guard's builtins, declares it
+too, and is held once it does. Which entries a named test holds is review's judgment: the policy reads no test's body,
+so a test of another module passes. catalogue_tests.refusal says which tests pytest collects, and why it refuses any
+other, and this module's suite holds it to what pytest itself collects. Stated limits: a suite under tests/fixtures/,
+which no run collects, is still a tracked suite a reference may name; a test defined under a platform `if` is no
+top-level function or method, so it cannot be named; neither can a test bound by assignment, a method a class
+inherits, or a method of a class whose lineage the suite alone does not settle, though pytest may collect each; and a
+test the suite defines and then rebinds or deletes (`test_x = None`, `del TestA`), decorates into something other
+than a function (`@property`, `@pytest.fixture`), or switches off by `__test__`, `__init__`, or `__new__` bound at
+module level, on the function, under an `if`, or by unpacking, is read as collected though pytest skips it.
 """
 
 from __future__ import annotations
@@ -248,7 +253,7 @@ def not_read_problems(root: Path, files: list[Path]) -> list[str]:
 
 def suite_defines(root: Path, suites: set[str], path: str, test: str) -> str | None:
     """Why a reference's suite does not define its test: the suite is no tracked suite, cannot be read, does not parse,
-    or does not define the test, each named with its reason; None when it does."""
+    or does not define the test as pytest collects one, each named with its reason; None when it does."""
     if path not in suites:
         return "which is no tracked suite"
     try:
@@ -259,7 +264,8 @@ def suite_defines(root: Path, suites: set[str], path: str, test: str) -> str | N
         tree = python_reader.parse(text, filename=path)
     except python_reader.PythonRefused as error:
         return f"whose suite does not parse ({error})"
-    return None if catalogue_tests.defines(tree, test) else "whose suite defines no test of that name"
+    refused = catalogue_tests.refusal(tree, test)
+    return None if refused is None else f"whose suite {refused}"
 
 
 def catalogue_test_problems(root: Path, files: list[Path]) -> list[str]:
