@@ -855,6 +855,37 @@ class CheckTests(FixtureRepository):
         # Blank lines before the heading open nothing else.
         self.assertEqual(0, self.check(notes=f"\n\n{held}")[0])
 
+    def test_notes_without_the_level_line_the_section_holds_are_incomplete(self) -> None:
+        self.released_section()
+        held = self.held_notes()
+        lacking = (
+            "NOTES_INCOMPLETE the release notes' ## v0.2.0 section lacks the line Level: minor. that ## v0.2.0 in "
+            f"{NOTES} at origin/main holds\n"
+        )
+        for notes in (
+            held.replace("Level: minor.\n", ""),
+            held.replace("Level: minor.", "Level: patch."),
+            held.replace("Level: minor.", "Level: minor. More."),
+            held.replace("\nLevel: minor.\n", "\n").replace("What is included", "## Below\n\nLevel: minor.\n\nWhat"),
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual((1, lacking, ""), self.check(notes=notes))
+
+    def test_blanks_around_a_line_and_a_byte_order_mark_are_not_read_as_missing(self) -> None:
+        # Windows PowerShell 5's Set-Content -Encoding UTF8 writes a byte order mark before the heading.
+        self.released_section()
+        held = self.held_notes()
+        for notes in (
+            f"﻿{held}",
+            self.held_notes(counts=f"{COUNTS_LINE}  "),
+            self.held_notes(counts=f"\t{COUNTS_LINE}"),
+            held.replace("## v0.2.0\n", "## v0.2.0 \n", 1),
+            f" \n\t\n{held}",
+            held.replace("Level: minor.", "Level: minor.\t"),
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual(0, self.check(notes=notes)[0])
+
     def test_notes_that_cannot_be_read_or_counts_gh_cannot_answer_exit_2_never_current(self) -> None:
         self.released_section()
         code, printed, error = self.check(notes=b"## v0.2.0\n\xff\n")

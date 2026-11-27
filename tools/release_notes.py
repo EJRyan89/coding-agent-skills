@@ -31,10 +31,14 @@ section was written at never reaches main, and a pull request merged into main o
 section was written is in the tag and in no section. When the section lacks an entry, it prints `BEHIND <n> entries`
 and each entry the section lacks, ready to carry into it, and reads nothing more. An entry the section holds beyond the
 range's, such as an obligation the release's preparation issue records, is the releaser's own. It then reads the
-release notes the tag will publish, the file --notes names, which --check requires: they must open with the
-`## VERSION` heading, and their `## VERSION` section must hold each entry the committed section holds, by heading, and
-the line --counts prints at that moment as a line of its own, whatever its numbers. It prints a `NOTES_INCOMPLETE
-<what>` line for each that fails, and `CURRENT` only when the section holds every entry and the notes hold all three.
+release notes the tag will publish, the file --notes names, which --check requires, as UTF-8 text with or without a
+byte order mark: they must open with the `## VERSION` heading, and their `## VERSION` section must hold the committed
+section's `Level:` line as it is written, each entry the committed section holds, by heading, and the line --counts
+prints at that moment, whatever its numbers, each line read without the blanks around it. It prints a
+`NOTES_INCOMPLETE <what>` line for each that fails, and `CURRENT` only when the section holds every entry and the notes
+hold all four. Each line is read as a line of the section's text, so a Level or counts line inside an HTML comment,
+which GitHub hides, is read as present; and the section runs, as markdown_section reads it, to the next `## ` heading,
+so a `# ` heading does not end it.
 
 --counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, the
 milestone titled VERSION and every issue on it, through GitHub's REST API, since `gh issue list` searches and answers an
@@ -108,6 +112,8 @@ NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*
 # The deepest heading that starts an entry, or that, above one, ends the entry before it, and an entry's own marks.
 ENTRY_LEVEL = 3
 ENTRY_MARKS = "#" * ENTRY_LEVEL
+# What a section's summary line opens with, just below its version heading, before the entries.
+LEVEL_LINE = "Level: "
 # The blocks whose lines a hard wrap may split, which unwrapped joins back into one line.
 JOINED_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK})
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
@@ -360,7 +366,7 @@ def version_section(version: str, entries: list[SourcedEntry], levels: list[str]
         level = largest_level((item.entry.fields.get("Level", "") for item in entries), levels)
     except ValueError as error:
         raise ReleaseNotesError(str(error)) from error
-    summary = f"Level: {level}." if level is not None else "Level: none (no upgrade-note entries)."
+    summary = f"{LEVEL_LINE}{level}." if level is not None else f"{LEVEL_LINE}none (no upgrade-note entries)."
     return "\n\n".join([f"## {version}", summary, *(item.rendered() for item in entries)]) + "\n"
 
 
@@ -420,12 +426,20 @@ def missing_entries(root: Path, version: str, start: str, end: str) -> list[Sour
 
 
 def notes_problems(notes: str, version: str, held: str, counts: str, end: str) -> list[str]:
-    """What the release notes lack: the version's heading as their first line that is not blank, each entry the held
-    section holds, by heading, in their own section of the version, and the counts line as a line of that section."""
+    """What the release notes lack: the version's heading as their first line that is not blank, and, in their own
+    section of the version, the held section's Level line, each entry it holds, by heading, and the counts line, each
+    line read without the blanks around it."""
     heading = f"## {version}"
     opening = next((line for line in LINE_BREAK.split(notes) if line.strip(" \t")), "")
     problems = [] if opening.rstrip(" \t") == heading else [f"the release notes do not open with {heading}"]
     section = markdown_section(notes, heading) or ""
+    lines = {line.strip(" \t") for line in section.split("\n")}
+    level = next((line.strip(" \t") for line in held.split("\n") if line.startswith(LEVEL_LINE)), None)
+    if level is not None and level not in lines:
+        problems.append(
+            f"the release notes' {heading} section lacks the line {flat_text(level)} that {heading} in "
+            f"{UPGRADE_NOTES} at {end} holds"
+        )
     published = {entry.heading for entry in notes_entries(section)}
     problems.extend(
         f"the release notes' {heading} section lacks the entry {ENTRY_MARKS} {flat_text(entry.heading)} that "
@@ -433,14 +447,15 @@ def notes_problems(notes: str, version: str, held: str, counts: str, end: str) -
         for entry in notes_entries(held)
         if entry.heading not in published
     )
-    if counts not in (line.strip(" \t") for line in section.split("\n")):
+    if counts not in lines:
         problems.append(f"the release notes' {heading} section lacks the line --counts prints: {counts}")
     return problems
 
 
 def _read_notes(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        # utf-8-sig: a notes file Windows PowerShell 5's Set-Content -Encoding UTF8 writes opens with a byte order mark.
+        return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as error:
         raise ReleaseNotesError(
             f'cannot read the release notes "{flat_text(str(path))}": {flat_text(str(error))}'
