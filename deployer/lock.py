@@ -26,6 +26,7 @@ from types import TracebackType
 import file_lock
 import file_presence
 import json_writer
+import link_probe
 from process_identity import read_pid
 from typed_fields import FieldError
 
@@ -283,10 +284,33 @@ def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
     )
 
 
+def _is_record(place: Path) -> bool:
+    """Whether a folder that is no link or junction, the only kind of record the lock makes, is at `place`, judged from
+    one stat of the place itself, whose OSError is raised."""
+    return link_probe.is_plain_directory(place, place.stat(follow_symlinks=False))
+
+
+def _not_a_record(paths: Paths) -> DeployError:
+    """The refusal of something other than the folder the lock makes at the record's place, which is not the lock's to
+    judge or remove: a file, a link, whatever it leads to, or anything else."""
+    shown = platform_support.normalize(paths.lock_dir)
+    kind = (
+        "a link, not the folder the deployer makes"
+        if platform_support.is_link_or_junction(paths.lock_dir)
+        else "not a folder"
+    )
+    return DeployError(
+        f"ERROR: The deployment lock's record {shown} is {kind}.",
+        "Move it out of the way once you know what it is, then retry.",
+        see_recovery(LOCK),
+    )
+
+
 def _judge_left_record(paths: Paths, probe: ProcessProbe) -> Judged | None:
     """Judge what earlier runs left beside a free file lock, changing nothing: name each record an earlier deployment
-    moved aside, refuse a record that may belong to a running deployment, and warn of a stale one, answering which
-    record is there to remove, or None. A stat that fails raises its OSError rather than reading as no record."""
+    moved aside, refuse anything but a folder at the record's place, refuse a record that may belong to a running
+    deployment, and warn of a stale one, answering which record is there to remove, or None. A stat that fails raises
+    its OSError rather than reading as no record."""
     for left in file_presence.matching(paths.deployer_dir, LEFT_ASIDE):
         print(
             f"WARNING: An earlier deployment left a lock moved aside at {platform_support.normalize(left)}. "
@@ -295,6 +319,8 @@ def _judge_left_record(paths: Paths, probe: ProcessProbe) -> Judged | None:
         )
     if not file_presence.is_occupied(paths.lock_dir):
         return None
+    if not _is_record(paths.lock_dir):
+        raise _not_a_record(paths)
     return _existing_holder(paths, probe)
 
 
@@ -333,10 +359,15 @@ def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_st
 
 
 def _take_file_lock(paths: Paths) -> int:
-    """Take the file lock, waiting LOCK_WAIT_SECONDS for another holder, or refuse naming the holder."""
+    """Take the file lock, waiting LOCK_WAIT_SECONDS for another holder, or refuse naming the holder. Whether another
+    process holds it is asked first, as the dry run asks it, so anything but a regular file at the lock file's place,
+    such as a FIFO, is refused with the dry run's line before it is opened, and never deleted as a file the file
+    system cannot lock."""
 
     def take() -> int | None:
         try:
+            if file_lock.held_elsewhere(paths.lock_file):
+                return None
             return file_lock.take(paths.lock_file, fsops.open_lock_file)
         except file_lock.FileLockError as exc:
             if exc.unsupported:
@@ -352,8 +383,11 @@ def _take_file_lock(paths: Paths) -> int:
 
 
 def _moved_record(aside: Path) -> Judged | None:
-    """Which record was moved aside, read as the judgment reads it, or None when that cannot be told."""
+    """Which record was moved aside, read as the judgment reads it, or None when that cannot be told or it is not the
+    kind of record the lock makes, such as a link to the folder judged, which reads through as that folder."""
     try:
+        if not _is_record(aside):
+            return None
         if file_presence.is_present(aside / "info.json"):
             info = _read_info(aside)
             return Judged(info.get("pid"), info.get("token"))

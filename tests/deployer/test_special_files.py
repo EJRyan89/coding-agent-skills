@@ -14,6 +14,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -216,19 +217,42 @@ class DeploymentTests(DeployerTestCase):
         self.assertEqual(set(), opened)
         self.assertIn("ERROR: Another deployment is running.\nWait for it to finish, then retry.\n", result.output)
 
-    def test_a_fifo_at_the_lock_file_is_refused_by_a_dry_run_and_never_opened(self) -> None:
-        # The dry run asks whether another process holds the file lock, which opened the file to try it.
+    def test_a_fifo_at_the_lock_file_is_refused_by_a_dry_run_and_a_deployment_and_kept(self) -> None:
+        # Each asks whether another process holds the file lock before it takes it, which opened the file to try it.
+        # A lock the file system refuses on a FIFO, as macOS does, read as a file system with no lock, deleted it.
         self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
         fifo = self.paths.lock_file
         make_fifo(fifo)
-        with released(fifo) as opened:
-            result = self.deploy_fails("--all", "--dry-run", pattern="not a regular file")
-        self.assertEqual(set(), opened)
-        self.assertIn(
-            f"ERROR: Could not open the deployment lock: {forward(fifo)}: "
-            "it is not a regular file, so its lock is not tried\n",
-            result.output,
-        )
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments), released(fifo) as opened:
+                result = self.deploy_fails(*arguments, pattern="not a regular file")
+                self.assertEqual(set(), opened)
+                self.assertIn(
+                    f"ERROR: Could not open the deployment lock: {forward(fifo)}: "
+                    "it is not a regular file, so its lock is not tried\n",
+                    result.output,
+                )
+                self.assertTrue(stat.S_ISFIFO(fifo.stat(follow_symlinks=False).st_mode))
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_fifo_at_the_lock_record_is_refused_by_a_dry_run_and_a_deployment_and_kept(self) -> None:
+        # Older than the grace a record with no metadata gets, so a judgment that took it for a record would remove it.
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        fifo = self.lock_dir
+        make_fifo(fifo)
+        then = time.time() - lock.RECORD_GRACE_SECONDS - 540
+        os.utime(fifo, (then, then))
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments), released(fifo) as opened:
+                result = self.deploy_fails(*arguments, pattern="lock's record")
+                self.assertEqual(set(), opened)
+                self.assertIn(
+                    f"ERROR: The deployment lock's record {forward(fifo)} is not a folder.\n"
+                    "Move it out of the way once you know what it is, then retry.\n",
+                    result.output,
+                )
+                self.assertTrue(stat.S_ISFIFO(fifo.stat(follow_symlinks=False).st_mode))
+        self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_a_link_to_nothing_at_the_lock_file_is_refused_by_a_dry_run_as_by_the_deployment(self) -> None:
         # The dry run asks whether another process holds the file lock, whose stat and open find nothing through a
