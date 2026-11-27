@@ -772,8 +772,9 @@ or removed fails validation until its pattern follows it.
   already read the Unreadable it places there; and `tests.validation.python_checks:_ClassBases.reached`,
   `tests.validation.python_checks:_InheritedLibraries.bound`, and `tests.validation.markdown_links:_suite_tests`,
   which read each re-exported name, class, or test class once per question, since each answer is a union; and, for a
-  new walk, `memoized_walk:MemoizedWalk`, which answers each node once per question and gives a node reached again
-  while it is read the answer that adds nothing, as `runtime_support:carried_needs`, the refusal-step policy's
+  new walk, `memoized_walk:MemoizedWalk`, which reads each node once per question wherever its answer would come out
+  the same, so every answer is the one a walk per path gives, cycles included, and cuts a cycle by what each node is
+  under way as, as `runtime_support:carried_needs`, the refusal-step policy's
   printed-text and asserted-line readers, the duplication policies' static-text and containment readers,
   `tests.validation.validation_support:path_parts`, `tests.validation.validation_support:CallableResolver.aliases`,
   suite discovery's path keys, and the upgrade-notes check's contract values walk
@@ -781,7 +782,9 @@ or removed fails validation until its pattern follows it.
   with fixtures in `tests/validation/test_python_checks.py::test_walk_policy_refuses_a_recursion_that_carries_its_visited_set_per_path`
   and `tests/validation/test_python_checks.py::test_walk_policy_passes_the_same_walk_with_a_memo_or_a_walk_allowed_entry`,
   `skills/ejryan89-skill-core/scripts/test_memoized_walk.py::test_a_diamond_ladder_reads_each_node_once`,
-  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once_for_each_skill_the_first_invokes`,
+  `skills/ejryan89-skill-core/scripts/test_memoized_walk.py::test_every_answer_of_every_small_graph_asked_in_turn_is_the_per_path_one`,
+  `tests/validation/test_duplication.py::test_two_loops_that_iterate_each_other_s_names_end_and_are_read_as_before`,
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once`,
   `tests/validation/test_refusal_steps.py::RefusalStepFixtures::test_a_ladder_of_functions_each_returning_the_next_twice_reads_each_function_once`,
   `tests/validation/test_refusal_steps.py::LooseRefusalAssertionFixtures::test_a_name_bound_to_a_name_read_twice_is_followed_once_per_binding`,
   `tests/validation/test_duplication.py::test_a_name_bound_twice_to_the_next_at_each_rung_is_followed_once_per_key`,

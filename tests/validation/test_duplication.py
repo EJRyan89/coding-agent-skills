@@ -2077,3 +2077,26 @@ def test_a_name_bound_to_a_sum_of_the_next_twice_reads_each_binding_once() -> No
     with mock.patch.object(duplication, "_bound_text", counted):
         assert duplication._static_text(tree.body[-1].value, resolver) == "x" * 2**12  # type: ignore[attr-defined]  # an assignment's value
     assert len(read) <= 2 * 12 + 1
+
+
+def test_two_loops_that_iterate_each_other_s_names_end_and_are_read_as_before(tmp_path: Path) -> None:
+    # Each loop's item test nests a new item test at each turn, so only a cut by the key, whatever the test, ends it.
+    source = (
+        "def check(name, top, ys):\n"
+        "    for x in ys:\n"
+        "        pass\n"
+        "    for ys in x:\n"
+        "        pass\n"
+        '    folders = [top + "/"]\n'
+        "    for folder in folders:\n"
+        "        if name.startswith(folder):\n"
+        "            return True\n"
+        "    for z in ys:\n"
+        "        return name.startswith(z)\n"
+    )
+    write_fixture_tree(tmp_path, {"skills/alpha/scripts/alpha.py": source})
+    found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:8 tests containment with a startswith of a folder and its separator; call "
+        "ejryan89-skill-core's path_containment, the one containment test, or state why in CONTAINMENT_ALLOWED"
+    ]

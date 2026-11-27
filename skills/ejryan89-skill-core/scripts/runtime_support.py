@@ -382,12 +382,11 @@ def invoked_skills(text: str, names: Collection[str]) -> set[str]:
 def carried_needs(
     name: str, own_needs: Callable[[str], set[str]], invokes: Callable[[str], set[str]]
 ) -> dict[str, set[str]]:
-    """What each skill `name` invokes carries over to it: the invoked skill's own needs and those of every skill it
-    invokes, however many invocations away, short of `name` itself, without user-only-start, since starting an invoked
-    skill is the invoker's step. Each skill `name` invokes is its own question of memoized_walk's walk, which reads
-    every skill it reaches once, so a cycle cuts no skill's needs from another invoked skill's answer. A skill's needs
-    are its own_needs and every set this returns for it; repository validation and audit-skill's script both derive
-    them through it, each reading a skill's own needs and what it invokes from where the skill sits."""
+    """What each skill `name` invokes carries over to it: the invoked skill's own needs and what its own invoked skills
+    carry, followed once each through memoized_walk's walk, which answers as a walk per path does, short of `name`
+    itself, without user-only-start, since starting an invoked skill is the invoker's step. A skill's needs are its
+    own_needs and every set this returns for it; repository validation and audit-skill's script both derive them
+    through it, each reading a skill's own needs and what it invokes from where the skill sits."""
 
     def needs(skill: str, walk: MemoizedWalk[str, frozenset[str]]) -> frozenset[str]:
         found = set(own_needs(skill))
@@ -395,12 +394,9 @@ def carried_needs(
             found |= walk(other)
         return frozenset(found)
 
-    carried: dict[str, set[str]] = {}
-    for other in sorted(invokes(name) - {name}):
-        walk = MemoizedWalk(needs, frozenset[str]())
-        with walk.entered(name):
-            carried[other] = set(walk(other) - {"user-only-start"})
-    return carried
+    walk = MemoizedWalk(needs, frozenset[str]())
+    with walk.entered(name):
+        return {other: set(walk(other) - {"user-only-start"}) for other in sorted(invokes(name) - {name})}
 
 
 def lacking(runtime: str, needs: set[str]) -> tuple[str, ...]:

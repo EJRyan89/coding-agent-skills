@@ -280,9 +280,9 @@ def test_an_invoked_skill_carries_its_needs_and_its_own_invoked_skills_but_not_u
     assert runtime_support.carried_needs("loop", own.__getitem__, invokes.__getitem__) == {}
 
 
-def test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once_for_each_skill_the_first_invokes() -> None:
+def test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once() -> None:
     # Each rung's skill invokes two, which each invoke the next rung's skill, so the bottom skill is reached by
-    # 2**16 paths; a walk per path reads it on every one, and a walk per question once for each of top0's two.
+    # 2**16 paths, and a walk per path reads it on every one.
     invokes: dict[str, set[str]] = {"top16": set()}
     for rung in range(16):
         invokes[f"top{rung}"] = {f"left{rung}", f"right{rung}"}
@@ -296,7 +296,8 @@ def test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once_for_each_skill
 
     carried = runtime_support.carried_needs("top0", own_needs, invokes.__getitem__)
     assert carried == {"left0": {"workflow"}, "right0": {"workflow"}}
-    assert reads == {name: 1 if name in {"left0", "right0"} else 2 for name in set(invokes) - {"top0"}}
+    assert set(reads.values()) == {1}
+    assert set(reads) == set(invokes) - {"top0"}
 
 
 def test_a_cycle_back_to_the_asked_skill_is_cut_and_each_invoked_skill_answers_whole() -> None:

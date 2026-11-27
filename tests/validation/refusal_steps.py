@@ -565,29 +565,27 @@ def _template(template: str, method: str) -> str:
     return literal + FIELD if field_follows or FIELD in template else literal
 
 
-# What a printed value's names and deployer functions give, read once a question: a name by its reader and its node, a
-# function by its reader and its definition.
-TextsWalk = MemoizedWalk[tuple["_Refusals", ast.AST], Texts]
+# What a printed value's names and deployer functions give, read once a question: a name by its reader, its one
+# assignment, and its name, a function by its reader, its definition, and its qualified name. Each is under way by that
+# name, as the per-path set this walk replaced held it, so a name or a function reached again by name gives FIELD.
+TextsWalk = MemoizedWalk[tuple["_Refusals", ast.AST, str], Texts]
 
 
 def _texts_walk() -> TextsWalk:
     """One question's walk over the names and deployer functions a printed value is read through: a name gives the
-    texts of the value its one assignment binds, and a function those of each of its returns; one reached again
-    through itself gives FIELD."""
+    texts of the value its one assignment binds, and a function those of each of its returns."""
 
-    def read(key: tuple[_Refusals, ast.AST], walk: TextsWalk) -> Texts:
-        reader, node = key
+    def read(key: tuple[_Refusals, ast.AST, str], walk: TextsWalk) -> Texts:
+        reader, node, _ = key
         printed = _Printed(reader)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             returns = [inner.value for inner in _own_nodes(node.body) if isinstance(inner, ast.Return)]
             texts = (printed.text(value, walk) if value is not None else (FIELD,) for value in returns)
             return _distinct(text for each in texts for text in each) or (FIELD,)
-        statement = reader.assignment(node, node, set()) if isinstance(node, ast.Name) else None
-        if statement is not None and statement.value is not None:
-            return printed.text(statement.value, walk)
-        return (FIELD,)
+        value = getattr(node, "value", None)
+        return printed.text(value, walk) if isinstance(value, ast.expr) else (FIELD,)
 
-    return MemoizedWalk(read, (FIELD,))
+    return MemoizedWalk(read, (FIELD,), under=lambda key: key[2])
 
 
 class _Printed:
@@ -652,7 +650,9 @@ class _Printed:
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             return _distinct(_template(template, "%") for template in self.text(node.left, walk))
         if isinstance(node, ast.Name):
-            return walk((self.reader, node))
+            statement = self.reader.assignment(node, node, set())
+            if statement is not None and statement.value is not None:
+                return walk((self.reader, statement, node.id))
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Attribute) and node.func.attr == "format":
                 return _distinct(_template(template, "format") for template in self.text(node.func.value, walk))
@@ -671,8 +671,9 @@ class _Printed:
     def _returned(self, call: ast.Call, walk: TextsWalk) -> Texts:
         """The texts a deployer function may return, read once a question by the walk from each of its returns, as
         `errors.named` and `see_recovery` give theirs, or FIELD when the call names no deployer function."""
-        target = self.reader.program.functions.get(self.reader.called(call.func) or "")
-        return (FIELD,) if target is None else walk(target)
+        name = self.reader.called(call.func) or ""
+        target = self.reader.program.functions.get(name)
+        return (FIELD,) if target is None else walk((*target, name))
 
     def stepless(self, call: ast.Call) -> bool:
         """Whether a print or a write may give an ERROR line that neither a later line of its own text nor a statement
@@ -848,8 +849,10 @@ def _template_lead(template: str, method: str) -> tuple[str, bool] | None:
 
 # What an unpacked value gives as lines, and what a name gives as the text a line starts with, each read once a
 # question.
-LinesWalk = MemoizedWalk[ast.expr, tuple[ast.expr | None, ...]]
-TextWalk = MemoizedWalk[ast.Name, str | None]
+# Each is keyed by a name's one assignment and the name, and under way by the name, as the per-path set these walks
+# replaced held it.
+LinesWalk = MemoizedWalk[tuple[ast.AST, str], tuple[ast.expr | None, ...]]
+TextWalk = MemoizedWalk[tuple[ast.AST, str], str | None]
 
 
 class _AssertedLines:
@@ -859,20 +862,33 @@ class _AssertedLines:
     def __init__(self, tree: ast.Module, name: str, aliases: dict[str, str]) -> None:
         self.reader = _Refusals(tree, name, set())
         self.aliases = aliases
+        # A name each unpacked name's assignment was reached by, which reads its elements as _displayed reads them.
+        self.named: dict[tuple[ast.AST, str], ast.Name] = {}
 
     def lines(self, arguments: list[ast.expr], walk: LinesWalk | None = None) -> list[ast.expr | None]:
         """Each positional argument as the lines it passes: an unpacked list or tuple, written or held in a name bound
         once to one, gives its elements, and anything else unpacked is None, lines this policy cannot read. What each
         unpacked value gives is read once a question; one reached again through itself gives None."""
         if walk is None:
-            walk = MemoizedWalk(self._unpacked, (None,))
+            walk = MemoizedWalk(self._unpacked, (None,), under=lambda key: key[1])
         found: list[ast.expr | None] = []
         for argument in arguments:
-            found += walk(argument.value) if isinstance(argument, ast.Starred) else [argument]
+            if not isinstance(argument, ast.Starred):
+                found.append(argument)
+                continue
+            value = argument.value
+            statement = self.reader.assignment(value, value, set()) if isinstance(value, ast.Name) else None
+            if isinstance(value, ast.Name) and statement is not None:
+                self.named[statement, value.id] = value
+                found += walk((statement, value.id))
+                continue
+            elements = self.reader._displayed(value, value, set())
+            found += [None] if elements is None else self.lines(elements, walk)
         return found
 
-    def _unpacked(self, value: ast.expr, walk: LinesWalk) -> tuple[ast.expr | None, ...]:
-        elements = self.reader._displayed(value, value, set())
+    def _unpacked(self, key: tuple[ast.AST, str], walk: LinesWalk) -> tuple[ast.expr | None, ...]:
+        name = self.named[key]
+        elements = self.reader._displayed(name, name, set())
         return (None,) if elements is None else tuple(self.lines(elements, walk))
 
     def text(self, node: ast.expr, walk: TextWalk | None = None) -> str | None:
@@ -882,7 +898,7 @@ class _AssertedLines:
         parameter, a loop's name, a call's result, or a field that opens the line. A value that is no string reads as
         no text. What each name gives is read once a question; one reached again through itself gives None."""
         if walk is None:
-            walk = MemoizedWalk(self._bound, None)
+            walk = MemoizedWalk(self._bound, None, under=lambda key: key[1])
         if isinstance(node, ast.Constant):
             return node.value if isinstance(node.value, str) else ""
         if isinstance(node, ast.JoinedStr):
@@ -900,12 +916,14 @@ class _AssertedLines:
             left = self.text(node.left, walk)
             return None if left is None else _settled(left, True)
         if isinstance(node, ast.Name):
-            return walk(node)
+            statement = self.reader.assignment(node, node, set())
+            if statement is not None and statement.value is not None:
+                return walk((statement, node.id))
         return None
 
-    def _bound(self, name: ast.Name, walk: TextWalk) -> str | None:
-        statement = self.reader.assignment(name, name, set())
-        return self.text(statement.value, walk) if statement is not None and statement.value is not None else None
+    def _bound(self, key: tuple[ast.AST, str], walk: TextWalk) -> str | None:
+        value = getattr(key[0], "value", None)
+        return self.text(value, walk) if isinstance(value, ast.expr) else None
 
     def _template(self, node: ast.expr, method: str, walk: TextWalk) -> str | None:
         """The text a filled template starts with, read from the template's own text up to its first field."""

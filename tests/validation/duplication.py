@@ -1454,6 +1454,11 @@ def _returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.e
 _Followed = tuple[tuple[int, str], Callable[[ast.expr], bool], Callable[[ast.expr], bool]]
 
 
+def _followed_key(question: _Followed) -> tuple[int, str]:
+    """What a question _follow asks is under way as: its key, whatever its tests."""
+    return question[0]
+
+
 @dataclass(frozen=True)
 class _ItemRead:
     """The test of whether `read` holds for an item of a value, as _each reads it: equal for the same reader and
@@ -1544,7 +1549,8 @@ class _ContainmentReader:
     def _follow(self, node: ast.expr, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
         """Whether `read` holds for any value a name, an attribute, or a call of a function the module defines is
         given, or `added` for any `+=` adds to it. Each key is read once for each pair of tests in the question the
-        outermost call asks, and gives False when it is reached again while it is read, so a cycle ends."""
+        outermost call asks, and gives False when it is reached again, under any tests, while it is read, so a cycle
+        ends, even one whose item tests nest a new test at each turn, as two loops that iterate each other's names."""
         if isinstance(node, ast.Name):
             key, values = self._owner(node)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute):
@@ -1557,7 +1563,7 @@ class _ContainmentReader:
         self.bound[key] = values
         if self.walk is not None:
             return self.walk((key, read, added))
-        self.walk = MemoizedWalk(self._followed, False)
+        self.walk = MemoizedWalk(self._followed, False, under=_followed_key)
         try:
             return self.walk((key, read, added))
         finally:
