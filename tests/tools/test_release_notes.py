@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import git_client
 from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from github_client import CommandResult, GitHubClient
+from markdown_sections import markdown_section
 from test_time_in_proportion import assert_time_in_proportion
 
 from tools import release_notes
@@ -639,7 +641,7 @@ class DefectTests(FixtureRepository):
         for arguments, failing in (
             (["v0.2.0"], "commits"),
             (["v0.2.0", "--write"], "commits"),
-            (["v0.2.0", "--check", "--to", "HEAD"], "missing_entries"),
+            (["v0.2.0", "--check", "--to", "HEAD", "--notes", "unread notes.md"], "missing_entries"),
             (["v0.2.0"], "last_release_before"),
         ):
             with (
@@ -655,8 +657,48 @@ class DefectTests(FixtureRepository):
             self.assertEqual((2, "", "ERROR: no Level\n"), self.run_main("v0.2.0"))
 
 
+COUNTS_LINE = "Defects fixed: 1 (regression 0, latent 1, hardening 0, no origin label 0). Auditor gaps: 0."
+
+
+def counting_client(items: Sequence[Mapping[str, object]] | None = None) -> GitHubClient:
+    """A client whose milestone v0.2.0 holds the items: by default one fixed latent bug, which counts as COUNTS_LINE."""
+    items = [issue(1, "bug", "latent")] if items is None else items
+    answers = {
+        tuple(MILESTONES): json.dumps([[milestone("v0.2.0", 7, 0, len(items))]]),
+        tuple(ISSUES): json.dumps([list(items)]),
+    }
+    return GitHubClient(lambda command: CommandResult(0, answers[tuple(command)], ""), sleeper=lambda _: None)
+
+
 class CheckTests(FixtureRepository):
-    """--check, run at the tag: the section origin/main holds against the entries origin/main's commits carry."""
+    """--check, run at the tag: the section origin/main holds against the entries origin/main's commits carry, and the
+    release notes about to be published against that section and the line --counts prints."""
+
+    def held_notes(self, counts: str = COUNTS_LINE, ref: str = "origin/main") -> str:
+        """Release notes as Tagging writes them: the section the ref holds, with the counts line below its level."""
+        section = markdown_section(self.git("show", f"{ref}:{NOTES}"), "## v0.2.0")
+        if section is None:
+            self.fail(f"{ref} holds no ## v0.2.0 section")
+        level, rest = section.lstrip("\n").split("\n", 1)
+        return f"## v0.2.0\n\n{level}\n\n{counts}\n{rest}\nWhat is included, and what was deferred.\n"
+
+    def check(
+        self, *arguments: str, notes: str | bytes | None = None, client: GitHubClient | None = None
+    ) -> tuple[int, str, str]:
+        """--check with a notes file holding the notes given, or those held_notes writes, and a counting client."""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "release notes.md"
+        text = self.held_notes() if notes is None else notes
+        path.write_bytes(text if isinstance(text, bytes) else text.encode())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_notes.main(
+                ["v0.2.0", "--check", *arguments, "--notes", str(path)],
+                root=self.root,
+                client=client or counting_client(),
+            )
+        return code, out.getvalue(), err.getvalue()
 
     def released_section(self) -> None:
         """The release pull request: a branch writes the section at its head, and main takes it as one squash
@@ -678,17 +720,19 @@ class CheckTests(FixtureRepository):
             (
                 0,
                 f"CURRENT ## v0.2.0 in {NOTES} at origin/main holds every upgrade-note entry from v0.1.0 to "
-                "origin/main.\n",
+                "origin/main, and the release notes open with it and carry the line --counts prints.\n",
                 "",
             ),
-            self.run_main("v0.2.0", "--check"),
+            self.check(),
         )
+        # Notes written on Windows end their lines with CRLF.
+        self.assertEqual(0, self.check(notes=self.held_notes().replace("\n", "\r\n"))[0])
 
     def test_a_pull_request_merged_after_the_section_was_written_is_behind_and_names_its_entry(self) -> None:
         self.released_section()
         self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
         self.git("update-ref", "refs/remotes/origin/main", "main")
-        code, printed, error = self.run_main("v0.2.0", "--check")
+        code, printed, error = self.check()
         self.assertEqual((1, ""), (code, error))
         self.assertTrue(printed.startswith("BEHIND 1 entry: the commits from v0.1.0 to origin/main carry "), printed)
         self.assertTrue(printed.endswith(f"\n\n{LATE_ENTRY}- Pull request: #8\n"), printed)
@@ -701,7 +745,7 @@ class CheckTests(FixtureRepository):
         (self.root / NOTES).write_bytes(carried.encode())
         self.commit("Carry the late entry (#9)")
         self.git("update-ref", "refs/remotes/origin/main", "main")
-        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
+        self.assertEqual(0, self.check()[0])
 
     def test_a_section_merging_the_entries_that_share_a_heading_into_one_is_current(self) -> None:
         # The release preparer merges the entries a SHARED line names into one entry under their heading.
@@ -712,7 +756,7 @@ class CheckTests(FixtureRepository):
         (self.root / NOTES).write_bytes(f"{INTRO}\n{section}{RELEASED}".encode())
         self.commit("Release v0.2.0 (#7)", body="## Upgrade note\n\nNone\n")
         self.git("update-ref", "refs/remotes/origin/main", "main")
-        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
+        self.assertEqual(0, self.check()[0])
 
     def test_a_pull_request_merged_before_the_squash_is_behind_too(self) -> None:
         self.history()
@@ -726,22 +770,22 @@ class CheckTests(FixtureRepository):
         (self.root / NOTES).write_bytes(written)
         self.commit("Release v0.2.0 (#7)")
         self.git("update-ref", "refs/remotes/origin/main", "main")
-        code, printed, _ = self.run_main("v0.2.0", "--check")
+        code, printed, _ = self.check()
         self.assertEqual(1, code)
         self.assertIn("### Merged late", printed)
 
     def test_it_reads_origin_main_not_the_checkout_and_to_chooses_another_ref(self) -> None:
         self.released_section()
         self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
-        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
-        self.assertEqual(1, self.run_main("v0.2.0", "--check", "--to", "HEAD")[0])
+        self.assertEqual(0, self.check()[0])
+        self.assertEqual(1, self.check("--to", "HEAD")[0])
 
     def test_a_ref_without_the_section_exits_2_and_check_and_write_are_one_or_the_other(self) -> None:
         self.history()
         self.git("update-ref", "refs/remotes/origin/main", "main")
         self.assertEqual(
             (2, "", f"ERROR: {NOTES} at origin/main has no ## v0.2.0 section; write it with --write first\n"),
-            self.run_main("v0.2.0", "--check"),
+            self.check(notes="## v0.2.0\n"),
         )
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
             release_notes.main(["v0.2.0", "--check", "--write"], root=self.root)
@@ -749,10 +793,148 @@ class CheckTests(FixtureRepository):
 
     def test_a_ref_git_cannot_read_exits_2_with_gits_reason_never_as_a_missing_section(self) -> None:
         self.history()
-        code, printed, errors = self.run_main("v0.2.0", "--check", "--from", "v0.1.0", "--to", "no-such-ref")
+        code, printed, errors = self.check("--from", "v0.1.0", "--to", "no-such-ref", notes="## v0.2.0\n")
         self.assertEqual((2, ""), (code, printed))
         self.assertTrue(errors.startswith(f"ERROR: git ls-tree -z --name-only no-such-ref -- {NOTES} failed: "), errors)
         self.assertNotIn("has no ## v0.2.0 section", errors)
+
+    def test_check_reads_the_release_notes_and_notes_go_only_with_check(self) -> None:
+        for arguments, message in (
+            (["v0.2.0", "--check"], "--check reads the release notes too: give --notes FILE"),
+            (["v0.2.0", "--notes", "notes.md"], "--notes is read only with --check"),
+            (["v0.2.0", "--write", "--notes", "notes.md"], "--notes is read only with --check"),
+            (["v0.2.0", "--counts", "--notes", "notes.md"], "--notes is read only with --check"),
+        ):
+            err = io.StringIO()
+            with (
+                self.subTest(arguments=arguments),
+                contextlib.redirect_stderr(err),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                release_notes.main(arguments, root=self.root, client=counting_client())
+            self.assertEqual(2, raised.exception.code)
+            self.assertRegex(err.getvalue(), f"error: {re.escape(message)}\n\\Z")
+
+    def test_notes_without_the_line_counts_prints_are_incomplete(self) -> None:
+        self.released_section()
+        lacking = (
+            f"NOTES_INCOMPLETE the release notes' ## v0.2.0 section lacks the line --counts prints: {COUNTS_LINE}\n"
+        )
+        stale = COUNTS_LINE.replace("Auditor gaps: 0.", "Auditor gaps: 1.")
+        for notes in (
+            self.held_notes(counts=""),
+            self.held_notes(counts=stale),
+            self.held_notes(counts=f"{COUNTS_LINE} More."),
+            f"{self.held_notes(counts='')}\n## What is included\n\n{COUNTS_LINE}\n",
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual((1, lacking, ""), self.check(notes=notes))
+
+    def test_the_line_is_held_whatever_its_numbers_so_bugs_with_no_origin_label_do_not_hold_the_tag(self) -> None:
+        self.released_section()
+        client = counting_client([issue(1, "bug"), issue(2, "bug"), issue(3, "enhancement", "auditor-gap")])
+        unlabeled = "Defects fixed: 2 (regression 0, latent 0, hardening 0, no origin label 2). Auditor gaps: 1."
+        self.assertEqual(0, self.check(notes=self.held_notes(counts=unlabeled), client=client)[0])
+        self.assertEqual(1, self.check(client=client)[0])
+
+    def test_notes_that_do_not_open_with_the_section_or_lack_one_of_its_entries_are_incomplete(self) -> None:
+        self.released_section()
+        held = self.held_notes()
+        lacking = (
+            "NOTES_INCOMPLETE the release notes' ## v0.2.0 section lacks the entry ### A skill is added that ## v0.2.0 "
+            f"in {NOTES} at origin/main holds\n"
+        )
+        for notes, expected in (
+            (f"Some words first.\n\n{held}", "NOTES_INCOMPLETE the release notes do not open with ## v0.2.0\n"),
+            (f"## v0.3.0\n\n{held}", "NOTES_INCOMPLETE the release notes do not open with ## v0.2.0\n"),
+            (held.replace("### A skill is added", "### Another heading"), lacking),
+            (held.replace("### A skill is added", "A skill is added"), lacking),
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual((1, expected, ""), self.check(notes=notes))
+        # Blank lines before the heading open nothing else.
+        self.assertEqual(0, self.check(notes=f"\n\n{held}")[0])
+
+    def test_notes_without_the_level_line_the_section_holds_are_incomplete(self) -> None:
+        self.released_section()
+        held = self.held_notes()
+        lacking = (
+            "NOTES_INCOMPLETE the release notes' ## v0.2.0 section lacks the line Level: minor. that ## v0.2.0 in "
+            f"{NOTES} at origin/main holds\n"
+        )
+        for notes in (
+            held.replace("Level: minor.\n", ""),
+            held.replace("Level: minor.", "Level: patch."),
+            held.replace("Level: minor.", "Level: minor. More."),
+            held.replace("\nLevel: minor.\n", "\n").replace("What is included", "## Below\n\nLevel: minor.\n\nWhat"),
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual((1, lacking, ""), self.check(notes=notes))
+
+    def test_the_notes_are_held_to_the_level_line_the_section_holds_and_to_none_when_it_holds_none(self) -> None:
+        entry = "### A thing is fixed\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none\n"
+        self.commit("Fix a thing (#2)", body=f"## Upgrade note\n\n{entry}", change="thing")
+        base = self.git("rev-parse", "HEAD").strip()
+        published = f"{entry}- Pull request: #2\n"
+        for held_level, notes_level in (
+            # A section written before the summary line, or by hand, holds no Level line, so the notes need none.
+            ("", ""),
+            # Blanks after the held line are not part of it.
+            ("Level: patch.  \n\n", "Level: patch.\n\n"),
+            # The stated limit: a held line indented by a blank is not read as the section's level.
+            (" Level: patch.\n\n", ""),
+        ):
+            with self.subTest(held_level=held_level):
+                self.git("reset", "-q", "--hard", base)
+                section = f"## v0.2.0\n\n{held_level}{published}\n"
+                (self.root / NOTES).write_bytes(f"{INTRO}\n{section}{RELEASED}".encode())
+                self.commit("Release v0.2.0 (#7)", body="## Upgrade note\n\nNone\n")
+                self.git("update-ref", "refs/remotes/origin/main", "main")
+                notes = f"## v0.2.0\n\n{notes_level}{COUNTS_LINE}\n\n{published}"
+                self.assertEqual(0, self.check(notes=notes)[0])
+
+    def test_blanks_around_a_line_and_a_byte_order_mark_are_not_read_as_missing(self) -> None:
+        # Windows PowerShell 5's Set-Content -Encoding UTF8 writes a byte order mark before the heading.
+        self.released_section()
+        held = self.held_notes()
+        for notes in (
+            f"﻿{held}",
+            self.held_notes(counts=f"{COUNTS_LINE}  "),
+            self.held_notes(counts=f"\t{COUNTS_LINE}"),
+            held.replace("## v0.2.0\n", "## v0.2.0 \n", 1),
+            f" \n\t\n{held}",
+            held.replace("Level: minor.", "Level: minor.\t"),
+        ):
+            with self.subTest(notes=notes):
+                self.assertEqual(0, self.check(notes=notes)[0])
+
+    def test_notes_that_cannot_be_read_or_counts_gh_cannot_answer_exit_2_never_current(self) -> None:
+        self.released_section()
+        code, printed, error = self.check(notes=b"## v0.2.0\n\xff\n")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith('ERROR: cannot read the release notes "'), error)
+        failing = GitHubClient(lambda command: CommandResult(1, "", "HTTP 404: Not Found"), sleeper=lambda _: None)
+        code, printed, error = self.check(client=failing)
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith(f"ERROR: cannot read {MILESTONES[2]}: "), error)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_notes.main(
+                ["v0.2.0", "--check", "--notes", str(self.root / "no such notes.md")],
+                root=self.root,
+                client=counting_client(),
+            )
+        self.assertEqual((2, ""), (code, out.getvalue()))
+        self.assertTrue(err.getvalue().startswith('ERROR: cannot read the release notes "'), err.getvalue())
+
+    def test_a_section_that_is_behind_is_reported_before_the_notes_are_read(self) -> None:
+        self.released_section()
+        self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        failing = GitHubClient(lambda command: CommandResult(1, "", "unreachable"), sleeper=lambda _: None)
+        code, printed, error = self.check(notes=b"\xff", client=failing)
+        self.assertEqual((1, ""), (code, error))
+        self.assertTrue(printed.startswith("BEHIND 1 entry: "), printed)
 
 
 class GitOutputTests(unittest.TestCase):
@@ -843,7 +1025,13 @@ class ReleaseProcedureTests(unittest.TestCase):
         self.assertIn("python tools/release_notes.py vX.Y.Z --write", before_tagging)
         # The tag waits for the check that the committed section holds every entry main carries.
         tagging = text.split("\n## Tagging", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("python tools/release_notes.py vX.Y.Z --check", tagging)
+        self.assertIn("python tools/release_notes.py vX.Y.Z --check --notes '<file>'", tagging)
+        # The notes carry the line --counts prints, and the check the tag waits on holds it.
+        self.assertIn("python tools/release_notes.py vX.Y.Z --counts", tagging)
+        self.assertLess(
+            tagging.index("python tools/release_notes.py vX.Y.Z --check --notes '<file>'"),
+            tagging.index("gh release create vX.Y.Z"),
+        )
         # The template carries the heading the script reads, with its example in a comment no reader takes for one.
         template = (root / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
         self.assertIn("\n## Upgrade note\n", template)
