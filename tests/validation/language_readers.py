@@ -81,12 +81,12 @@ FAMILIES = (
         MARKDOWN_OWNER,
         re.compile(r"#\{1,6\}|\A(?:\^|\\A)?(?: \{0,3\})?#+(?:\{\d(?:,\d)?\})?(?: |\[ \\t\]|\[\\t \])"),
     ),
-    # A code span read by single backticks: a backtick, then, inside any group or after any lookahead, a class of
-    # everything but a backtick.
+    # A code span read by single backticks: a backtick, then, after at most one group's `(` and at most one `(?:`,
+    # `(?!`, or `(?=` group, a class of everything but a backtick. No part repeats another, so the search is linear.
     Family(
         "a single-backtick code span",
         MARKDOWN_OWNER,
-        re.compile(r"`(?:\((?:\?[:!=](?:[^)\[]*\))?)?)*\[\^[^\]]*`"),
+        re.compile(r"`\(?(?:\(\?[:!=][^)\[]*\)?)?\[\^[^\]]*`"),
     ),
     # A console fence's prompt: at the line's start, after blanks, `$ ` or `> `.
     Family(
