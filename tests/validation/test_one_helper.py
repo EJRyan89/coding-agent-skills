@@ -1554,7 +1554,9 @@ class ReviewIdentityTests(unittest.TestCase):
     def test_a_script_a_workflow_and_a_markdown_fence_are_not_read(self) -> None:
         files = {
             "skills/x/scripts/reader.sh": "jq '.pull_request.head_sha' \"$1\"\n",
-            ".github/workflows/reader.yml": "on: push\njobs:\n  r:\n    steps:\n      - run: jq .pull_request.head_sha\n",
+            ".github/workflows/reader.yml": (
+                "on: push\njobs:\n  r:\n    steps:\n      - run: jq .pull_request.head_sha\n"
+            ),
             "docs/reader.md": f"```python\nseen[{HEAD}] = record\n```\n",
         }
         self.assertEqual([], self.problems(files))
