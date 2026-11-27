@@ -52,6 +52,7 @@ from command_wrappers import (
 )
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from memoized_walk import MemoizedWalk
 from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
 from path_containment import posix_within, relative_within, within, written_refusal
@@ -1361,6 +1362,8 @@ TEMPORARY_FOLDERS = frozenset({"tempfile.mkdtemp", "tempfile.TemporaryDirectory"
 
 # What a path expression names, as _path_key reads it.
 PathKey = tuple[object, ...]
+# The key each name's one value gives, read once a question.
+PathWalk = MemoizedWalk[ast.expr, PathKey | None]
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
@@ -1374,13 +1377,16 @@ def _parent_key(key: PathKey | None) -> PathKey | None:
     return ("parent", key)
 
 
-def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] = frozenset()) -> PathKey | None:
+def _path_key(node: ast.expr, resolver: CallableResolver, walk: PathWalk | None = None) -> PathKey | None:
     """What a path expression names, as a key that two spellings of one path share: a name is followed to the one value
     bound to it, a conversion to str or to a Path and a resolve() are the path they convert, `<folder> / "<name>"` joins
     each literal name to the folder's key, and `.parent` and `.parents[<n>]` step up from a join to its folder. A name
     nothing binds by assignment, a parameter or a loop's target among them, is ("name", <name>, <qualified name>), and
     any other expression ("node", <expression>), which no other expression shares. None for a name bound more than
-    once."""
+    once, or for one whose value leads back to itself; each name's value is read once, through the walk the first call
+    starts."""
+    if walk is None:
+        walk = MemoizedWalk(lambda value, walk: _path_key(value, resolver, walk), None)
     if (
         isinstance(node, ast.Call)
         and not node.keywords
@@ -1388,7 +1394,7 @@ def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] =
         and not isinstance(node.args[0], ast.Starred)
         and resolver.name(node.func) in PATH_SPELLINGS
     ):
-        return _path_key(node.args[0], resolver, seen)
+        return _path_key(node.args[0], resolver, walk)
     if (
         isinstance(node, ast.Call)
         and not node.args
@@ -1396,16 +1402,14 @@ def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] =
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in PATH_METHODS
     ):
-        return _path_key(node.func.value, resolver, seen)
+        return _path_key(node.func.value, resolver, walk)
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
         values = bound_values(node, resolver)
         if values == [node]:
             return ("name", node.id, resolver.name(node))
-        if len(values) != 1 or id(values[0]) in seen:
-            return None
-        return _path_key(values[0], resolver, seen | {id(node)})
+        return walk(values[0]) if len(values) == 1 else None
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        key = _path_key(node.left, resolver, seen)
+        key = _path_key(node.left, resolver, walk)
         if key is None:
             return None
         if not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
@@ -1414,7 +1418,7 @@ def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] =
             key = ("join", key, part)
         return key
     if isinstance(node, ast.Attribute) and node.attr == "parent":
-        return _parent_key(_path_key(node.value, resolver, seen))
+        return _parent_key(_path_key(node.value, resolver, walk))
     if (
         isinstance(node, ast.Subscript)
         and isinstance(node.value, ast.Attribute)
@@ -1423,7 +1427,7 @@ def _path_key(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] =
         and type(node.slice.value) is int
         and node.slice.value >= 0
     ):
-        found = _path_key(node.value.value, resolver, seen)
+        found = _path_key(node.value.value, resolver, walk)
         for _ in range(node.slice.value + 1):
             found = _parent_key(found)
         return found

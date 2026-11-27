@@ -10060,3 +10060,171 @@ def test_content_errors_policy_reads_a_relative_import_at_any_level_through_the_
     assert aliases["read_file"] == "pkg.readers.read_file"
     assert aliases["sibling"] == "pkg.sub.sibling"
     assert "outside" not in aliases
+
+
+WALK_SOURCE = """\
+from memoized_walk import MemoizedWalk
+
+
+def reach(node, edges, seen=frozenset()):
+    found = {node}
+    for other in edges[node] - seen:
+        found |= reach(other, edges, seen | {node})  # walk refused
+    return found
+
+
+def reach_once(node, edges):
+    def read(each, walk):
+        found = {each}
+        for other in edges[each]:
+            found |= walk(other)
+        return frozenset(found)
+
+    return MemoizedWalk(read, frozenset())(node)
+
+
+def shared(node, edges, seen):
+    seen.add(node)
+    for other in edges[node] - seen:
+        shared(other, edges, seen)
+
+
+def once(node, edges, seen=frozenset()):
+    return [other for other in edges[node] if other not in seen | {node}]
+
+
+def left(node, edges, seen):
+    return [right(other, edges, seen.union({node})) for other in edges[node]]  # walk refused
+
+
+def right(node, edges, seen):
+    return [left(other, edges, frozenset(seen | {node})) for other in edges[node] if other not in seen]  # walk refused
+
+
+class Reader:
+    def __init__(self, edges):
+        self.edges = edges
+        self.following = set()
+
+    def text(self, node, followed):
+        return [self.text(other, frozenset(followed | {node})) for other in self.edges[node]]  # walk refused
+
+    def returned(self, node, followed):
+        reader = Reader(self.edges)
+        return [reader.returned(other, {*followed, node}) for other in self.edges[node]]  # walk refused
+
+    def copied(self, node, followed):
+        seen = set(followed)
+        seen.add(node)
+        return [Reader(self.edges).copied(other, frozenset(seen)) for other in self.edges[node]]  # walk refused
+
+    def follow(self, node):
+        if node in self.following:
+            return False
+        self.following.add(node)
+        try:
+            return any(self._each(other) for other in self.edges[node])
+        finally:
+            self.following.discard(node)  # path set refused
+
+    def _each(self, node):
+        return self.follow(node)
+
+    def other(self, node, followed):
+        return [Other().other(child, followed | {node}) for child in self.edges[node]]
+
+
+class Other:
+    def other(self, node, followed):
+        return [node, followed]
+
+
+class PathFinder:
+    def paths(self, node, path, seen):
+        return [self.paths(other, [*path, other], seen | {other}) for other in path]
+
+
+WALK_ALLOWED = {"PathFinder.paths": "the answer is the paths; the walk stops once LIMIT paths are kept", "stale": "x"}
+"""
+
+
+def walk_marked(source: str, mark: str) -> list[int]:
+    """The numbers of the lines of a source that a trailing comment marks."""
+    return [number for number, line in enumerate(source.splitlines(), 1) if line.endswith(f"# {mark}")]
+
+
+def test_walk_policy_refuses_a_recursion_that_carries_its_visited_set_per_path() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(python_checks.walk_problems, "WALK_ALLOWED", WALK_SOURCE, alpha)
+    expected = [
+        *(f"{alpha}:{line} {python_checks.WALK_REFUSAL}" for line in walk_marked(WALK_SOURCE, "walk refused")),
+        *(f"{alpha}:{line} {python_checks.PATH_SET_REFUSAL}" for line in walk_marked(WALK_SOURCE, "path set refused")),
+    ]
+    stale = f"{alpha}: WALK_ALLOWED allows stale, which holds nothing it sanctions; remove the entry"
+    assert sorted(found) == sorted(
+        [
+            *expected,
+            stale,
+            "tools/broken.py: WALK_ALLOWED must map each function, class, or assignment to its reason",
+        ]
+    )
+    assert len(walk_marked(WALK_SOURCE, "walk refused")) == 6
+
+
+WALK_CONFORMING = """\
+from memoized_walk import MemoizedWalk
+
+
+def reach(node, edges, seen):
+    found = {node}
+    seen.add(node)
+    for other in edges[node] - seen:
+        found |= reach(other, edges, seen)
+    return found
+
+
+def reach_once(node, edges):
+    def read(each, walk):
+        found = {each}
+        for other in edges[each]:
+            found |= walk(other)
+        return frozenset(found)
+
+    return MemoizedWalk(read, frozenset())(node)
+
+
+def once(node, edges, seen=frozenset()):
+    return [other for other in edges[node] if other not in seen | {node}]
+
+
+class Reader:
+    def other(self, node, followed):
+        return [Other().other(child, followed | {node}) for child in followed]
+
+
+class Other:
+    def other(self, node, followed):
+        return [node, followed]
+
+
+class PathFinder:
+    def paths(self, node, path, seen):
+        return [self.paths(other, [*path, other], seen | {other}) for other in path]
+
+
+WALK_ALLOWED = {"PathFinder.paths": "the answer is the paths; the walk stops once LIMIT paths are kept"}
+"""
+
+
+def test_walk_policy_passes_the_same_walk_with_a_memo_or_a_walk_allowed_entry() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"tools/walks.py": WALK_CONFORMING})
+        assert python_checks.walk_problems(root, sorted(root.rglob("*.py"))) == []
+
+
+def test_walk_policy_reports_a_listing_with_no_module_to_read() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        assert python_checks.walk_problems(Path(temporary), []) == [
+            f"{Path(temporary).as_posix()}: the listing holds no module the claim policies read, so none was checked"
+        ]

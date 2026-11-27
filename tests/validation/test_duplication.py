@@ -5,18 +5,21 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import ast
 import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import duplication
 from duplication import (
     containment_problems,
     duplicated_definition_problems,
@@ -25,7 +28,7 @@ from duplication import (
     skill_core_import_problems,
     skill_script_import_problems,
 )
-from validation_support import UnreadablePython, parse_python, write_fixture_tree
+from validation_support import CallableResolver, UnreadablePython, parse_python, parse_source, write_fixture_tree
 
 # What a sanction no copy needs is reported as.
 STALE = "which no other file defines identically or restates as a shared fact"
@@ -2035,3 +2038,42 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+def test_a_name_bound_twice_to_the_next_at_each_rung_is_followed_once_per_key(tmp_path: Path) -> None:
+    # Each rung binds its name twice to the next rung's, so the top name reaches the bottom one by 2**12 paths, and a
+    # reader per path follows it on every one.
+    rungs = "".join(f"    a{index} = a{index + 1}\n    a{index} = a{index + 1}\n" for index in reversed(range(12)))
+    source = f'def check(name, top):\n    a12 = top + "/"\n{rungs}    return name.startswith(a0)\n'
+    write_fixture_tree(tmp_path, {"skills/alpha/scripts/alpha.py": source})
+    owners: list[str] = []
+    original = duplication._ContainmentReader._owner
+
+    def counted(reader: duplication._ContainmentReader, node: ast.Name) -> object:
+        owners.append(node.id)
+        return original(reader, node)
+
+    with mock.patch.object(duplication._ContainmentReader, "_owner", counted):
+        found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:27 tests containment with a startswith of a folder and its separator; call "
+        "ejryan89-skill-core's path_containment, the one containment test, or state why in CONTAINMENT_ALLOWED"
+    ]
+    assert len(owners) <= 4 * 13
+
+
+def test_a_name_bound_to_a_sum_of_the_next_twice_reads_each_binding_once() -> None:
+    # Each rung joins the next rung's text to itself, so the bottom binding is reached by 2**12 paths.
+    rungs = "".join(f"a{index} = a{index + 1} + a{index + 1}\n" for index in reversed(range(12)))
+    tree = parse_source('a12 = "x"\n' + rungs + "a = a0\n", "rungs.py")
+    resolver = CallableResolver(tree)
+    read: list[str] = []
+    original = duplication._bound_text
+
+    def counted(node: ast.Name, *rest: Any) -> str | None:
+        read.append(node.id)
+        return original(node, *rest)
+
+    with mock.patch.object(duplication, "_bound_text", counted):
+        assert duplication._static_text(tree.body[-1].value, resolver) == "x" * 2**12  # type: ignore[attr-defined]  # an assignment's value
+    assert len(read) <= 2 * 12 + 1

@@ -4,7 +4,7 @@ starts without git's repository-selecting variables, link_probe is the one link 
 module calls is declared, no process runner's result is discarded unchecked, a handler around a shared reader
 catches the whole family of errors the reader raises on content, and no name is reached by a value: no dynamic lookup,
 no owner-only callable referenced outside its owners, and no policed call given an argument its readers cannot
-follow."""
+follow; and no walk carries its visited set down its recursion per path."""
 
 from __future__ import annotations
 
@@ -7142,6 +7142,227 @@ def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A walk reads each node once per question: a recursion never carries the nodes on its path down as a new set per
+# call, which reads a node reached by many paths once on each. In each function, a recursive call is one of the
+# function itself or of a function of the same module that calls it, however many calls away: a function by its name,
+# a method as a method of `self` or `cls`, or as a method of a new instance of its own class, written in place or held
+# in a name the function binds to one. Such a call is refused when it is given a set built from one of the calling
+# function's parameters: a `|` with the parameter as an operand, the parameter's `.union(...)` or `.copy()`, a `set`
+# or `frozenset` of it or of such a set, a set display that unpacks it, or a name the function binds to one of these.
+# So is a `try` whose body makes a recursive call and whose `finally` discards or removes from a set what the function
+# adds to it, which keeps the path on an object instead. ejryan89-skill-core's memoized_walk is the walk that reads
+# each node once; a walk whose state must be per path, as a path finder's paths are, states why, and what bounds it,
+# in a module-level WALK_ALLOWED = {scope: reason}.
+#
+# Stated limits, forms no module of the repository writes: a recursion through a function of another module, through
+# a callable passed as an argument or held in a name, or through a method of any other receiver; a path carried as a
+# tuple or a list, as `path + (node,)`, or as a dict; a set built from a parameter by a comprehension or any other
+# call; and a set the function adds to and removes from outside a `finally`.
+WALK_ALLOWANCE = "WALK_ALLOWED"
+WALK_REFUSAL = (
+    "carries a walk's visited set per path, so a node reached by many paths is read once on each; keep one answer "
+    "per node for the question with memoized_walk.MemoizedWalk, or state why the state is per path, and what bounds "
+    f"the walk, in {WALK_ALLOWANCE}"
+)
+PATH_SET_REFUSAL = (
+    "adds to a set before a recursive call and takes it out in a finally after, so a node reached by many paths is "
+    "read once on each; keep one answer per node for the question with memoized_walk.MemoizedWalk, or state why the "
+    f"state is per path, and what bounds the walk, in {WALK_ALLOWANCE}"
+)
+SET_BUILDERS = frozenset({"set", "frozenset"})
+SET_COPIES = frozenset({"union", "copy"})
+SET_TAKERS = frozenset({"discard", "remove"})
+
+
+@dataclass(frozen=True)
+class _Walker:
+    """A function of a module, as its scope, its own class's scope or None, its name, and its node."""
+
+    scope: str
+    owner: str | None
+    name: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _walkers(tree: ast.Module) -> list[_Walker]:
+    """Each function of a module, at any depth, scoped as scoped_nodes scopes it."""
+    found: list[_Walker] = []
+
+    def visit(node: ast.AST, scope: str, owner: str | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, DEFINITIONS):
+                visit(child, scope, owner)
+                continue
+            inner = f"{scope}.{child.name}" if scope else child.name
+            if isinstance(child, ast.ClassDef):
+                visit(child, inner, inner)
+            else:
+                found.append(_Walker(inner, owner, child.name, child))
+                visit(child, inner, None)
+
+    visit(tree, "", None)
+    return found
+
+
+def _own_walk_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+    """The nodes of a function's own statements, outside any definition or lambda nested in it."""
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            continue
+        yield node
+        pending += ast.iter_child_nodes(node)
+
+
+def _parameter_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    arguments = function.args
+    every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+    return frozenset(argument.arg for argument in every if argument is not None)
+
+
+class _Walks:
+    """The recursive calls of one module's functions, keyed by (class scope or None, name)."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.walkers = _walkers(tree)
+        self.keys = {(walker.owner, walker.name) for walker in self.walkers}
+        self.calls: dict[tuple[str | None, str], set[tuple[str | None, str]]] = {}
+        for walker in self.walkers:
+            key = (walker.owner, walker.name)
+            for node in _own_walk_nodes(walker.node):
+                if isinstance(node, ast.Call) and (called := self.callee(node, walker)) is not None:
+                    self.calls.setdefault(key, set()).add(called)
+
+    def callee(self, call: ast.Call, walker: _Walker) -> tuple[str | None, str] | None:
+        """The function of the module a call runs: one by its name, or a method of the walker's own class called on
+        `self`, `cls`, or a new instance of the class."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            return (None, func.id) if (None, func.id) in self.keys else None
+        if walker.owner is None or not isinstance(func, ast.Attribute) or (walker.owner, func.attr) not in self.keys:
+            return None
+        if self._instance(func.value, walker):
+            return walker.owner, func.attr
+        return None
+
+    def _instance(self, receiver: ast.expr, walker: _Walker) -> bool:
+        """Whether a receiver is `self`, `cls`, or a new instance of the walker's class, in place or in a local."""
+        own_class = (walker.owner or "").rsplit(".", 1)[-1]
+
+        def constructs(value: ast.expr | None) -> bool:
+            return isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == own_class
+
+        if isinstance(receiver, ast.Name) and receiver.id in {"self", "cls"}:
+            return True
+        if constructs(receiver):
+            return True
+        return isinstance(receiver, ast.Name) and any(
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == receiver.id for target in node.targets)
+            and constructs(node.value)
+            for node in _own_walk_nodes(walker.node)
+        )
+
+    def recursive(self, call: ast.Call, walker: _Walker) -> bool:
+        """Whether a call runs the walker again, itself or through functions of the module that lead back to it."""
+        called = self.callee(call, walker)
+        if called is None:
+            return False
+        start = (walker.owner, walker.name)
+        reached: set[tuple[str | None, str]] = set()
+        pending = [called]
+        while pending:
+            key = pending.pop()
+            if key == start:
+                return True
+            if key not in reached:
+                reached.add(key)
+                pending += self.calls.get(key, set())
+        return False
+
+
+def _built_from(node: ast.expr, parameters: frozenset[str], derived: set[str]) -> bool:
+    """Whether an expression is a new set built from a parameter, or from a name bound to one."""
+
+    def held(value: ast.expr) -> bool:
+        return (isinstance(value, ast.Name) and value.id in parameters | derived) or _built_from(
+            value, parameters, derived
+        )
+
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return held(node.left) or held(node.right)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in SET_BUILDERS:
+        return bool(node.args) and held(node.args[0])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in SET_COPIES:
+        return held(node.func.value)
+    if isinstance(node, ast.Set):
+        return any(isinstance(item, ast.Starred) and held(item.value) for item in node.elts)
+    return isinstance(node, ast.Name) and node.id in derived
+
+
+def _per_path_sets(walker: _Walker) -> set[str]:
+    """The names the walker binds to a set built from one of its parameters, however many bindings away."""
+    parameters = _parameter_names(walker.node) - {"self", "cls"}
+    derived: set[str] = set()
+    assignments = [
+        (node.targets[0].id, node.value)
+        for node in _own_walk_nodes(walker.node)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+    ]
+    # Each pass that changes the set adds a name, so there are never more passes than assignments.
+    for _ in range(len(assignments) + 1):
+        grown = {name for name, value in assignments if _built_from(value, parameters, derived)}
+        if grown <= derived:
+            break
+        derived |= grown
+    return derived
+
+
+def _walk_findings(tree: ast.Module) -> Iterator[tuple[int, str, str]]:
+    """Each recursive call given a set built from a parameter, and each finally that takes out of a set what the
+    function added before a recursive call, as its line, its scope, and its refusal."""
+    walks = _Walks(tree)
+    for walker in walks.walkers:
+        parameters = _parameter_names(walker.node) - {"self", "cls"}
+        derived = _per_path_sets(walker)
+        nodes = list(_own_walk_nodes(walker.node))
+        for node in nodes:
+            if not (isinstance(node, ast.Call) and walks.recursive(node, walker)):
+                continue
+            given = [*node.args, *(keyword.value for keyword in node.keywords)]
+            if any(_built_from(value, parameters, derived) for value in given):
+                yield node.lineno, walker.scope, WALK_REFUSAL
+        added = {
+            ast.dump(node.func.value)
+            for node in nodes
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add"
+        }
+        for node in nodes:
+            if not (isinstance(node, ast.Try | ast.TryStar) and node.finalbody):
+                continue
+            body = [inner for statement in node.body for inner in ast.walk(statement)]
+            if not any(isinstance(inner, ast.Call) and walks.recursive(inner, walker) for inner in body):
+                continue
+            for inner in (inner for statement in node.finalbody for inner in ast.walk(statement)):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr in SET_TAKERS
+                    and ast.dump(inner.func.value) in added
+                ):
+                    yield inner.lineno, walker.scope, PATH_SET_REFUSAL
+
+
+def walk_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each recursion in a module the claim policies read that carries its visited set per path, that no WALK_ALLOWED
+    entry sanctions."""
+    problems: list[str] = []
+    for name, tree in _policy_trees(root, files, problems):
+        problems += sanctioned_problems(name, tree, WALK_ALLOWANCE, sorted(set(_walk_findings(tree))))
+    return problems
+
+
 def static_format_check() -> None:
     ruff_format_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
 
@@ -7333,3 +7554,6 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_time_option_refuses_what_is_no_limit(self) -> None:
         self.assertEqual([], time_option_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_walk_carries_its_visited_set_per_path(self) -> None:
+        self.assertEqual([], walk_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

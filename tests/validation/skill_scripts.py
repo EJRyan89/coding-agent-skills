@@ -138,6 +138,13 @@ PLATFORM_ALLOWED = {
     "/proc": "names Linux's per-process descriptor path as one spelling of a standard stream the console-setup policy "
     "refuses on every platform; it opens nothing",
 }
+WALK_ALLOWED = {
+    "_TemporaryReader.holds": (
+        "a stated limit in its docstring: a chain of conditional rebindings is read once per path, and no script "
+        "here rebinds a folder in such a chain; the walk is bounded by the bindings and calls one script holds, and "
+        "a value reached again on its path ends it"
+    ),
+}
 SHELL_BUILTINS = {
     "alias",
     "break",

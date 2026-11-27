@@ -96,6 +96,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+from memoized_walk import MemoizedWalk
 from validation_support import (
     BUILTIN_NAMES,
     REPOSITORY_ROOT,
@@ -564,6 +565,31 @@ def _template(template: str, method: str) -> str:
     return literal + FIELD if field_follows or FIELD in template else literal
 
 
+# What a printed value's names and deployer functions give, read once a question: a name by its reader and its node, a
+# function by its reader and its definition.
+TextsWalk = MemoizedWalk[tuple["_Refusals", ast.AST], Texts]
+
+
+def _texts_walk() -> TextsWalk:
+    """One question's walk over the names and deployer functions a printed value is read through: a name gives the
+    texts of the value its one assignment binds, and a function those of each of its returns; one reached again
+    through itself gives FIELD."""
+
+    def read(key: tuple[_Refusals, ast.AST], walk: TextsWalk) -> Texts:
+        reader, node = key
+        printed = _Printed(reader)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            returns = [inner.value for inner in _own_nodes(node.body) if isinstance(inner, ast.Return)]
+            texts = (printed.text(value, walk) if value is not None else (FIELD,) for value in returns)
+            return _distinct(text for each in texts for text in each) or (FIELD,)
+        statement = reader.assignment(node, node, set()) if isinstance(node, ast.Name) else None
+        if statement is not None and statement.value is not None:
+            return printed.text(statement.value, walk)
+        return (FIELD,)
+
+    return MemoizedWalk(read, (FIELD,))
+
+
 class _Printed:
     """How one module's printed lines are read: the text each print or write gives, with FIELD for what only the
     deployer's run knows, and whether the statements after a printed ERROR line print its step."""
@@ -582,83 +608,71 @@ class _Printed:
     def printed(self, call: ast.Call) -> Texts:
         """The texts a print or a write may give: a write's argument, or print's arguments joined by its sep: the one
         written, which an unpacked mapping cannot give again, or else what such a mapping may give, or a space."""
+        walk = _texts_walk()
         if not (isinstance(call.func, ast.Name) and call.func.id == "print"):
-            return self.text(call.args[0], frozenset()) if call.args else (FIELD,)
+            return self.text(call.args[0], walk) if call.args else (FIELD,)
         written = [keyword.value for keyword in call.keywords if keyword.arg == "sep"]
         separator: Texts = (" ",)
         if written:
-            separator = self.text(written[0], frozenset())
+            separator = self.text(written[0], walk)
         elif any(keyword.arg is None for keyword in call.keywords):
             separator = (FIELD,)
-        parts = self._parts(call.args)
+        parts = self._parts(call.args, walk)
         return _combined(
             [piece for index, part in enumerate(parts) for piece in ([separator] if index else []) + [part]]
         )
 
-    def _parts(self, arguments: list[ast.expr]) -> list[Texts]:
+    def _parts(self, arguments: list[ast.expr], walk: TextsWalk) -> list[Texts]:
         """The texts of each value print is given: an unpacked list or tuple display, written or held in a name bound
         once to one, gives its elements, a comprehension or generator its element's text, and anything else unpacked
         FIELD."""
         parts: list[Texts] = []
         for argument in arguments:
             if not isinstance(argument, ast.Starred):
-                parts.append(self.text(argument, frozenset()))
+                parts.append(self.text(argument, walk))
                 continue
             value = argument.value
             if isinstance(value, (ast.GeneratorExp, ast.ListComp)):
-                parts.append(self.text(value.elt, frozenset()))
+                parts.append(self.text(value.elt, walk))
                 continue
             elements = self.reader._displayed(value, value, set())
-            parts += [(FIELD,)] if elements is None else self._parts(elements)
+            parts += [(FIELD,)] if elements is None else self._parts(elements, walk)
         return parts
 
-    def text(self, node: ast.expr, followed: frozenset[str]) -> Texts:
+    def text(self, node: ast.expr, walk: TextsWalk) -> Texts:
         """The texts a value may be, FIELD standing for what only the deployer's run knows: a string, an f-string, a
         literal template's `.format` or `%`, a `+`, a name bound once to one of them, or each return of a deployer
-        function it calls."""
+        function it calls, each name and function read through the question's walk (_texts_walk)."""
         if isinstance(node, ast.Constant):
             return (node.value,) if isinstance(node.value, str) else (FIELD,)
         if isinstance(node, ast.JoinedStr):
-            return _combined([self._field(part, followed) for part in node.values])
+            return _combined([self._field(part, walk) for part in node.values])
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return _combined([self.text(node.left, followed), self.text(node.right, followed)])
+            return _combined([self.text(node.left, walk), self.text(node.right, walk)])
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-            return _distinct(_template(template, "%") for template in self.text(node.left, followed))
+            return _distinct(_template(template, "%") for template in self.text(node.left, walk))
         if isinstance(node, ast.Name):
-            seen = set(followed)
-            statement = self.reader.assignment(node, node, seen)
-            if statement is not None and statement.value is not None:
-                return self.text(statement.value, frozenset(seen))
+            return walk((self.reader, node))
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-                return _distinct(_template(template, "format") for template in self.text(node.func.value, followed))
-            return self._returned(node, followed)
+                return _distinct(_template(template, "format") for template in self.text(node.func.value, walk))
+            return self._returned(node, walk)
         return (FIELD,)
 
-    def _field(self, part: ast.expr, followed: frozenset[str]) -> Texts:
+    def _field(self, part: ast.expr, walk: TextsWalk) -> Texts:
         """An f-string part's texts: its literal text, or a field's value read as text() reads it, when no conversion
         or format spec changes it, and FIELD otherwise."""
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             return (part.value,)
         if isinstance(part, ast.FormattedValue) and part.conversion == -1 and part.format_spec is None:
-            return self.text(part.value, followed)
+            return self.text(part.value, walk)
         return (FIELD,)
 
-    def _returned(self, call: ast.Call, followed: frozenset[str]) -> Texts:
-        """The texts a deployer function may return, read from each of its returns, as `errors.named` and
-        `see_recovery` give theirs, or FIELD when the call names no deployer function."""
-        name = self.reader.called(call.func) or ""
-        target = self.reader.program.functions.get(name)
-        if target is None or name in followed:
-            return (FIELD,)
-        reader, function = target
-        printed = _Printed(reader)
-        returns = [node.value for node in _own_nodes(function.body) if isinstance(node, ast.Return)]
-        return _distinct(
-            text
-            for value in returns
-            for text in (printed.text(value, followed | {name}) if value is not None else (FIELD,))
-        ) or (FIELD,)
+    def _returned(self, call: ast.Call, walk: TextsWalk) -> Texts:
+        """The texts a deployer function may return, read once a question by the walk from each of its returns, as
+        `errors.named` and `see_recovery` give theirs, or FIELD when the call names no deployer function."""
+        target = self.reader.program.functions.get(self.reader.called(call.func) or "")
+        return (FIELD,) if target is None else walk(target)
 
     def stepless(self, call: ast.Call) -> bool:
         """Whether a print or a write may give an ERROR line that neither a later line of its own text nor a statement
@@ -832,6 +846,12 @@ def _template_lead(template: str, method: str) -> tuple[str, bool] | None:
     return literal, field_name is not None
 
 
+# What an unpacked value gives as lines, and what a name gives as the text a line starts with, each read once a
+# question.
+LinesWalk = MemoizedWalk[ast.expr, tuple[ast.expr | None, ...]]
+TextWalk = MemoizedWalk[ast.Name, str | None]
+
+
 class _AssertedLines:
     """How one suite's assert_lines calls are read: the lines each passes, followed through the names that hold them
     as _Refusals follows a refusal's lines."""
@@ -840,25 +860,29 @@ class _AssertedLines:
         self.reader = _Refusals(tree, name, set())
         self.aliases = aliases
 
-    def lines(self, arguments: list[ast.expr], followed: frozenset[str] = frozenset()) -> list[ast.expr | None]:
+    def lines(self, arguments: list[ast.expr], walk: LinesWalk | None = None) -> list[ast.expr | None]:
         """Each positional argument as the lines it passes: an unpacked list or tuple, written or held in a name bound
-        once to one, gives its elements, and anything else unpacked is None, lines this policy cannot read."""
+        once to one, gives its elements, and anything else unpacked is None, lines this policy cannot read. What each
+        unpacked value gives is read once a question; one reached again through itself gives None."""
+        if walk is None:
+            walk = MemoizedWalk(self._unpacked, (None,))
         found: list[ast.expr | None] = []
         for argument in arguments:
-            if not isinstance(argument, ast.Starred):
-                found.append(argument)
-                continue
-            seen = set(followed)
-            elements = self.reader._displayed(argument.value, argument.value, seen)
-            found += [None] if elements is None else self.lines(elements, frozenset(seen))
+            found += walk(argument.value) if isinstance(argument, ast.Starred) else [argument]
         return found
 
-    def text(self, node: ast.expr, followed: frozenset[str] = frozenset()) -> str | None:
+    def _unpacked(self, value: ast.expr, walk: LinesWalk) -> tuple[ast.expr | None, ...]:
+        elements = self.reader._displayed(value, value, set())
+        return (None,) if elements is None else tuple(self.lines(elements, walk))
+
+    def text(self, node: ast.expr, walk: TextWalk | None = None) -> str | None:
         """The literal text a line starts with, as far as it settles whether the line is an ERROR line: a string, an
         f-string up to its first replacement field, a literal template's `.format(...)` or `%` up to its first field,
         a `+` whose left side settles it, or a name bound once to one of them; None when it cannot be read, such as a
         parameter, a loop's name, a call's result, or a field that opens the line. A value that is no string reads as
-        no text."""
+        no text. What each name gives is read once a question; one reached again through itself gives None."""
+        if walk is None:
+            walk = MemoizedWalk(self._bound, None)
         if isinstance(node, ast.Constant):
             return node.value if isinstance(node.value, str) else ""
         if isinstance(node, ast.JoinedStr):
@@ -869,22 +893,23 @@ class _AssertedLines:
                 leading.append(part.value)
             return _settled("".join(leading), len(leading) < len(node.values))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-            return self._template(node.func.value, "format", followed)
+            return self._template(node.func.value, "format", walk)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-            return self._template(node.left, "%", followed)
+            return self._template(node.left, "%", walk)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = self.text(node.left, followed)
+            left = self.text(node.left, walk)
             return None if left is None else _settled(left, True)
         if isinstance(node, ast.Name):
-            seen = set(followed)
-            statement = self.reader.assignment(node, node, seen)
-            if statement is not None and statement.value is not None:
-                return self.text(statement.value, frozenset(seen))
+            return walk(node)
         return None
 
-    def _template(self, node: ast.expr, method: str, followed: frozenset[str]) -> str | None:
+    def _bound(self, name: ast.Name, walk: TextWalk) -> str | None:
+        statement = self.reader.assignment(name, name, set())
+        return self.text(statement.value, walk) if statement is not None and statement.value is not None else None
+
+    def _template(self, node: ast.expr, method: str, walk: TextWalk) -> str | None:
         """The text a filled template starts with, read from the template's own text up to its first field."""
-        template = self.text(node, followed)
+        template = self.text(node, walk)
         lead = None if template is None else _template_lead(template, method)
         return None if lead is None else _settled(*lead)
 
