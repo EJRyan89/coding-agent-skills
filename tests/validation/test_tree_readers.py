@@ -320,6 +320,13 @@ class TreeReaderFixtures(TreeReaderCase):
             self.problems({"broken.sh": "#!/usr/bin/env bash\nif then\n"}, {}),
         )
 
+    def test_a_python_shell_command_the_grammar_refuses_is_named(self) -> None:
+        tool = 'import subprocess\n\n\ndef run():\n    subprocess.run("echo \'unclosed", shell=True)\n'
+        self.assertEqual(
+            ["tool.py:5: cannot read the git it runs: not Bash the grammar reads (a single quote is not closed)"],
+            self.problems({"tool.py": tool}, {}),
+        )
+
     def test_suites_and_fixtures_are_not_read(self) -> None:
         reader = "def listing(git, commit):\n    return git.output(['ls-tree', commit])\n"
         files = {"test_tool.py": reader, "tests/fixtures/tool.py": reader, "conftest.py": reader}

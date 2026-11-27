@@ -37,7 +37,10 @@ command holding the body ends or starts; the reader gives the line its text stan
 `simple_commands` lists every simple command Bash may run for a text, each substitution's included, read as the
 subshell Bash runs it in, and `command_words` gives one's words from its program's name, for a reader that judges
 what a script runs; `every_command` lists every command, compound ones and function definitions too, and
-`command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too.
+`command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too;
+`uncommented_text` gives everything Bash reads in a text but its comments. A function's
+definition keeps the line Bash defines it on, its `function` word's or its name's, as `declare -F` reports it under
+extdebug, and the line of the last word or operator its body reads, so a reader can tell which lines it holds.
 
 The reader reads text as a non-interactive Bash started with every `set -o` and `shopt` option at its default reads it,
 and decides each option once: OPTIONS_READ, under which Bash reads the same commands whatever its setting;
@@ -69,7 +72,8 @@ ANSI-C string.
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
 which it allows with a note, as "The guard's contract" in docs/parallel-sessions.md states, and git_subcommands
-raises it for its caller to fail.
+raises it for its caller to fail. A caller that names its own refusal reads Bash inside `refusing`, which raises that
+refusal from the grammar's error, so the grammar's error never escapes it.
 
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
@@ -90,6 +94,13 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A `for` or `select` loop whose body is a `{ }` group rather than `do ... done`, arithmetic or not, which Bash reads,
   raises NotRead.
 - A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
+- A function whose last token is a here-document's operator, after its body as `f() { cat; } <<EOF` or inside it on
+  its closing line as `f() { cat <<EOF; }`, ends on that operator's line, not on the delimiter line, since a
+  here-document's body keeps no line of its own, though the body's lines belong to the function.
+- A function header a line continuation splits, a backslash ending the line after its name or its `function` word,
+  starts on the line of its first word, where Bash reports the line of the `(` or of the name after it.
+- Bash 3.2 reports a function holding a nested definition, as `outer() { inner() { :; }; }` written over lines, on the
+  nested definition's line; the reader gives the line Bash 4 and later report, the outer header's.
 - A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Bash 3.2 ends a `${ }` at a `}` inside a command substitution it holds, as in `${x:-$(: })}`, and a `$( )` in
   double quotes at a `)` inside a `${ }` it holds, as in `"$(echo ${x+ )})"`, each of which Bash 4 and later read
@@ -140,6 +151,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 # Characters that end an unquoted word.
@@ -375,23 +387,43 @@ class NotRead(BashSyntaxError):
     here-document body's substitution the grammar refuses: never text a reader may take to run nothing."""
 
 
+@contextmanager
+def refusing(refusal: Callable[[BashSyntaxError], Exception]) -> Iterator[None]:
+    """Reads Bash in its block, raising the exception `refusal` builds from a BashSyntaxError the block raises, NotRead
+    included, from that error: the one way a reader that names its own refusal of Bash the grammar refuses reads it,
+    so the grammar's error never escapes the reader."""
+    try:
+        yield
+    except BashSyntaxError as error:
+        raise refusal(error) from error
+
+
 class Source(str):
     """Text the reader takes from a script, a substitution's or a here-document's body, which keeps the script line
     each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
     `lines[len(self)]` the line its end stands on, and, for a substitution's text, the `form` that opened it: `$(`,
     `` ` ``, `<(`, or `>(`, and whether it is a `$( )` or process substitution's body holding a case pattern whose `)`
-    no `(` opened, `bare_case`, which Bash 3.2 reads otherwise. It compares and hashes as the plain text it holds."""
+    no `(` opened, `bare_case`, which Bash 3.2 reads otherwise, and where its form starts in the text the lexer read,
+    `offset`, -1 for text no form opened, so a reader can list a word's substitutions in the order they are written. It
+    compares and hashes as the plain text it holds."""
 
     lines: tuple[int, ...]
     form: str
     bare_case: bool
+    offset: int
 
-    def __new__(cls, text: str, lines: Sequence[int], form: str = "") -> Source:
+    def __new__(cls, text: str, lines: Sequence[int], form: str = "", offset: int = -1) -> Source:
         source = super().__new__(cls, text)
         source.lines = tuple(lines)
         source.form = form
         source.bare_case = False
+        source.offset = offset
         return source
+
+
+def written_at(text: str) -> int:
+    """Where a substitution's form starts in the text the lexer read, as its Source keeps it; -1 for any other text."""
+    return text.offset if isinstance(text, Source) else -1
 
 
 def line_numbers(text: str) -> tuple[int, ...]:
@@ -577,6 +609,10 @@ class FunctionDefinition:
 
     name: str | None
     body: Command
+    # The script line Bash defines the function on, where its `function` word or its name starts, as `declare -F`
+    # reports it under extdebug, and the line of the last word or operator its body, its redirections included, reads.
+    line: int = field(default=0, compare=False)
+    end: int = field(default=0, compare=False)
 
 
 Command = Simple | Subshell | Group | If | Loop | Case | Arithmetic | FunctionDefinition
@@ -1145,7 +1181,7 @@ class Lexer:
         finally:
             self.holds_bare_case = self.holds_bare_case or inner.holds_bare_case
         self.index = inner.index + 1
-        source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
+        source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form, start - len(form))
         source.bare_case = inner.bare_case
         return source
 
@@ -1288,7 +1324,8 @@ class Lexer:
             self.refuse(TRANSLATED_REASON)
         if double_quoted_word(content, quoted):
             processes: list[str] = [text for text in found if isinstance(text, Source) and text.form in ("<(", ">(")]
-            found = self.double_quoted_expansions(start, ansi_c) + processes
+            # Listed in the order they are written, a process substitution before a command substitution included.
+            found = sorted(self.double_quoted_expansions(start, ansi_c) + processes, key=written_at)
         substitutions.extend(found)
         if not nested:
             # ${NAME:=word} and ${NAME=word} assign, and so does each such expansion nested in the word.
@@ -1382,6 +1419,10 @@ class Lexer:
             self.refuse(f"{what} is not read ({error})")
         self.holds_bare_case = self.holds_bare_case or lexer.holds_bare_case
         self.refusals.extend(lexer.refusals)
+        # Each was read from the slice that starts at start, so its form starts that much further into this text.
+        for text in found:
+            if isinstance(text, Source) and text.offset >= 0:
+                text.offset += start
         return found
 
     def ansi_c_quoted(self, start: int) -> str:
@@ -1398,6 +1439,7 @@ class Lexer:
 
     def backquoted(self) -> Source:
         """The command a backquote pair runs, with the backslashes that escape a backquote, `$`, or `\\` removed."""
+        opened = self.index
         index = self.index + 1
         body: list[str] = []
         numbers: list[int] = []
@@ -1409,7 +1451,7 @@ class Lexer:
                 index += 2
             elif character == "`":
                 self.index = index + 1
-                return Source("".join(body), [*numbers, self.lines[index]], "`")
+                return Source("".join(body), [*numbers, self.lines[index]], "`", opened)
             else:
                 body.append(character)
                 numbers.append(self.lines[index])
@@ -1687,7 +1729,7 @@ class Parser:
                     continue
                 if token.text == "(" and len(words) == 1 and not redirects and words[0].assignment is None:
                     # Bash reads a function's name wherever a command's first word stands, but never an assignment.
-                    return self.function_definition(words[0].literal)
+                    return self.function_definition(words[0].literal, words[0].line)
                 break
             if isinstance(token, HereDocument):
                 raise BashSyntaxError("a here-document has no operator")
@@ -1727,12 +1769,25 @@ class Parser:
             found.append(self.redirect())
         return found
 
-    def function_definition(self, name: str | None) -> FunctionDefinition:
+    def function_definition(self, name: str | None, line: int) -> FunctionDefinition:
         self.index += 1
         if not self.at_operator(")"):
             raise BashSyntaxError("a function definition is not closed")
         self.index += 1
-        return FunctionDefinition(name, self.function_body())
+        return self.defined(name, line)
+
+    def defined(self, name: str | None, line: int) -> FunctionDefinition:
+        """The definition of a function Bash defines on `line`, whose body starts at the next token."""
+        body = self.function_body()
+        return FunctionDefinition(name, body, line, self.last_line())
+
+    def last_line(self) -> int:
+        """The line of the last word or operator read; a here-document's body keeps none."""
+        for index in range(self.index - 1, -1, -1):
+            token = self.tokens[index]
+            if isinstance(token, Word | Operator):
+                return token.line
+        return 0
 
     def function_body(self) -> Command:
         self.skip_newlines()
@@ -1744,13 +1799,15 @@ class Parser:
         return self.command()
 
     def function_keyword(self) -> Command:
+        keyword = self.tokens[self.index - 1]
+        line = keyword.line if isinstance(keyword, Word) else 0
         token = self.peek()
         if not isinstance(token, Word):
             raise BashSyntaxError("function names nothing")
         self.index += 1
         if self.at_operator("("):
-            return self.function_definition(token.literal)
-        return FunctionDefinition(token.literal, self.function_body())
+            return self.function_definition(token.literal, line)
+        return self.defined(token.literal, line)
 
     def group(self) -> Command:
         body = self.command_list(frozenset({"}"}))
@@ -1893,6 +1950,58 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
 
 # ---------------------------------------------------------------------------------------------------------------
 # What a script runs
+
+
+def uncommented_text(text: str) -> str:
+    """Everything Bash reads in text but its comments, joined by spaces, for a reader that searches what a script names
+    outside one: each operator, and each word as written, quotes, a parameter's `$` and braces, and an ANSI-C string's
+    text included, with the body of every command or process substitution it holds cut out where it stands and read
+    the same way, as the subshell Bash runs it in reads it, and an array assignment's elements read so too. A
+    here-document's body that is Bash the grammar reads, as a script handed to a shell is, is read the same way, and
+    any other body is data, kept whole. A limit: a backquoted body holding an escape Bash removes is not written in the
+    word as Bash reads it, so the word keeps it, a comment in it included. Where a quoted copy of a substitution's form
+    and body stands earlier in the word, as a single-quoted copy before its double-quoted substitution, the copy is
+    cut instead, which leaves the word the same text in another order, the copy's text being the substitution's.
+    Raises BashSyntaxError where the words cannot be read, as an unclosed quote."""
+    try:
+        tokens = Lexer(text, lines=source_lines(text)).run()
+        return " ".join(_uncommented_token(token) for token in tokens)
+    except RecursionError:
+        # The lexer and this reading follow nesting by recursion, so nesting deeper than Python's limit is text the
+        # reader cannot read, as parse refuses it.
+        raise NotRead("it nests deeper than the reader follows") from None
+
+
+# What closes a substitution, by the form that opened it.
+SUBSTITUTION_CLOSERS = {"$(": ")", "`": "`", "<(": ")", ">(": ")"}
+
+
+def _uncommented_token(token: Token) -> str:
+    if isinstance(token, Operator):
+        return token.text
+    if isinstance(token, HereDocument):
+        try:
+            return uncommented_text(token.body)
+        except BashSyntaxError:
+            return token.body
+    if token.array:
+        name, opened, elements = token.raw.partition("(")
+        return f"{name}{opened} {uncommented_text(elements.removesuffix(')'))} )"
+    # Each substitution is cut out by its form and body, written so, at or after where the one before it ended.
+    written, cursor = token.raw, 0
+    cut: set[int] = set()
+    for body in token.substitutions:
+        form = body.form if isinstance(body, Source) else ""
+        closer = SUBSTITUTION_CLOSERS.get(form)
+        if closer is None or written_at(body) in cut:
+            continue
+        cut.add(written_at(body))
+        start = written.find(f"{form}{body}{closer}", cursor)
+        if start < 0:
+            continue
+        written = f"{written[:start]}{form} {closer}{written[start + len(form) + len(body) + len(closer) :]}"
+        cursor = start + len(form) + 1 + len(closer)
+    return " ".join([written, *(uncommented_text(body) for body in token.substitutions)])
 
 
 def simple_commands(text: str) -> list[Simple]:

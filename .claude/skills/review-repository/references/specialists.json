@@ -11,6 +11,7 @@
     ".claude/skills/review-repository/scripts/conditions.py",
     "skills/ejryan89-skill-core/scripts/apple_double.py",
     "skills/ejryan89-skill-core/scripts/atomic_file.py",
+    "skills/ejryan89-skill-core/scripts/bash_syntax.py",
     "skills/ejryan89-skill-core/scripts/console.py",
     "skills/ejryan89-skill-core/scripts/device_names.py",
     "skills/ejryan89-skill-core/scripts/diff_paths.py",

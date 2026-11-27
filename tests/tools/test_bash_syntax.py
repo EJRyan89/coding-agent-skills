@@ -719,6 +719,217 @@ def test_a_function_is_named_only_by_a_word_bash_defines_it_by(text: str, name: 
     assert ["git", "push"] in [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
 
 
+# Functions in each form Bash defines one, with braces in a quoted string and a comment, a header-shaped line in a
+# here-document's body, a nested definition, and redirections continued onto a later line.
+FUNCTION_SPANS_SCRIPT = (
+    "f() {\n"  # 1
+    '  echo "}" # }\n'  # 2
+    "  git push\n"  # 3
+    "}\n"  # 4
+    "cat <<'BODY'\n"  # 5
+    "k() {\n"  # 6: the body's text, which defines nothing
+    "BODY\n"  # 7
+    "function g\n"  # 8
+    "{\n"  # 9
+    "  :\n"  # 10
+    "}\n"  # 11
+    "h ()\n"  # 12
+    "(\n"  # 13
+    "  :\n"  # 14
+    ")\n"  # 15
+    "outer() {\n"  # 16
+    "  inner() { :; }\n"  # 17
+    "}\n"  # 18
+    "redirected() {\n"  # 19
+    "  :\n"  # 20
+    "} \\\n"  # 21
+    "  >/dev/null\n"  # 22
+    "function keyword() { :; }\n"  # 23
+)
+FUNCTION_SPANS = {
+    "f": (1, 4),
+    "g": (8, 11),
+    "outer": (16, 18),
+    "inner": (17, 17),
+    "h": (12, 15),
+    "redirected": (19, 22),
+    "keyword": (23, 23),
+}
+
+
+def test_a_function_spans_from_the_line_bash_defines_it_on_to_the_last_line_its_body_reads(tmp_path: Path) -> None:
+    bash_agreement.assert_reader_agrees([FUNCTION_SPANS_SCRIPT])
+    definitions = [
+        command
+        for command in bash_syntax.every_command(FUNCTION_SPANS_SCRIPT)
+        if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    spans = {definition.name: (definition.line, definition.end) for definition in definitions}
+    assert spans == FUNCTION_SPANS
+    script = tmp_path / "spans.sh"
+    names = " ".join(FUNCTION_SPANS)
+    script.write_bytes(f"{FUNCTION_SPANS_SCRIPT}outer\nshopt -s extdebug\ndeclare -F {names}\n".encode())
+    result = platform_support.run_tool([bash_agreement.find_bash(), platform_support.normalize(script)])
+    assert result.returncode == 0, result.output
+    # The here-document's body, which cat prints, comes first; declare -F prints each name, its line, and the script.
+    defined = {words[0]: int(words[1]) for words in (line.split() for line in result.output.splitlines()[1:])}
+    assert defined == {name: start for name, (start, _) in FUNCTION_SPANS.items()}
+
+
+@pytest.mark.parametrize(
+    ("text", "span"),
+    [
+        # A here-document after the body, or one opened on the body's closing line, ends the function on the
+        # operator's line, as the module states.
+        ("f() { cat; } <<EOF\nbody\nEOF\n", (1, 1)),
+        ("f() { cat <<EOF; }\nbody\nEOF\n", (1, 1)),
+        # A header a continuation splits starts on its first word's line, where Bash reports the next.
+        ("f \\\n() { :; }\n", (1, 2)),
+        ("function \\\nf { :; }\n", (1, 2)),
+    ],
+)
+def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_header(
+    text: str, span: tuple[int, int]
+) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    [definition] = [
+        command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    assert (definition.line, definition.end) == span
+
+
+@pytest.mark.parametrize(
+    ("text", "kept", "dropped"),
+    [
+        ("run_thing # days_old\n", {"run_thing"}, {"days_old"}),
+        ("# days_old\rrun_thing\n", set(), {"days_old", "run_thing"}),
+        # A quoted `#` and one inside a word start no comment.
+        ("echo '# kept' x#y\n", {"#", "kept", "x#y"}, set()),
+        # A comment inside a command or process substitution, in backquotes, in double quotes, or inside a ${ }, is
+        # one Bash reads in the subshell, and so is one among an array assignment's elements.
+        ('out=$(\n  # days_old\n  "$S" --check\n)\n', {"--check"}, {"days_old"}),
+        ("echo `true # days_old`\n", {"true"}, {"days_old"}),
+        ("cat <(echo # days_old\n)\n", {"echo"}, {"days_old"}),
+        ('echo "$(f # days_old\n)"\n', {"f"}, {"days_old"}),
+        ('echo "${x:-$(f # days_old\n)}"\n', {"f"}, {"days_old"}),
+        ("a=( x # days_old\n y )\n", {"x", "y"}, {"days_old"}),
+        # A here-document's body that is Bash, as a script handed to a shell is, loses its comments too; one that is
+        # not is data, kept whole.
+        ("bash <<'EOF'\n# days_old\nrun_thing\nEOF\n", {"run_thing"}, {"days_old"}),
+        ("cat <<EOF\ndays_old # in the body\nEOF\n", {"days_old"}, {"body"}),
+        ("cat <<EOF\nit's days_old\nEOF\n", {"it's", "days_old"}, set()),
+        # A word is kept as written: a parameter keeps its `$` and braces, so it never joins the text beside it into
+        # another name, an ANSI-C string keeps its text, and a ${ }'s text outside its substitutions stays.
+        ('log="$TMP/${days}_old.log"\n', {"log"}, {"days_old"}),
+        ('days_old"$sfx"\n', {"days_old"}, set()),
+        ("bash -c $'days_old\\n'\n", {"days_old"}, set()),
+        ('echo "${x:-a days_old $(d)}"\n', {"days_old", "d"}, set()),
+        # A ${ }'s substitutions are cut where each stands, a process substitution before a command substitution
+        # included, so the comment in the first is never kept.
+        ("echo ${x:<(b # c\n):$(a)}\n", {"a", "b"}, {"c"}),
+        # A substitution the word lists twice, as a subscript's process substitution is, is cut once and read twice,
+        # and its second listing never cuts a copy written later, past a substitution whose comment it would keep.
+        ("echo ${a[<(b)]:-$(a)}\n", {"a", "b"}, set()),
+        ("echo ${a[<(b)]:-$(a # c\n)}<(b)\n", {"a", "b"}, {"c"}),
+    ],
+)
+def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
+    text: str, kept: set[str], dropped: set[str]
+) -> None:
+    # A name counts as a reader of the text counts one: a whole word, as review-repository's untested route reads it.
+    bash_agreement.assert_reader_agrees([text])
+    found = bash_syntax.uncommented_text(text)
+
+    def names(word: str) -> bool:
+        return re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", found) is not None
+
+    assert [word for word in sorted(kept) if not names(word)] == []
+    assert [word for word in sorted(dropped) if names(word)] == []
+
+
+def test_a_quoted_copy_of_a_substitution_cut_in_its_place_leaves_the_same_names() -> None:
+    # The quoted copy stands first, so it is the one cut: the word keeps the substitution's text where the copy stood,
+    # the same words as cutting the substitution itself would keep, the copy's `# x` being data that names `x`.
+    text = "echo '$(d # x\n)'\"$(d # x\n)\"\n"
+    bash_agreement.assert_reader_agrees([text])
+    found = bash_syntax.uncommented_text(text)
+    cut_in_place = "echo '$(d # x\n)'\"$( )\" d"
+    assert sorted(re.findall(r"[\w-]+", found)) == sorted(re.findall(r"[\w-]+", cut_in_place))
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        ("echo ${x:<(p):`q`}\n", [("p", "<(", 9), ("q", "`", 14)]),
+        ("echo ${x:`q`:<(p)}\n", [("q", "`", 9), ("p", "<(", 13)]),
+    ],
+)
+def test_a_braced_expansion_lists_a_backquote_among_its_substitutions_where_it_is_written(
+    text: str, listed: list[tuple[str, str, int]]
+) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    word = bash_syntax.Lexer(text).run()[1]
+    assert isinstance(word, bash_syntax.Word)
+    found = [(str(body), body.form, body.offset) for body in word.substitutions if isinstance(body, bash_syntax.Source)]
+    assert found == listed
+
+
+def test_a_documented_limit_a_backquoted_body_bash_removes_an_escape_from_stays_in_the_word() -> None:
+    # The body Bash runs, `printf %s $HOME # c`, is not written in the word, whose `\$` Bash removes, so no cut finds
+    # it and the word keeps it, its comment included; the body is still read, without the comment.
+    text = "echo `printf %s \\$HOME # c`\n"
+    bash_agreement.assert_reader_agrees([text])
+    assert bash_syntax.uncommented_text(text) == "echo `printf %s \\$HOME # c` printf %s $HOME \n"
+
+
+def test_uncommented_text_refuses_nesting_past_the_recursion_limit() -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"):
+        bash_syntax.uncommented_text("echo " + "$(" * DEPTH + "x" + ")" * DEPTH)
+
+
+def test_a_substitution_listed_twice_is_cut_once_and_read_each_time() -> None:
+    # The skip when a substitution's form and body are no longer in the word: the second listing of `<(b)` finds the
+    # word already cut there, so the word keeps one cut and each listing's body is read, in the order written.
+    text = "echo ${a[<(b)]:-$(a)}\n"
+    bash_agreement.assert_reader_agrees([text])
+    word = bash_syntax.Lexer(text).run()[1]
+    assert isinstance(word, bash_syntax.Word)
+    assert [str(body) for body in word.substitutions].count("b") == 2
+    assert bash_syntax.uncommented_text(text) == "echo ${a[<( )]:-$( )} b b a \n"
+
+
+@pytest.mark.parametrize("text", ["echo 'unclosed\n", 'echo "$(f\n', "cat <(echo\n"])
+def test_uncommented_text_raises_on_text_the_grammar_cannot_read(text: str) -> None:
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.uncommented_text(text)
+
+
+class Refused(Exception):
+    """A caller's own refusal of Bash the grammar refuses."""
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("echo 'unclosed", "a single quote is not closed"),
+        # NotRead, the grammar's refusal of text Bash may run, is refused the same way.
+        ("for x in a; { git push; }", "a loop whose body is a `{ }` group is not read"),
+    ],
+)
+def test_refusing_raises_the_caller_s_refusal_from_the_grammar_s_error(text: str, reason: str) -> None:
+    with pytest.raises(Refused) as caught, bash_syntax.refusing(lambda error: Refused(f"refused: {error}")):
+        bash_syntax.every_command(text)
+    assert str(caught.value) == f"refused: {reason}"
+    assert isinstance(caught.value.__cause__, BashSyntaxError)
+
+
+def test_refusing_passes_bash_the_grammar_reads_and_any_other_error_through() -> None:
+    with bash_syntax.refusing(Refused):
+        assert bash_syntax.command_words(bash_syntax.simple_commands("git push")[0]) == ["git", "push"]
+    with pytest.raises(KeyError), bash_syntax.refusing(Refused):
+        raise KeyError("not the grammar's")
+
+
 def test_a_documented_limit_a_function_name_holding_a_tilde_which_bash_defines_is_read_as_refused() -> None:
     text = "~f () { echo defined; }; ~f"
     bash_agreement.assert_reader_agrees([text])

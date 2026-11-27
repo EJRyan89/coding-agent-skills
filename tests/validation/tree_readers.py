@@ -74,6 +74,7 @@ Stated limits, each one a fixture in tests/validation/test_tree_readers.py shows
 from __future__ import annotations
 
 import ast
+import functools
 import re
 import unittest
 from collections import defaultdict
@@ -82,6 +83,7 @@ from pathlib import Path
 
 import git_client
 import runtime_support
+from bash_syntax import BashSyntaxError, refusing
 from call_tables import PROCESS_STARTS
 from exit_tables import NOT_SCANNED
 from git_subcommands import UNREAD_PART, bash_git_subcommands, powershell_program
@@ -290,6 +292,19 @@ def _excused(
     return True
 
 
+class UnreadCommand(ValueError):
+    """A shell command a Python module runs whose git subcommands cannot be read, since it is Bash the grammar
+    refuses."""
+
+    def __init__(self, line: int, reason: str) -> None:
+        super().__init__(reason)
+        self.line, self.reason = line, reason
+
+
+def _unread_command(line: int, error: BashSyntaxError) -> UnreadCommand:
+    return UnreadCommand(line, f"not Bash the grammar reads ({error})")
+
+
 def python_tree_reads(
     tree: ast.Module,
     not_readers: Mapping[tuple[str, ...], str] = NOT_READERS,
@@ -298,7 +313,8 @@ def python_tree_reads(
     """Each read of a commit's tree a Python module's git words and GitHub endpoints make, as (line, scope, reader,
     bytes), with the reader as `git <subcommand>` or the GitHub endpoint it names, in the order a walk of the module
     meets them, past each sequence of git's words that is exactly the words of a `not_readers` entry, which is added to
-    `used`."""
+    `used`. Raises UnreadCommand, naming its line, for a command a call runs through a shell that is Bash the grammar
+    refuses, as script_git_subcommands raises UnreadScript for such a script."""
     resolver = CallableResolver(tree)
     excusing: set[tuple[str, ...]] = set() if used is None else used
     found: list[tuple[int, str, str, str]] = []
@@ -314,9 +330,9 @@ def python_tree_reads(
                 readings.append((f"{GIT} {CAT_FILE}", COMMITTED))
             command = _shell_command(node, resolver)
             if command is not None:
-                readings += [
-                    _reads([subcommand]) for subcommand in bash_git_subcommands(command, powershell_script_commands)
-                ]
+                with refusing(functools.partial(_unread_command, node.lineno)):
+                    subcommands = bash_git_subcommands(command, powershell_script_commands)
+                readings += [_reads([subcommand]) for subcommand in subcommands]
         readings += _github_reads(node)
         found += [(getattr(node, "lineno", 0), scope, *reading) for reading in readings if reading is not None]
     return found
@@ -361,7 +377,8 @@ def _found_reads(
     problems: list[str],
 ) -> tuple[dict[tuple[str, str], list[tuple[int, str, str]]], set[tuple[str, ...]], set[tuple[str, str]]]:
     """Each scope's reads of a commit's tree as (line, reader, bytes), the NOT_READERS words a sequence spells, and the
-    scopes that call the check `checks` names for them; a script whose git cannot be read is added to `problems`."""
+    scopes that call the check `checks` names for them; a script, or a module's shell command, whose git cannot be read
+    is added to `problems`, and the module's reads go unread."""
     found: dict[tuple[str, str], list[tuple[int, str, str]]] = defaultdict(list)
     for path in (path for path in paths if path.suffix in SHELL_SCRIPTS):
         name = path.relative_to(root).as_posix()
@@ -379,7 +396,12 @@ def _found_reads(
             # The catalogue's own keys spell the words they excuse, so they would excuse themselves.
             body = [statement for statement in tree.body if statement_scope(statement) != NOT_READERS_NAME]
             tree = ast.Module(body=body, type_ignores=[])
-        for line, scope, reader, given in python_tree_reads(tree, not_readers, used):
+        try:
+            module_reads = python_tree_reads(tree, not_readers, used)
+        except UnreadCommand as error:
+            problems.append(f"{name}:{error.line}: cannot read the git it runs: {error.reason}")
+            continue
+        for line, scope, reader, given in module_reads:
             found[(name, scope)].append((line, reader, given))
         checked |= {(name, scope) for scope in checked_scopes(tree, checks.get(name, {}))}
     return found, used, checked

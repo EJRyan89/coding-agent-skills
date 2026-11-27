@@ -19,7 +19,7 @@ import json_reader
 import json_writer
 import skill_menu
 from agent_skills import MAX_NAME, SKILL_FILE
-from bash_syntax import BashSyntaxError
+from bash_syntax import refusing
 from link_destinations import link_destinations
 from link_targets import Cover, link_spans
 from markdown_sections import CODE, EXECUTABLE_FENCES, Block, blocks, code_spans, markdown_section
@@ -250,16 +250,14 @@ def script_git_subcommands(script: Path) -> set[str]:
     if suffix in (".sh", ".bash"):
         # Read as bytes, so a lone CR stays inside its line as Bash and audit-skill read it, never turned into a LF.
         text = script.read_bytes().decode("utf-8-sig")
-        try:
+        with refusing(lambda error: UnreadScript(script, f"not Bash the grammar reads ({error})")):
             return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
-        except BashSyntaxError as exc:
-            raise UnreadScript(script, f"not Bash the grammar reads ({exc})") from exc
     if suffix == ".ps1":
         commands = powershell_script_commands(script.read_text(encoding="utf-8-sig"))
-        try:
+        with refusing(
+            lambda error: UnreadScript(script, f"a Bash script it runs is not Bash the grammar reads ({error})")
+        ):
             return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)
-        except BashSyntaxError as exc:
-            raise UnreadScript(script, f"a Bash script it runs is not Bash the grammar reads ({exc})") from exc
     if suffix == ".py":
         return runtime_support.python_git_subcommands(script.read_text(encoding="utf-8"))
     return set()

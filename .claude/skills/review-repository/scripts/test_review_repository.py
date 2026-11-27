@@ -961,6 +961,7 @@ class DocumentationDriftTests(unittest.TestCase):
                 f"{SKILL}/scripts/conditions.py",
                 f"{SKILL_CORE}/apple_double.py",
                 f"{SKILL_CORE}/atomic_file.py",
+                f"{SKILL_CORE}/bash_syntax.py",
                 f"{SKILL_CORE}/console.py",
                 f"{SKILL_CORE}/device_names.py",
                 f"{SKILL_CORE}/diff_paths.py",
