@@ -1097,21 +1097,31 @@ class CountsTests(unittest.TestCase):
     """--counts reads the release milestone and its issues through REST and prints the line the release notes carry."""
 
     def counts(
-        self, items: Sequence[Mapping[str, object]], milestones: Sequence[object] | None = None, pages: int = 1
+        self,
+        items: Sequence[Mapping[str, object]],
+        milestones: Sequence[object] | None = None,
+        pages: int = 1,
+        again: Sequence[Mapping[str, object]] | None = None,
     ) -> tuple[int, str, str, list[list[str]]]:
+        """Run --counts on a milestone whose listing gives items, split into pages, on its first read, and again, or
+        the same items, on its second."""
         held = len(items)
         if milestones is None:
             milestones = [milestone("v0.1.0", 6, 0, 3), milestone("v0.2.0", 7, 1, held - 1)]
-        size = -(-len(items) // pages) or 1
-        answers = {
-            tuple(MILESTONES): json.dumps([milestones]),
-            tuple(ISSUES): json.dumps([items[start : start + size] for start in range(0, max(len(items), 1), size)]),
-        }
+
+        def paged(listed: Sequence[Mapping[str, object]]) -> str:
+            size = -(-len(listed) // pages) or 1
+            return json.dumps([listed[start : start + size] for start in range(0, max(len(listed), 1), size)])
+
+        readings = [paged(items), paged(items if again is None else again)]
         asked: list[list[str]] = []
 
         def runner(command: Sequence[str]) -> CommandResult:
             asked.append(list(command))
-            return CommandResult(0, answers[tuple(command)], "")
+            if tuple(command) == tuple(MILESTONES):
+                return CommandResult(0, json.dumps([milestones]), "")
+            self.assertEqual(ISSUES, list(command))
+            return CommandResult(0, readings.pop(0), "")
 
         out, err = io.StringIO(), io.StringIO()
         client = GitHubClient(runner, sleeper=lambda _: None)
@@ -1141,7 +1151,7 @@ class CountsTests(unittest.TestCase):
         code, printed, error, asked = self.counts(items, pages=3)
         expected = "Defects fixed: 6 (regression 2, latent 2, hardening 1, no origin label 1). Auditor gaps: 2.\n"
         self.assertEqual((0, expected, ""), (code, printed, error))
-        self.assertEqual([MILESTONES, ISSUES], asked)
+        self.assertEqual([MILESTONES, ISSUES, ISSUES], asked)
 
     def test_a_milestone_with_no_issue_counts_zero(self) -> None:
         self.assertEqual(
@@ -1188,8 +1198,8 @@ class CountsTests(unittest.TestCase):
                 code, printed, error, _ = self.counts(items, pages=2)
                 self.assertEqual((2, ""), (code, printed))
                 self.assertEqual(
-                    f"ERROR: the listing of milestone v0.2.0 gives {repeated} more than once, so it is not the "
-                    "milestone's issues and pull requests; count them by hand\n",
+                    f"ERROR: the listing of milestone v0.2.0 gives {repeated} more than once, so an issue moved on "
+                    "or off the milestone while gh read it; run it again once none is moving\n",
                     error,
                 )
 
@@ -1199,6 +1209,41 @@ class CountsTests(unittest.TestCase):
         code, printed, error, _ = self.counts(items, milestones=[milestone("v0.2.0", 7, 0, 3)], pages=2)
         self.assertEqual((2, ""), (code, printed))
         self.assertTrue(error.startswith("ERROR: the listing of milestone v0.2.0 gives #3 more than once"), error)
+
+    def test_a_shift_that_drops_a_row_without_a_repeat_is_refused_by_a_second_read(self) -> None:
+        # Newest first, two to a page: the milestone holds issues ten, nine (latent), eight (regression), and seven.
+        # Page 1 reads ten and nine; then ten leaves and an old issue one joins, so page 2 reads seven and one. No
+        # number repeats, the totals hold, and the regression was never read; the second read, of the milestone as it
+        # now is, gives eight and not ten.
+        first = [issue(10, "enhancement"), issue(9, "bug", "latent"), issue(7, "enhancement"), issue(1, "question")]
+        settled = [issue(9, "bug", "latent"), issue(8, "bug", "regression"), issue(7, "enhancement"), first[3]]
+        for items, again, differ in ((first, settled, "#8, #10"), (settled, first, "#8, #10")):
+            with self.subTest(differ=differ, first=[item["number"] for item in items]):
+                code, printed, error, asked = self.counts(items, pages=2, again=again)
+                self.assertEqual((2, ""), (code, printed))
+                self.assertEqual(
+                    f"ERROR: two listings of milestone v0.2.0 differ in {differ}, so an issue moved on or off the "
+                    "milestone while gh read it; run it again once none is moving\n",
+                    error,
+                )
+                self.assertEqual([MILESTONES, ISSUES, ISSUES], asked)
+
+    def test_two_reads_that_give_the_same_numbers_in_another_order_are_counted(self) -> None:
+        items = [issue(2, "bug", "regression"), issue(1, "bug", "latent")]
+        code, printed, error, _ = self.counts(items, pages=2, again=list(reversed(items)))
+        self.assertEqual((0, ""), (code, error))
+        self.assertTrue(printed.startswith("Defects fixed: 2 (regression 1, latent 1, "), printed)
+
+    def test_an_item_whose_number_is_not_an_integer_is_refused_rather_than_left_out_of_the_repeats(self) -> None:
+        # Repeats and the second read are judged by number, so an item with none would escape both.
+        for number in ("5", 5.0, True, None):
+            for item in (pull_request(5) | {"number": number}, issue(5, "bug") | {"number": number}):
+                with self.subTest(number=number, pull_request="pull_request" in item):
+                    code, printed, error, _ = self.counts([item, item], pages=2)
+                    self.assertEqual((2, ""), (code, printed))
+                    self.assertEqual(
+                        f"ERROR: gh answered with an item of milestone v0.2.0 that has no number: {item!r}\n", error
+                    )
 
     def test_a_fixed_issue_whose_labels_cannot_be_counted_is_refused_by_number(self) -> None:
         items = [
@@ -1305,7 +1350,7 @@ class CountsTests(unittest.TestCase):
         root = Path("the checkout")
         with mock.patch.object(release_notes, "subprocess_runner", runner), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, release_notes.main(["v0.2.0", "--counts"], root=root))
-        self.assertEqual([root, root], places)
+        self.assertEqual([root, root, root], places)
 
     def test_counts_takes_no_range_and_no_other_action(self) -> None:
         for arguments in (("--from", "v0.1.0"), ("--to", "HEAD"), ("--write",), ("--check",)):
