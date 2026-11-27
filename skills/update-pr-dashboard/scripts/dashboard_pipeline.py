@@ -549,7 +549,8 @@ def tracker_record_path(config_path: Path) -> Path:
     file `DEFAULT_CONFIG_NAME` opens, `<name>.tracker.json` for the file `<name>.json` opens, and the whole file name
     followed by `-tracker.json` for any other, so no two files in one folder share a record, whatever their suffixes.
     `opens_as` asks the folder, so a name given in another case than the folder stores, such as `config.JSON`, has the
-    record of the file it opens where the folder folds case, and one of its own where it does not."""
+    record of the file it opens where the folder folds case, unless that file has a second hard link, which `opens_as`
+    never takes for the name it opens, and one of its own where the folder does not fold case."""
     resolved = resolved_path(config_path)
     if opens_as(resolved, DEFAULT_CONFIG_NAME):
         name = TRACKER_RECORD
