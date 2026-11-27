@@ -442,9 +442,9 @@ def _construct_section(held: dict[str, dict[str, str]]) -> list[str]:
     lines += [
         "",
         f"Each file below lists, in {code(catalogue_tests.TABLE)}, the catalogues it decides, each with the test that "
-        "holds every entry of it: read, refused, or named in `NOT_READ` with why. For a construct among the "
-        "catalogues listed, name its test, and decide there only the entries the change moves; any other construct "
-        "the file reads, another of its tables included, is listed by hand.",
+        "holds every entry of it: read, refused, or named with why in the module's tables, as `NOT_READ`. For a "
+        "construct among the catalogues listed, name its test, and decide there only the entries the change moves; "
+        "any other construct the file reads, another of its tables included, is listed by hand.",
         "",
     ]
     for name, tests in held.items():

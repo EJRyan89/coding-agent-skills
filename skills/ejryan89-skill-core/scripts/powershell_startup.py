@@ -105,6 +105,10 @@ CATALOGUE_TESTS = {
     "the parameters pwsh takes at start-up": (
         "skills/ejryan89-skill-core/scripts/test_powershell_startup.py::test_every_parameter_pwsh_takes_is_decided"
     ),
+    "pwsh's parameter-binding modes": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::"
+        "test_every_binding_mode_is_read_refused_or_not_read_and_every_parameter_property_is_decided"
+    ),
 }
 # Each binding mode, and each start-up parameter, the reader leaves unread, with why.
 NOT_READ = {

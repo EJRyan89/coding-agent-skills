@@ -1,6 +1,6 @@
 """The one reading of a module's CATALOGUE_TESTS: the catalogues of published entries the module decides, such as a
 shell's reserved words, a tool's options, or a language's import forms, each with the one test that holds every entry
-of it read, refused, or named in the module's NOT_READ with why.
+of it read, refused, or named with why in the module's tables, as NOT_READ.
 
 A module declares it beside the code that reads the catalogues, as a module-level
 `CATALOGUE_TESTS = {"<catalogue>": "<suite path>::<test>"}`, the suite's path from the top of the repository and the
@@ -22,6 +22,8 @@ import python_reader
 TABLE = "CATALOGUE_TESTS"
 # What separates a reference's suite path from its test, as pytest names a test.
 SEPARATOR = "::"
+# What a test function's or test method's name starts with, as pytest and unittest collect one.
+TEST_PREFIX = "test"
 # A test's qualified name: a function's name, or a class's and its method's.
 QUALIFIED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 
@@ -65,8 +67,11 @@ def reference(value: str) -> tuple[str, str] | None:
 
 def defines(tree: ast.Module, name: str) -> bool:
     """Whether a suite defines the test a qualified name names: a top-level function, or a method of a top-level
-    class, never a function nested in another or an assignment."""
+    class, whose name starts with `test`, as pytest and unittest collect one; never a function nested in another, a
+    helper of another name, or an assignment."""
     owner, _, method = name.rpartition(".")
+    if not method.startswith(TEST_PREFIX):
+        return False
     functions = (ast.FunctionDef, ast.AsyncFunctionDef)
     if not owner:
         return any(isinstance(node, functions) and node.name == method for node in tree.body)

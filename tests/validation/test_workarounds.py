@@ -399,6 +399,45 @@ def test_a_catalogue_test_table_that_names_no_test_its_suite_defines_fails(sourc
         assert fault in problems[0], (name, problems)
 
 
+CATALOGUE_TABLE = "CATALOGUE_TESTS = {'words': 'tests/tools/test_reader.py::test_words'}\n"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "CATALOGUE_TESTS = {}\n",
+        "def rebind() -> None:\n    global CATALOGUE_TESTS\n    CATALOGUE_TESTS = {}\n",
+        "def add() -> None:\n    global CATALOGUE_TESTS\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "class Reader:\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "import reader\nreader.CATALOGUE_TESTS = {}\n",
+    ],
+)
+def test_a_rebinding_of_catalogue_tests_after_its_assignment_fails_as_one_of_not_read_does(write: str) -> None:
+    for table, text in (
+        ("CATALOGUE_TESTS", CATALOGUE_TABLE + write),
+        ("NOT_READ", TABLE + write.replace("CATALOGUE_TESTS", "NOT_READ")),
+    ):
+        problems = (
+            fixture_catalogue_tests({READER: text, **SUITES})
+            if table == "CATALOGUE_TESTS"
+            else fixture_not_read({READER: text})
+        )
+        assert [problem for problem in problems if f"writes {table} after the assignment" in problem] == problems
+        assert len(problems) == 1, (table, problems)
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "def local() -> None:\n    CATALOGUE_TESTS = {}\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "def add(CATALOGUE_TESTS: dict[str, str]) -> None:\n    CATALOGUE_TESTS['x'] = 'y'\n",
+        "class Reader:\n    def add(self) -> None:\n        CATALOGUE_TESTS = {}\n        CATALOGUE_TESTS['x'] = 'y'\n",
+    ],
+)
+def test_a_local_name_spelled_catalogue_tests_is_no_write_to_the_table(use: str) -> None:
+    assert fixture_catalogue_tests({READER: CATALOGUE_TABLE + use, **SUITES}) == []
+
+
 def test_a_suite_a_fault_driver_and_a_fixture_declare_no_catalogue_tests() -> None:
     text = "NOT_READ = 'a reason a fault driver shares'\nCATALOGUE_TESTS = {'words': 'gone.py::test_x'}\n"
     files = {

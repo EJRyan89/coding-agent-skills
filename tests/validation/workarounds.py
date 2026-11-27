@@ -24,6 +24,9 @@ that binds NOT_READ names at least one, each value names a test its tracked suit
 method of a top-level class, and the table is held to its one literal as NOT_READ is. A module that decides a
 catalogue under another table's name, as the hub guard's builtins, declares it too, and is held once it does. Which
 entries a named test holds is review's judgment: the policy reads no test's body, so a test of another module passes.
+A test counts only by a name starting with `test`, as pytest and unittest collect one. Stated limits: a suite under
+tests/fixtures/, which no run collects, is still a tracked suite a reference may name; and a test defined under a
+platform `if` is no top-level function or method, so it cannot be named.
 """
 
 from __future__ import annotations

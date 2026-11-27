@@ -103,8 +103,18 @@ async def test_waits():
     pass
 
 
+def helper():
+    pass
+
+
 class Catalogue(unittest.TestCase):
     def test_method(self):
+        pass
+
+    def setUp(self):
+        pass
+
+    def helper(self):
         pass
 
     class Inner:
@@ -129,6 +139,10 @@ test_assigned = test_function
         ("Catalogue.test_missing", False),
         ("test_missing", False),
         ("test_assigned", False),
+        # A function or method pytest and unittest do not collect as a test, its name not starting with `test`.
+        ("helper", False),
+        ("Catalogue.helper", False),
+        ("Catalogue.setUp", False),
     ],
 )
 def test_a_suite_defines_a_top_level_function_or_a_method_of_a_top_level_class(name: str, expected: bool) -> None:

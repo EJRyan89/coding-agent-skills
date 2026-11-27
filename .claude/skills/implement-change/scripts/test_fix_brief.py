@@ -251,9 +251,9 @@ BY_HAND = (
 # What the construct section adds for a file that lists, in CATALOGUE_TESTS, the catalogues it decides.
 HELD_BY_A_TEST = (
     "Each file below lists, in `CATALOGUE_TESTS`, the catalogues it decides, each with the test that holds every entry "
-    "of it: read, refused, or named in `NOT_READ` with why. For a construct among the catalogues listed, name its "
-    "test, and decide there only the entries the change moves; any other construct the file reads, another of its "
-    "tables included, is listed by hand."
+    "of it: read, refused, or named with why in the module's tables, as `NOT_READ`. For a construct among the "
+    "catalogues listed, name its test, and decide there only the entries the change moves; any other construct the "
+    "file reads, another of its tables included, is listed by hand."
 )
 
 

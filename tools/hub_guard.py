@@ -519,6 +519,9 @@ CATALOGUE_TESTS = {
         "tests/tools/test_hub_guard_pwsh.py::CommandNameTests."
         "test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands"
     ),
+    "git's builtin commands, as `git --list-cmds=builtins` prints them": (
+        "tests/tools/test_hub_guard_git_options.py::ReadOnlyCatalogueTests.test_every_builtin_no_row_names_is_refused_in_a_hub"
+    ),
 }
 # Every Bash builtin is followed, not followed, or one that moves nothing, a decision tests/tools/test_hub_guard.py
 # holds to each builtin the validated Bash's `compgen -b` prints and to a pinned list of the newest Bash's.
