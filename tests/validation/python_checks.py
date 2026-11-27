@@ -7148,16 +7148,20 @@ def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
 # a method as a method of `self` or `cls`, or as a method of a new instance of its own class, written in place or held
 # in a name the function binds to one. Such a call is refused when it is given a set built from one of the calling
 # function's parameters: a `|` with the parameter as an operand, the parameter's `.union(...)` or `.copy()`, a `set`
-# or `frozenset` of it or of such a set, a set display that unpacks it, or a name the function binds to one of these.
-# So is a `try` whose body makes a recursive call and whose `finally` discards or removes from a set what the function
-# adds to it, which keeps the path on an object instead. ejryan89-skill-core's memoized_walk is the walk that reads
-# each node once; a walk whose state must be per path, as a path finder's paths are, states why, and what bounds it,
-# in a module-level WALK_ALLOWED = {scope: reason}.
+# or `frozenset` of it or of such a set, a set display that unpacks it, or an assignment expression of one, given by
+# position or by keyword, or a name the function binds to one of these by an assignment, an annotated assignment, an
+# assignment expression, or a tuple or list target given as many values. So is a `try` whose body makes a recursive
+# call and whose `finally` discards or removes from a set what the function adds to it, which keeps the path on an
+# object instead. ejryan89-skill-core's memoized_walk is the walk that reads each node once; a walk whose state must
+# be per path, as a path finder's paths are, states why, and what bounds it, in a module-level
+# WALK_ALLOWED = {scope: reason}.
 #
 # Stated limits, forms no module of the repository writes: a recursion through a function of another module, through
 # a callable passed as an argument or held in a name, or through a method of any other receiver; a path carried as a
 # tuple or a list, as `path + (node,)`, or as a dict; a set built from a parameter by a comprehension or any other
-# call; and a set the function adds to and removes from outside a `finally`.
+# call; a set the function adds to and removes from outside a `finally`; a set built from a parameter of an enclosing
+# function inside a nested function or a lambda, which the walk reads as that function's own, and a recursion through
+# `type(self)`; and a frozenset parameter rebound by `|=` before it is passed on.
 WALK_ALLOWANCE = "WALK_ALLOWED"
 WALK_REFUSAL = (
     "carries a walk's visited set per path, so a node reached by many paths is read once on each; keep one answer "
@@ -7298,18 +7302,44 @@ def _built_from(node: ast.expr, parameters: frozenset[str], derived: set[str]) -
         return held(node.func.value)
     if isinstance(node, ast.Set):
         return any(isinstance(item, ast.Starred) and held(item.value) for item in node.elts)
+    if isinstance(node, ast.NamedExpr):
+        return held(node.value)
     return isinstance(node, ast.Name) and node.id in derived
+
+
+def _bound_pairs(node: ast.AST) -> list[tuple[str, ast.expr]]:
+    """Each name a statement or an expression binds with the value it binds it to: an assignment's name, each name of
+    a tuple or list target given a tuple or list of as many values with none unpacked, an annotated assignment's name
+    given a value, and an assignment expression's name."""
+    if isinstance(node, ast.NamedExpr):
+        return [(node.target.id, node.value)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        return [(node.target.id, node.value)]
+    if not isinstance(node, ast.Assign):
+        return []
+    pairs: list[tuple[str, ast.expr]] = []
+    for target in node.targets:
+        if isinstance(target, ast.Name):
+            pairs.append((target.id, node.value))
+        elif (
+            isinstance(target, ast.Tuple | ast.List)
+            and isinstance(node.value, ast.Tuple | ast.List)
+            and len(target.elts) == len(node.value.elts)
+            and not any(isinstance(item, ast.Starred) for item in [*target.elts, *node.value.elts])
+        ):
+            pairs += [
+                (name.id, value)
+                for name, value in zip(target.elts, node.value.elts, strict=True)
+                if isinstance(name, ast.Name)
+            ]
+    return pairs
 
 
 def _per_path_sets(walker: _Walker) -> set[str]:
     """The names the walker binds to a set built from one of its parameters, however many bindings away."""
     parameters = _parameter_names(walker.node) - {"self", "cls"}
     derived: set[str] = set()
-    assignments = [
-        (node.targets[0].id, node.value)
-        for node in _own_walk_nodes(walker.node)
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
-    ]
+    assignments = [pair for node in _own_walk_nodes(walker.node) for pair in _bound_pairs(node)]
     # Each pass that changes the set adds a name, so there are never more passes than assignments.
     for _ in range(len(assignments) + 1):
         grown = {name for name, value in assignments if _built_from(value, parameters, derived)}

@@ -16,7 +16,8 @@ path reads them.
 `under(node)`, by default the node itself, is what a node is under way as: a walk whose nodes ask different questions
 of one thing, and must cut a cycle through that thing whatever question it is asked, names the thing. `entered(node)`
 holds a node as under way without reading it, for a question whose first node answers in its own way and must cut a
-cycle back to it. A read that raises keeps no answer. A new question, whose answers may differ, builds a new walk.
+cycle back to it. A read that raises keeps no answer, and what it reached counts toward the read that caught it. A
+new question, whose answers may differ, builds a new walk.
 
 validation's per-path walk policy (tests/validation/python_checks.py) refuses a recursion that carries its path
 instead, unless its module states in WALK_ALLOWED why the state must be per path and what bounds the walk.
@@ -96,7 +97,8 @@ class MemoizedWalk[Node: Hashable, Answer]:
         finally:
             self._readings.pop()
             self._under_way.discard(mark)
-        self._met(reading.reached | {mark}, reading.cut)
+            # What a read that raised reached still counts toward the read that caught it.
+            self._met(reading.reached | {mark}, reading.cut)
 
     def _met(self, reached: set[Hashable] | frozenset[Hashable], cut: set[Hashable] | frozenset[Hashable]) -> None:
         """Add what a read or a kept answer met to the read under way that asked for it."""

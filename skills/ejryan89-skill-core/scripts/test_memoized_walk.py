@@ -5,7 +5,9 @@ from __future__ import annotations
 import itertools
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -172,3 +174,68 @@ def test_every_answer_of_every_small_graph_asked_in_turn_is_the_per_path_one() -
         walk = nested(edges, Counter())
         for node in "abcba":
             assert walk(node) == per_path(edges, node), edges
+
+
+class PerPath:
+    """A walk per path, given the same read as a MemoizedWalk: what the memoized walk must answer."""
+
+    def __init__(self, read: Callable[[str, Any], str], cycle: str) -> None:
+        self.read = read
+        self.cycle = cycle
+        self.path: list[str] = []
+
+    def __call__(self, node: str) -> str:
+        if node in self.path:
+            return self.cycle
+        self.path.append(node)
+        try:
+            return self.read(node, self)
+        finally:
+            self.path.pop()
+
+
+def catching(edges: dict[str, list[str]], raising: str) -> Callable[[str, Any], str]:
+    """A read that catches a LookupError from each node it follows, and whose node `raising` raises one when a node it
+    follows gives the cycle value."""
+
+    def read(node: str, walk: Any) -> str:
+        parts = []
+        for other in edges[node]:
+            try:
+                parts.append(walk(other))
+            except LookupError:
+                parts.append("!")
+            if node == raising and parts[-1] == "^":
+                raise LookupError(node)
+        return node + "(" + ",".join(parts) + ")"
+
+    return read
+
+
+def test_what_a_read_that_raises_reached_counts_toward_the_read_that_caught_it() -> None:
+    # d raises on reaching b under way; b catches it, so b's answer depends on d, which a later question reaches.
+    edges = {"b": ["d"], "d": ["b"]}
+    read = catching(edges, "d")
+    walk = MemoizedWalk(read, "^")
+    assert walk("b") == PerPath(read, "^")("b") == "b(!)"
+    assert walk("d") == PerPath(read, "^")("d") == "d(b(^))"
+
+
+def test_every_answer_of_every_small_graph_with_reads_that_raise_and_catch_is_the_per_path_one() -> None:
+    nodes = "abc"
+    choices = [list(chosen) for size in range(3) for chosen in itertools.product(nodes, repeat=size)]
+    for lists in itertools.product(choices, repeat=len(nodes)):
+        edges = dict(zip(nodes, lists, strict=True))
+        for raising in nodes:
+            read = catching(edges, raising)
+            walk = MemoizedWalk(read, "^")
+            for node in "abcba":
+                try:
+                    answer = walk(node)
+                except LookupError:
+                    answer = "raised"
+                try:
+                    expected = PerPath(read, "^")(node)
+                except LookupError:
+                    expected = "raised"
+                assert answer == expected, (edges, raising, node)

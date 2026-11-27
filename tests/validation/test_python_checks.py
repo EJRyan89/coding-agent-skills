@@ -10101,10 +10101,51 @@ def right(node, edges, seen):
     return [left(other, edges, frozenset(seen | {node})) for other in edges[node] if other not in seen]  # walk refused
 
 
+def annotated(node, edges, seen):
+    path: frozenset[str] = seen | {node}
+    return [annotated(other, edges, path) for other in edges[node]]  # walk refused
+
+
+def walrus(node, edges, seen):
+    if path := seen | {node}:
+        return [walrus(other, edges, path) for other in edges[node]]  # walk refused
+    return []
+
+
+def walrus_in_place(node, edges, seen):
+    return [walrus_in_place(other, edges, (path := seen | {node})) for other in edges[node]]  # walk refused
+
+
+def unpacked(node, edges, seen):
+    path, count = seen | {node}, 1
+    return [unpacked(child, edges, path) for child in edges[node]]  # walk refused
+
+
+def copier(node, edges, seen):
+    copied = seen.copy()
+    copied.add(node)
+    return [copier(other, edges, copied) for other in edges[node]]  # walk refused
+
+
+def keyword(node, edges, seen):
+    return [keyword(other, edges, seen=seen | {node}) for other in edges[node]]  # walk refused
+
+
 class Reader:
     def __init__(self, edges):
         self.edges = edges
         self.following = set()
+
+    @classmethod
+    def through_class(cls, node, edges, seen):
+        return [cls.through_class(other, edges, seen | {node}) for other in edges[node]]  # walk refused
+
+    def removed(self, node):
+        self.following.add(node)
+        try:
+            return any(self.removed(other) for other in self.edges[node])
+        finally:
+            self.following.remove(node)  # path set refused
 
     def text(self, node, followed):
         return [self.text(other, frozenset(followed | {node})) for other in self.edges[node]]  # walk refused
@@ -10168,7 +10209,8 @@ def test_walk_policy_refuses_a_recursion_that_carries_its_visited_set_per_path()
             "tools/broken.py: WALK_ALLOWED must map each function, class, or assignment to its reason",
         ]
     )
-    assert len(walk_marked(WALK_SOURCE, "walk refused")) == 6
+    assert len(walk_marked(WALK_SOURCE, "walk refused")) == 13
+    assert len(walk_marked(WALK_SOURCE, "path set refused")) == 2
 
 
 WALK_CONFORMING = """\
@@ -10197,9 +10239,40 @@ def once(node, edges, seen=frozenset()):
     return [other for other in edges[node] if other not in seen | {node}]
 
 
+def annotated_shared(node, edges, seen):
+    path: set[str] = seen
+    path.add(node)
+    return [annotated_shared(other, edges, path) for other in edges[node] if other not in path]
+
+
+def copied_once(node, edges, seen):
+    snapshot = seen.copy()
+    return snapshot, [copied_once(other, edges, seen) for other in edges[node]]
+
+
+def keyword_shared(node, edges, seen):
+    seen.add(node)
+    return [keyword_shared(other, edges, seen=seen) for other in edges[node] if other not in seen]
+
+
 class Reader:
+    def __init__(self):
+        self.marks = set()
+
     def other(self, node, followed):
         return [Other().other(child, followed | {node}) for child in followed]
+
+    @classmethod
+    def through_class(cls, node, edges, seen):
+        seen.add(node)
+        return [cls.through_class(other, edges, seen) for other in edges[node] if other not in seen]
+
+    def removed(self, node, edges):
+        self.marks.add(node)
+        try:
+            return [len(edges[node])]
+        finally:
+            self.marks.remove(node)
 
 
 class Other:
