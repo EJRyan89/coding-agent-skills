@@ -111,7 +111,7 @@ from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
 from hidden_comments import hidden_spans
-from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE
+from markdown_sections import LINE_END, LIST_MARKER, MARKDOWN_SPACE, document_headings
 from text_lines import line_index, line_starts, text_lines
 from type_check_roots import (
     JOB_PREFIX,
@@ -129,7 +129,6 @@ TEMPLATE_NAME = "pull_request_template.md"
 TEMPLATE_FOLDERS = (".github", "", "docs")
 # A list item with no text: its marker, as markdown_sections reads one, alone between spaces and tabs.
 EMPTY_LIST_ITEM = re.compile(rf"[{MARKDOWN_SPACE}]*{LIST_MARKER}[{LINE_END}]*")
-HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*")
 # The validation runner's command, from the top of the repository, that a `-k` per job follows.
 VALIDATION_COMMAND = "python -B tests/run_validation.py"
 
@@ -218,10 +217,16 @@ def closed_issues(body: str, title: str | None = None, *, repository: str | None
 
 
 def headings(text: str) -> list[str]:
-    """Each heading outside comments, as its hashes, a space, and its text."""
+    """Each heading of the text's own, outside comments, as its hashes, a space, and its text, as markdown_sections'
+    document_headings reads them: a heading-shaped line a code block, a list item, or a blockquote holds is its text,
+    as GitHub renders it. A heading with no text names nothing a template keeps."""
     # Each line is read whole where CommonMark ends one, at CR, LF, and CRLF.
     lines = text_lines(blank_comments(text))
-    return [f"{match.group(1)} {match.group(2)}" for line in lines if (match := HEADING.fullmatch(line))]
+    return [
+        f"{heading.group('marks')} {heading.group('text')}"
+        for _, heading in document_headings(lines)
+        if heading.group("text")
+    ]
 
 
 def body_problems(body: str, template: str) -> list[str]:

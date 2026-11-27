@@ -559,6 +559,27 @@ class SkillLayoutFixtures(unittest.TestCase):
                 skill_path_problems(root),
             )
 
+    def test_every_posix_shell_s_fence_runs_no_script_by_a_bare_relative_path(self) -> None:
+        # changed: only `bash`, `sh`, and `shell` fences were read as shell, so the same line in a `zsh`, `ksh`, `dash`,
+        # or `console` fence passed; markdown_sections' FENCE_LANGUAGES names every POSIX shell's label.
+        labels = ("bash", "zsh", "ksh", "dash", "console")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "agents").mkdir()
+            (root / "deploy-meta" / "alpha.json").write_text("{}", encoding="utf-8")
+            (root / "skills" / "alpha").mkdir(parents=True)
+            fences = "".join(f"```{label}\npython3 scripts/run.py\n```\n" for label in labels)
+            (root / "skills" / "alpha" / "SKILL.md").write_text(fences, encoding="utf-8")
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:{3 * index + 2} runs a script by a bare relative path; see {doc}"
+                    for index in range(len(labels))
+                ],
+                skill_path_problems(root),
+            )
+
     def test_an_install_path_is_refused_under_every_spelling_of_the_home(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

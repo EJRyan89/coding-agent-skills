@@ -537,6 +537,14 @@ VALUE_SPAN = r"`(?!--)[^`\n]+`"
 STATUS_SPAN = r"`[A-Z][A-Z0-9_]+[^`\n]*`"
 FLAG_SPAN = r"`--[\w-]+[^`\n]*`"
 INSTRUCTION = rf"(?:^[ \t]*(?:{LIST_MARKER})?[ \t]*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
+# The cue patterns that find a code span by single backticks: each match is a candidate scan prints as a CUE for the
+# agent to judge in its context, never a finding or a fact scan acts on, so they read no Markdown structure for a
+# reader. markdown_sections' code_spans reads every span the audit acts on.
+LANGUAGE_READER_ALLOWED = {
+    "PROSE_CUES": "the hand-drafted cue's candidate, which the agent judges in context, never a code span acted on",
+    "DECOMPOSED_VALUE": "a decomposed-value cue's candidate, judged by the agent in context, never a span acted on",
+    "VALUE_PART": "a part of a decomposed-value cue's candidate, judged by the agent, never a span acted on",
+}
 PROSE_CUES = (
     # A flag chosen per printed line or value: "`--pull <pr>` for each `missing`", "one `--run` per `RUN` line",
     # "for a `SYNTHESIZED` line, `--synthesized`", "pass ... every `doc` path".

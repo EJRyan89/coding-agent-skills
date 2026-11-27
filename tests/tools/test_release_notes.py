@@ -765,6 +765,25 @@ class GitOutputTests(unittest.TestCase):
 
 
 class InsertSectionTests(unittest.TestCase):
+    def test_a_version_heading_indented_or_with_a_tab_after_its_marks_is_a_section(self) -> None:
+        # changed: the version heading's own pattern read neither, where CommonMark reads both as a heading.
+        for written in (" ## v0.1.0", "##\tv0.1.0"):
+            with self.subTest(written=written):
+                notes = f"{INTRO}\n{written}\n\nOld.\n"
+                self.assertEqual(
+                    f"{INTRO}\n## v0.2.0\n\n{written}\n\nOld.\n",
+                    release_notes.insert_section(notes, "v0.2.0", "## v0.2.0\n"),
+                )
+
+    def test_entries_are_cut_at_each_heading_the_text_holds_itself(self) -> None:
+        # changed: an entry's heading indented or with a tab after its marks did not start one; a heading a list item
+        # or a code block holds still does not.
+        text = "intro\n ### Indented\nx\n###\tTabbed\ny\n- item\n  ### Held\n```\n### Fenced\n```"
+        self.assertEqual(
+            ["intro", " ### Indented\nx", "###\tTabbed\ny\n- item\n  ### Held\n```\n### Fenced\n```"],
+            release_notes.notes_blocks(text),
+        )
+
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
 

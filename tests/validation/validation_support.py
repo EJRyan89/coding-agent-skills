@@ -390,7 +390,6 @@ NOT_READ = {
 # The scope a node outside every function, class, and named module-level assignment is in.
 MODULE_SCOPE = "<module>"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
-SHELL_FENCES = {"bash", "sh", "shell"}
 
 
 class UnreadablePython(ValueError):

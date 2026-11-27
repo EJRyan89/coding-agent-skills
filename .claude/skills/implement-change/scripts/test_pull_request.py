@@ -167,6 +167,11 @@ class CommentBlankingTests(unittest.TestCase):
     def test_a_heading_a_hidden_comment_holds_is_not_read(self) -> None:
         self.assertEqual(["## A", "## C"], pull_request.headings("## A\n<!-- ## B -->\n## C\n"))
 
+    def test_a_heading_a_code_block_or_a_list_item_holds_is_not_read(self) -> None:
+        # changed: a heading-shaped line in a fence or a list item was read as a heading the body kept.
+        text = "## A\n```markdown\n## B\n```\n- item\n  ## C\n## D\n"
+        self.assertEqual(["## A", "## D"], pull_request.headings(text))
+
 
 class BodyCheckTests(unittest.TestCase):
     def test_a_filled_body_has_no_problem_and_names_its_issues(self) -> None:

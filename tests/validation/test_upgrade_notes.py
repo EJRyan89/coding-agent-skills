@@ -1286,3 +1286,10 @@ class ContractListPolicy(unittest.TestCase):
             ["profile.md has no ## Contract files section naming the contract files the upgrade-notes check reads"],
             contract_list_problems("profile.md", "# Profile\n", "## Contract files"),
         )
+
+
+def test_the_notes_sections_are_the_file_s_own_second_level_headings() -> None:
+    # changed: a version's heading indented, or with a tab or closing marks, was no section; one a list item or a
+    # blockquote holds still is none.
+    notes = "##\tv0.2.0\n ## v0.1.0 ##\n- item\n  ## Held\n> ## Quoted\n"
+    assert upgrade_notes.notes_sections(notes) == ["v0.2.0", "v0.1.0"]

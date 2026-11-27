@@ -79,6 +79,11 @@ BLOCK_COMMENT = re.compile(rf"{CONTAINER_MARKERS}<!--")
 # A line that ends at a list marker with nothing after it: an item that opens empty, which the block walk reads once a
 # space follows.
 BARE_MARKER = re.compile(rf"{CONTAINER_MARKERS}{LIST_MARKER}")
+# EMPTY_HEADING reads no heading: it finds a line the block walk would read otherwise once text follows, and completes
+# it so markdown_sections' walk, the heading's reader, reads it as one.
+LANGUAGE_READER_ALLOWED = {
+    "EMPTY_HEADING": "completes an empty heading's line for markdown_sections' block walk, which reads the heading",
+}
 # A line that ends at a run of `#` with nothing but spaces and tabs after it: an empty ATX heading, which the block
 # walk, reading a heading's text with the spaces around it stripped, reads once a `#` of text follows.
 EMPTY_HEADING = re.compile(rf"{CONTAINER_MARKERS}#{{1,6}}[ \t]*")

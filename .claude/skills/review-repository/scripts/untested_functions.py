@@ -141,6 +141,14 @@ MAX_LINE_RANGES = 10
 # The tests of an entry's file it names, where the reviewer looks for one that reaches the entry through a caller.
 MAX_RELATED_TESTS = 3
 
+# The readers of PowerShell's function headers, comments, and braces, which no reader owns: ejryan89-skill-core holds no
+# PowerShell grammar, so these read PowerShell itself, a limit shell_definitions states, while every Bash file's
+# functions are read through bash_syntax.
+LANGUAGE_READER_ALLOWED = {
+    "POWERSHELL_HEADER": "reads a PowerShell `function` header; bash_syntax owns Bash, and no module owns PowerShell",
+    "POWERSHELL_COMMENT_LINE": "reads a PowerShell `#` comment line; bash_syntax owns Bash's, not PowerShell's",
+    "shell_definitions": "counts a PowerShell function's braces; Bash files go to bash_definitions and the grammar",
+}
 PYTHON_HEADER = re.compile(r"^\s*(?:async\s+def|def|class)\s+[A-Za-z_]")
 POWERSHELL_HEADER = re.compile(r"^\s*function\s+(?:(?:global|script|local|private):)?([A-Za-z_][\w-]*)", re.IGNORECASE)
 # A PowerShell line comment's line, which ejryan89-skill-core has no PowerShell grammar to read.

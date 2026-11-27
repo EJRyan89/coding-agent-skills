@@ -458,3 +458,8 @@ def test_an_empty_comment_in_the_template_is_no_guidance() -> None:
 
 def test_the_template_s_visible_text_is_read_from_its_first_character() -> None:
     assert placeholder_forms("## Forms considered\nNone\n")[0] == "none"
+
+
+def test_a_forms_heading_written_with_a_tab_after_its_marks_is_the_section_s() -> None:
+    # changed: the heading's own pattern read only spaces after its marks, where CommonMark reads a tab as well.
+    assert forms_section("## Summary\n\n##\tForms considered\n\nThe forms.\n\n## Next\n") == "\nThe forms.\n"
