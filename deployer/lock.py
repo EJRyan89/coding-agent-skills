@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import os
 import secrets
+import stat
 import sys
 import time
 from collections.abc import Callable
@@ -26,6 +27,7 @@ from types import TracebackType
 import file_lock
 import file_presence
 import json_writer
+import link_probe
 from process_identity import read_pid
 from typed_fields import FieldError
 
@@ -283,17 +285,47 @@ def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
     )
 
 
+def _of_its_kind(place: Path, part: str, kind: str, *, folder: bool) -> bool:
+    """Whether the kind of item the lock makes at `place` is there: a folder for the record, a regular file for the lock
+    file. False when nothing is there; a refusal naming the lock's `part` and the `kind` it makes when anything else is,
+    a link or junction included whatever it leads to, which is not the lock's to judge, open, or remove; and the stat's
+    OSError when it cannot tell. One stat of the place itself, which never follows a link, judges it."""
+    try:
+        status = place.stat(follow_symlinks=False)
+    except file_presence.ABSENT:
+        return False
+    if link_probe.is_link_or_junction(place, status):
+        found = f"a link, not the {kind} the deployer makes"
+    elif stat.S_ISDIR(status.st_mode) if folder else stat.S_ISREG(status.st_mode):
+        return True
+    else:
+        found = f"not a {kind}"
+    raise DeployError(
+        f"ERROR: The deployment lock's {part} {platform_support.normalize(place)} is {found}.",
+        "Move it out of the way once you know what it is, then retry.",
+        see_recovery(LOCK),
+    )
+
+
+def _lock_file_of_its_kind(paths: Paths) -> None:
+    """Refuse anything but a regular file in the lock file's place before it is opened, in the deployment and the dry
+    run alike: a FIFO, whose open blocks and whose lock macOS refuses as one the file system does not offer, which
+    would delete it, or a link, whose file the release would unlink as its own."""
+    _of_its_kind(paths.lock_file, "file", "regular file", folder=False)
+
+
 def _judge_left_record(paths: Paths, probe: ProcessProbe) -> Judged | None:
     """Judge what earlier runs left beside a free file lock, changing nothing: name each record an earlier deployment
-    moved aside, refuse a record that may belong to a running deployment, and warn of a stale one, answering which
-    record is there to remove, or None. A stat that fails raises its OSError rather than reading as no record."""
+    moved aside, refuse anything but a folder at the record's place, refuse a record that may belong to a running
+    deployment, and warn of a stale one, answering which record is there to remove, or None. A stat that fails raises
+    its OSError rather than reading as no record."""
     for left in file_presence.matching(paths.deployer_dir, LEFT_ASIDE):
         print(
             f"WARNING: An earlier deployment left a lock moved aside at {platform_support.normalize(left)}. "
             "Delete it once no deployment is running.",
             file=sys.stderr,
         )
-    if not file_presence.is_occupied(paths.lock_dir):
+    if not _of_its_kind(paths.lock_dir, "record", "folder", folder=True):
         return None
     return _existing_holder(paths, probe)
 
@@ -314,10 +346,11 @@ def _waiting[Taken](paths: Paths, attempt: Callable[[], Taken | None]) -> Taken:
 def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> None:
     """Judge the lock as acquire judges it, taking and changing nothing, for the dry run: wait as acquire waits while
     another process holds the file lock, then refuse, refuse a record acquire refuses, and warn of what the deployment
-    would remove. The file lock is tried and let go at once when it is free. A stat or open that fails, and a link to
-    nothing in the lock file's place, which acquire's open refuses, are refused with the line acquire gives."""
+    would remove. The file lock is tried and let go at once when it is free. Anything but a regular file in the lock
+    file's place, a link included, and a stat or open that fails are refused with the line acquire gives."""
 
     def free() -> bool | None:
+        _lock_file_of_its_kind(paths)
         return None if file_lock.held_elsewhere(paths.lock_file) else True
 
     try:
@@ -333,10 +366,17 @@ def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_st
 
 
 def _take_file_lock(paths: Paths) -> int:
-    """Take the file lock, waiting LOCK_WAIT_SECONDS for another holder, or refuse naming the holder."""
+    """Take the file lock, waiting LOCK_WAIT_SECONDS for another holder, or refuse naming the holder. Its kind is
+    judged and whether another process holds it is asked first, as the dry run does both, so anything but a regular
+    file in the lock file's place is refused with the dry run's line before it is opened, and never deleted or
+    unlinked as this run's lock file. A file replaced between the judgment and the open is opened, as
+    `file_lock.held_elsewhere` states of its own check."""
 
     def take() -> int | None:
         try:
+            _lock_file_of_its_kind(paths)
+            if file_lock.held_elsewhere(paths.lock_file):
+                return None
             return file_lock.take(paths.lock_file, fsops.open_lock_file)
         except file_lock.FileLockError as exc:
             if exc.unsupported:
@@ -352,8 +392,13 @@ def _take_file_lock(paths: Paths) -> int:
 
 
 def _moved_record(aside: Path) -> Judged | None:
-    """Which record was moved aside, read as the judgment reads it, or None when that cannot be told."""
+    """Which record was moved aside, read as the judgment reads it, or None when that cannot be told or it is not the
+    kind of record the lock makes, such as a link to the folder judged, which reads through as that folder."""
     try:
+        # The only kind of record the lock makes is a folder that is no link or junction; anything else, or a place
+        # whose stat fails, is not the record judged.
+        if not link_probe.is_plain_directory(aside):
+            return None
         if file_presence.is_present(aside / "info.json"):
             info = _read_info(aside)
             return Judged(info.get("pid"), info.get("token"))

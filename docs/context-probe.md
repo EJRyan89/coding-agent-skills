@@ -59,8 +59,9 @@ never to one value. Every string is a word the probe defines or a closed vocabul
   `.agents` and `.github` skills and agents, and `.mcp.json`), its `files`, `bytes`, `lines`, and, for Markdown,
   `headings` and `fences`; `unread` counts a file that was a link or could not be read.
 - `hooks`: from `.claude/settings.json`, the number of hook `events` and `handlers`, and `hook_events` by name where
-  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`; `unread` when the file is a
-  link, cannot be read, is no JSON object, or holds a `hooks` that is no object.
+  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`; `unread` when the file or its
+  `.claude` folder is a link, wherever it leads, cannot be read, is no JSON object, or holds a `hooks` that is no
+  object.
 - `reviews`: from the code-review archive and flag store the code-review configuration names, for the configured
   repository whose checkout holds the one probed. `totals` counts records, unreadable records, pull requests,
   findings, distinct finding categories, reviewer runs, their retries, and those that judged dispositions only
@@ -120,6 +121,8 @@ the same private-term scan the release procedure runs over the tree, against its
 - The review counts follow the configuration's `checkout_path`: a repository reviewed but not configured with the
   checkout probed has `reviews_absent` `not_configured`.
 - The whole-word scan, like the release scan, does not match a term written inside a longer word.
+- Each place on the way to `.claude/settings.json` is checked for a link before the file is read, in separate steps,
+  so a `.claude` folder or settings file replaced by a link between the check and the read is read through it.
 - Run the probe from its own clone, outside the repository it examines. A copy installed inside that repository, or
   one missing a skill its scripts import, may print the probe's own location when it cannot start, before any of its
   checks run; and a repository that holds an unmodified copy of the probe at its own top in its commit, committed
