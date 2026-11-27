@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from prose_paths import PATH_CHARACTER, PATH_START
+from prose_paths import PATH_CHARACTER, PATH_START, PROSE_PATH
 
 PATH = re.compile(rf"{PATH_START}{PATH_CHARACTER}*\.md")
 
@@ -67,3 +67,20 @@ def test_a_text_starting_or_holding_what_no_path_does_is_no_path(text: str) -> N
     # A root, `/` or `\`, is no first character: a reader that reads an absolute path names the root before
     # PATH_START.
     assert not PATH.fullmatch(text)
+
+
+@pytest.mark.parametrize(
+    ("line", "paths"),
+    [
+        ("Read docs%20x/guide.md now.", ["docs%20x/guide.md"]),
+        ("Read a\\b/c.md now.", ["a\\b/c.md"]),
+        ("See docs/c++.md, then src/A.cs.", ["docs/c++.md", "src/A.cs"]),
+        ("Open docs/rules.md#style here.", ["docs/rules.md"]),
+        # `@path` is Claude Code's file mention, and the `@` starts no path of its own.
+        ("Follow @docs/review-guide.md for every change.", ["docs/review-guide.md"]),
+        # A path needs a separator and an extension, and nothing that holds no path character starts one.
+        ("README.md and docs/ and ~/x/y.md", []),
+    ],
+)
+def test_a_prose_path_is_read_whole_from_where_no_path_character_stands_before_it(line: str, paths: list[str]) -> None:
+    assert re.findall(PROSE_PATH, line) == paths

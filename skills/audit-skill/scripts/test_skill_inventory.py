@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from functools import partial
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import check_provenance
 import dotnet_solution
 import exit_constants
+import markdown_sections
 import powershell_commands
 import skill_inventory
 import skill_menu
@@ -401,7 +403,11 @@ class InventoryTests(TemporaryTestCase):
         write(self.root / "toc.md", "# Toc\n\n### Table of contents\n- One\n\n## One\n" + "line\n" * 100)
         write(self.root / "late.md", "# Late\n\n## One\n" + "line\n" * 100 + "## Contents\n")
         write(self.root / "fenced.md", "```markdown\n## Contents\n```\n" + "line\n" * 100)
-        self.assertEqual(["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 104 late.md"], self.structure_flags())
+        # A heading a list item holds is the item's, so it is no table of contents.
+        write(self.root / "held.md", "- Notes\n  ## Contents\n" + "line\n" * 100)
+        self.assertEqual(
+            ["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 102 held.md", "DOC_NO_TOC 104 late.md"], self.structure_flags()
+        )
 
     def test_a_contents_heading_is_one_markdown_reads_as_a_heading(self) -> None:
         # A no-break space after the marks is text to CommonMark, so that line is prose and the doc has no contents;
@@ -702,6 +708,9 @@ class ToolsTests(TemporaryTestCase):
         )
         self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(prompt, '["Read", "Agent"]'))
         quoted = 'Give the subagent this prompt: "Read the plan and ask the user." Then report.\n'
+        # A prompt in a double-backtick code span is read whole, by its backtick runs, as every code span is.
+        doubled = "Start one subagent with the Agent tool, with this prompt: ``Read `notes.md` and follow it.``\n"
+        self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(doubled, '["Read", "Agent"]'))
         self.assertEqual(
             ["UNUSED_ALLOWED Read", "UNUSED_ALLOWED AskUserQuestion"],
             self.implied(quoted, '["Read", "AskUserQuestion"]'),
@@ -5138,6 +5147,9 @@ def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_the
         ("```powershell\necho a \\\ngit status\n```\n", [(6, "git status")]),
         # A fence that ends on a continued line keeps that line as its own command, its backslash stripped.
         ("```bash\necho a\ngit status \\\n```\n", [(6, "git status")]),
+        # A console session's command Bash has not finished runs on through the unprompted lines that finish it: a
+        # quoted string's next line is part of it, never output.
+        ('```console\n$ git commit -m "one\ntwo"\n[main 1a2b3c4] one\n```\n', [(5, 'git commit -m "one two"')]),
     ],
 )
 def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
@@ -5147,6 +5159,19 @@ def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
     ungranted = [line for line in grant_lines(tmp_path, allowed, fence) if line.startswith("UNGRANTED ")]
     assert ungranted == [
         f"UNGRANTED {tool} {line} {command}" for line, command in expected for tool in ("Bash", "PowerShell")
+    ]
+
+
+def test_the_grant_checks_read_the_command_after_a_pipe_a_session_line_ends_with(tmp_path: Path) -> None:
+    # Bash reads the unprompted line after a `|` that ends a session's line as the pipe's next command, never output,
+    # and Claude Code checks each side of the pipe as a command of its own.
+    fence = "```console\n$ git log --oneline |\n  head -n 1\n1a2b3c4 one\n```\n"
+    allowed = ["Bash(echo *)", "PowerShell(echo *)"]
+    assert [line for line in grant_lines(tmp_path, allowed, fence) if line.startswith("UNGRANTED ")] == [
+        "UNGRANTED Bash 5 git log --oneline",
+        "UNGRANTED Bash 5 head -n 1",
+        "UNGRANTED PowerShell 5 git log --oneline",
+        "UNGRANTED PowerShell 5 head -n 1",
     ]
 
 
@@ -5853,3 +5878,14 @@ def test_a_stated_code_no_script_exits_with_is_a_mismatch_unless_the_caller_says
     lines = ["---", "name: alpha", "---", "It exits 3."]
     assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set()) == ["EXIT_MISMATCH SKILL.md 4 3"]
     assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set(), True) == ["EXIT_UNREAD SKILL.md 4 3"]
+
+
+def test_the_scan_s_fence_readers_read_a_session_s_unfinished_command_on_through_the_lines_that_finish_it() -> None:
+    # fence_reads and first_word_commands read a console session through session_commands, given the Bash grammar's
+    # awaits_more, so a quoted path a command carries onto an unprompted line is the command's, never output's.
+    lines = ["```console", '$ grep -c x "docs/a.md', 'docs/b.md"', "2", "```"]
+    (fence,) = markdown_sections.find_fences(lines)
+    assert skill_inventory.first_word_commands(fence, lines) == [(1, 'grep -c x "docs/a.md\ndocs/b.md"')]
+    reads = skill_inventory.fence_reads(lines, 0)
+    assert reads[1] == Counter({"docs/a.md": 1, "docs/b.md": 1})
+    assert reads[2] == Counter()
