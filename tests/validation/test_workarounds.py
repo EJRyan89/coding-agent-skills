@@ -410,12 +410,28 @@ def test_a_suite_a_fault_driver_and_a_fixture_declare_no_catalogue_tests() -> No
     assert fixture_catalogue_tests(files) == []
 
 
-def test_a_suite_that_does_not_parse_defines_no_test_and_each_problem_says_what_to_do() -> None:
+def test_each_problem_names_the_module_the_reference_why_and_what_to_do() -> None:
     files = {
-        "tools/reader.py": "NOT_READ = {'x': 'why'}\nCATALOGUE_TESTS = {'words': 'tests/test_broken.py::test_x'}\n",
-        "tests/test_broken.py": "def test_x(:\n",
+        "tools/reader.py": "NOT_READ = {'x': 'why'}\nCATALOGUE_TESTS = {'words': 'tests/test_reader.py::test_x'}\n",
+        "tests/test_reader.py": "def test_y():\n    pass\n",
     }
     assert fixture_catalogue_tests(files) == [
-        "tools/reader.py CATALOGUE_TESTS names tests/test_broken.py::test_x for words, which its suite does not "
+        "tools/reader.py CATALOGUE_TESTS names tests/test_reader.py::test_x for words, which its suite does not "
         "define; name the test that decides every entry of that catalogue",
     ]
+
+
+def test_a_suite_that_does_not_parse_or_cannot_be_read_is_named_with_the_reason() -> None:
+    reader = "CATALOGUE_TESTS = {'words': 'tests/test_broken.py::test_x'}\n"
+    [problem] = fixture_catalogue_tests({"tools/reader.py": reader, "tests/test_broken.py": "def test_x(:\n"})
+    assert problem.startswith("tools/reader.py CATALOGUE_TESTS names tests/test_broken.py::test_x for words, whose ")
+    assert "whose suite does not parse (" in problem
+    assert "line 1" in problem
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository with spaces"
+        write_fixture_tree(root, {"tools/reader.py": reader})
+        (root / "tests").mkdir()
+        (root / "tests" / "test_broken.py").write_bytes(b"def test_x():\n    return '\xff'\n")
+        [problem] = catalogue_test_problems(root, [root / "tools" / "reader.py", root / "tests" / "test_broken.py"])
+    assert "whose suite cannot be read (" in problem
+    assert "utf-8" in problem

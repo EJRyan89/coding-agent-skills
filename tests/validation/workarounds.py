@@ -244,14 +244,18 @@ def not_read_problems(root: Path, files: list[Path]) -> list[str]:
 
 
 def suite_defines(root: Path, suites: set[str], path: str, test: str) -> str | None:
-    """Why a reference's suite does not define its test: the suite is no tracked suite, or it does not parse or
-    define the test there; None when it does."""
+    """Why a reference's suite does not define its test: the suite is no tracked suite, cannot be read, does not parse,
+    or does not define the test, each named with its reason; None when it does."""
     if path not in suites:
         return "which is no tracked suite"
     try:
-        tree = python_reader.parse((root / path).read_text(encoding="utf-8"), filename=path)
-    except (OSError, UnicodeDecodeError, python_reader.PythonRefused):
-        return "which its suite does not define"
+        text = (root / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return f"whose suite cannot be read ({error})"
+    try:
+        tree = python_reader.parse(text, filename=path)
+    except python_reader.PythonRefused as error:
+        return f"whose suite does not parse ({error})"
     return None if catalogue_tests.defines(tree, test) else "which its suite does not define"
 
 

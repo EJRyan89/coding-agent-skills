@@ -280,8 +280,10 @@ def test_a_file_s_catalogue_tests_are_listed_each_with_the_test_that_holds_it(
             "docs/catalogue.md": "CATALOGUE_TESTS = {'a': 'tests/test_a.py::test_a'}\n",
         },
     )
-    files = ("tools/catalogued.py", "tools/annotated.py", "tools/bare.py", "tools/empty.py", "tools/nested.py")
-    files += ("tools/malformed.py", "tools/broken.py", "docs/catalogue.md", "tools/reader.py")
+    files = [
+        *("tools/catalogued.py", "tools/annotated.py", "tools/bare.py", "tools/empty.py", "tools/nested.py"),
+        *("tools/malformed.py", "tools/broken.py", "docs/catalogue.md", "tools/reader.py"),
+    ]
     body = "Read every form: " + ", ".join(f"`{name}`" for name in files) + "."
     # A Python file given with --path that is not there yet lists none.
     result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7", "--path", "tools/new.py")
