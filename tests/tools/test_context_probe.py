@@ -761,7 +761,7 @@ def test_settings_that_are_a_link_are_unread(tmp_path: Path) -> None:
 
 
 # A linked .claude folder is unread wherever it leads, as the walk leaves it out of rule_sources wherever it leads, so
-# the hook counts never describe a settings file the walk did not reach (#3521).
+# the hook counts never describe a settings file the walk did not reach, outside the tree least of all.
 @pytest.mark.parametrize("place", ["outside", "inside"])
 def test_settings_in_a_linked_claude_folder_are_unread_and_not_a_rule_source(tmp_path: Path, place: str) -> None:
     repository = tmp_path / "repository"
