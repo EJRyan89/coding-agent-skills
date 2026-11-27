@@ -760,6 +760,48 @@ def test_settings_that_are_a_link_are_unread(tmp_path: Path) -> None:
     assert context_probe.hook_counts(tmp_path / "repository") == {"unread": 1}
 
 
+# A linked .claude folder is unread wherever it leads, as the walk leaves it out of rule_sources wherever it leads, so
+# the hook counts never describe a settings file the walk did not reach (#3521).
+@pytest.mark.parametrize("place", ["outside", "inside"])
+def test_settings_in_a_linked_claude_folder_are_unread_and_not_a_rule_source(tmp_path: Path, place: str) -> None:
+    repository = tmp_path / "repository"
+    target = tmp_path / "qzvoutside" if place == "outside" else repository / "qzvinside"
+    repository.mkdir()
+    target.mkdir()
+    (target / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": []}}), encoding="utf-8")
+    (repository / ".claude").symlink_to(target, target_is_directory=True)
+
+    assert context_probe.hook_counts(repository) == {"unread": 1}
+    assert "claude-settings" not in context_probe.walk_shape(repository).rule_sources
+
+
+def test_a_claude_folder_whose_metadata_cannot_be_read_is_unread_never_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / ".claude"
+    folder.mkdir()
+    (folder / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": []}}), encoding="utf-8")
+
+    def failing_on_folder(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+        def stat(path: os.PathLike[str] | str, *arguments: object, **options: object) -> os.stat_result:
+            if Path(path) == folder:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *arguments, **options)
+
+        return stat
+
+    monkeypatch.setattr(os, "lstat", failing_on_folder(os.lstat))
+    monkeypatch.setattr(os, "stat", failing_on_folder(os.stat))
+
+    assert context_probe.hook_counts(tmp_path) == {"unread": 1}
+
+
+def test_a_claude_entry_that_is_a_file_holds_no_hook_counts(tmp_path: Path) -> None:
+    (tmp_path / ".claude").write_text("qzvnotafolder", encoding="utf-8")
+
+    assert context_probe.hook_counts(tmp_path) == {}
+
+
 def test_settings_that_cannot_be_read_are_unread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def failing(path: Path, **_options: object) -> object:
         raise PermissionError(13, "Permission denied", str(path))

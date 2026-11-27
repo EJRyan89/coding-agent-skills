@@ -59,8 +59,9 @@ never to one value. Every string is a word the probe defines or a closed vocabul
   `.agents` and `.github` skills and agents, and `.mcp.json`), its `files`, `bytes`, `lines`, and, for Markdown,
   `headings` and `fences`; `unread` counts a file that was a link or could not be read.
 - `hooks`: from `.claude/settings.json`, the number of hook `events` and `handlers`, and `hook_events` by name where
-  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`; `unread` when the file is a
-  link, cannot be read, is no JSON object, or holds a `hooks` that is no object.
+  the name is an event Claude Code documents, as audit-ai-config lists them, else `other`; `unread` when the file or its
+  `.claude` folder is a link, wherever it leads, cannot be read, is no JSON object, or holds a `hooks` that is no
+  object.
 - `reviews`: from the code-review archive and flag store the code-review configuration names, for the configured
   repository whose checkout holds the one probed. `totals` counts records, unreadable records, pull requests,
   findings, distinct finding categories, reviewer runs, their retries, and those that judged dispositions only
