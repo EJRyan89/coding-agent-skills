@@ -831,6 +831,13 @@ def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_
         # and its second listing never cuts a copy written later, past a substitution whose comment it would keep.
         ("echo ${a[<(b)]:-$(a)}\n", {"a", "b"}, set()),
         ("echo ${a[<(b)]:-$(a # c\n)}<(b)\n", {"a", "b"}, {"c"}),
+        # A word that starts with its substitution is cut at its first character; a substitution right after another
+        # is cut where it starts; and one after a backquoted body no cut finds is still cut.
+        ("$(f # c\n)\n", {"f"}, {"c"}),
+        ("echo $(a # c\n)$(b # d\n)\n", {"a", "b"}, {"c", "d"}),
+        ("echo `printf %s \\$x`$(g # d\n)\n", {"g"}, {"d"}),
+        # An array's elements are read whole, a substitution among them included.
+        ("a=( $(f # c\n) y )\n", {"f", "y"}, {"c"}),
     ],
 )
 def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
@@ -880,6 +887,14 @@ def test_a_documented_limit_a_backquoted_body_bash_removes_an_escape_from_stays_
     text = "echo `printf %s \\$HOME # c`\n"
     bash_agreement.assert_reader_agrees([text])
     assert bash_syntax.uncommented_text(text) == "echo `printf %s \\$HOME # c` printf %s $HOME \n"
+
+
+def test_an_array_assignment_s_elements_are_read_between_its_parentheses() -> None:
+    text = "a=( x # days_old\n y )\n"
+    bash_agreement.assert_reader_agrees([text])
+    assert bash_syntax.uncommented_text(text) == "a=( x \n y ) \n"
+    # The elements run from the assignment's own parenthesis, never from one a substitution among them opens.
+    assert bash_syntax.uncommented_text("a=( $(f) y )\n") == "a=( $( ) f y ) \n"
 
 
 def test_uncommented_text_refuses_nesting_past_the_recursion_limit() -> None:

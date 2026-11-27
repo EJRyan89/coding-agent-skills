@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from tree_readers import CHECKOUT, COMMITTED, ENTRIES, GITHUB_READS, tree_reader_problems
+from tree_readers import CHECKOUT, COMMITTED, ENTRIES, GITHUB_READS, UnreadCommand, tree_reader_problems
 from validation_support import MODULE_SCOPE, write_fixture_tree
 
 # A module with one reader of each kind of bytes, each spelled as the repository spells one.
@@ -326,6 +326,27 @@ class TreeReaderFixtures(TreeReaderCase):
             ["tool.py:5: cannot read the git it runs: not Bash the grammar reads (a single quote is not closed)"],
             self.problems({"tool.py": tool}, {}),
         )
+
+    def test_a_module_after_one_whose_shell_command_is_refused_is_still_read(self) -> None:
+        refused = 'import subprocess\n\n\ndef run():\n    subprocess.run("echo \'unclosed", shell=True)\n'
+        problems = self.problems({"a.py": refused, "b.py": READERS}, {"b.py": {"export": CHECKOUT, "listing": ENTRIES}})
+        self.assertEqual(2, len(problems), problems)
+        self.assertTrue(problems[0].startswith("a.py:5: cannot read the git it runs: "), problems)
+        self.assertTrue(
+            problems[1].startswith("b.py:19 Snapshot.read reads a commit's tree with git cat-file,"), problems
+        )
+
+    def test_a_python_shell_command_that_starts_powershell_is_read_through_powershell(self) -> None:
+        tool = (
+            "import subprocess\n\n\ndef run():\n    subprocess.run(\"pwsh -Command 'git archive HEAD'\", shell=True)\n"
+        )
+        self.assertEqual([], self.problems({"tool.py": tool}, {"tool.py": {"run": CHECKOUT}}))
+        self.assertTrue(self.problems({"tool.py": tool}, {}))
+
+    def test_an_unread_command_carries_its_line_and_its_reason(self) -> None:
+        error = UnreadCommand(5, "not Bash the grammar reads (why)")
+        self.assertEqual((5, "not Bash the grammar reads (why)"), (error.line, error.reason))
+        self.assertEqual("not Bash the grammar reads (why)", str(error))
 
     def test_suites_and_fixtures_are_not_read(self) -> None:
         reader = "def listing(git, commit):\n    return git.output(['ls-tree', commit])\n"
