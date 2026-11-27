@@ -30,6 +30,7 @@ from review_records import (
     ledger_history,
     ledger_summary,
     payload_hash,
+    review_identity,
     validate_adapter_result,
 )
 from review_state import utc_date, watermark_date
@@ -519,6 +520,7 @@ def reviewed_head(
         record = latest_record(archive_root, repository, number)
     if record is not None:
         review = record["review"]
+        identity = review_identity(record)
         coverage = review.get("coverage")
         if "ledger" in record:
             ledger = record["ledger"]
@@ -528,10 +530,10 @@ def reviewed_head(
             ledger = ledger_history(records)[review["version"]]
         _, markdown = record_paths(directory, review["version"])
         return {
-            "head_sha": record["pull_request"]["head_sha"],
-            "base_sha": record["pull_request"]["base_sha"],
+            "head_sha": identity.head_sha,
+            "base_sha": identity.base_sha,
             "source": "record",
-            "version": review["version"],
+            "version": identity.version,
             "incomplete": bool(coverage and coverage["unavailable_sources"]),
             "verdict": review["verdict"],
             "counts": dict(review["counts"]),

@@ -24,6 +24,9 @@ from test_review_insights import LINE_BREAKS, LITERAL, MARKUP, UNTRUSTED, Insigh
 
 HEAD = "c" * 40
 OTHER_HEAD = "d" * 40
+BASE = "a" * 40
+# The base commit a pull request reads after GitHub retargets it, its head unmoved.
+RETARGETED_BASE = "e" * 40
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 SIGNAL_PREFIXES = (
     "SEVERITY_DRIFT",
@@ -62,6 +65,7 @@ class SignalFixture(InsightFixture):
         findings: list[dict[str, Any]],
         *,
         head: str = HEAD,
+        base: str = BASE,
         mode: str = "initial",
         dispositions: tuple[tuple[str, str], ...] = (),
         reviewers: list[dict[str, Any]] | None = None,
@@ -92,7 +96,7 @@ class SignalFixture(InsightFixture):
             "pull_url": f"https://github.com/owner/repo/pull/{number}",
             "title": "Fixture",
             "base_ref": "main",
-            "base_sha": "a" * 40,
+            "base_sha": base,
             "head_sha": head,
             "mode": mode,
             "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
@@ -230,6 +234,19 @@ class VerdictFlipTests(SignalFixture):
         _, lines = self.signal_lines()
         self.assertEqual([], lines)
 
+    def test_a_retargeted_head_reviewed_at_a_new_version_is_another_review_and_no_flip(self) -> None:
+        # Two reviews of one head against different bases read different diffs, so their verdicts may differ; the
+        # same two reviews on one base are a flip, which shows the base alone tells them apart.
+        self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
+        self.review(7, 2, [], base=RETARGETED_BASE, mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        self.review(8, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
+        self.review(8, 2, [], mode="re-review", dispositions=(("v1:F001", "addressed"),))
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"VERDICT_FLIP V1 owner/repo#8 head={HEAD[:12]} v1=CHANGES_REQUESTED v2=APPROVED"],
+            [line for line in lines if line.startswith("VERDICT_FLIP")],
+        )
+
 
 class DisagreementTests(SignalFixture):
     REVIEWERS: ClassVar = [reviewer("security", "model-a"), reviewer("style", "model-b")]
@@ -253,6 +270,31 @@ class DisagreementTests(SignalFixture):
                 "DISAGREEING R1 SUGGESTION owner/repo#7 v1 F002 style",
             ],
             lines,
+        )
+
+    def test_findings_on_a_retargeted_head_at_a_new_version_never_disagree_with_the_review_before_it(self) -> None:
+        # Pull request 7's head is reviewed again on another base, pull request 8's on the same one: only 8's two
+        # reviews read one diff, so only 8's findings at one place are a disagreement.
+        for number, base in ((7, RETARGETED_BASE), (8, BASE)):
+            self.review(
+                number,
+                1,
+                [finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security")],
+                reviewers=self.REVIEWERS,
+            )
+            self.review(
+                number,
+                2,
+                [finding("SUGGESTION", "src/a.cs", 11, "Name the path variable", source="style")],
+                base=base,
+                mode="re-review",
+                dispositions=(("v1:F001", "still_present"),),
+                reviewers=self.REVIEWERS,
+            )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"REVIEWER_DISAGREEMENT R1 owner/repo#8 head={HEAD[:12]} src/a.cs:10"],
+            [line for line in lines if line.startswith("REVIEWER_DISAGREEMENT")],
         )
 
     def test_a_finding_a_few_lines_earlier_never_hides_a_disagreement_one_line_away(self) -> None:

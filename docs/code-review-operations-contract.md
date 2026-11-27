@@ -933,7 +933,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `id` | string | yes | `V` and its rank, from 1. |
 | `repository` | string | yes | The pull request's repository, lowercase. |
 | `pull_number` | integer | yes | The pull request. |
-| `head_sha` | string | yes | The head commit both reviews reviewed. |
+| `head_sha` | string | yes | The head commit both reviews reviewed, on one base commit. |
 | `versions` | array | yes | The two review versions, earlier first. |
 | `verdicts` | array | yes | Their verdicts, in the same order. |
 | `differences` | array | yes | Up to ten findings the reviews held open whose severity or presence differs, each `<path>:<line> <before> -> <after> <references>`, `absent` for a review that did not hold it. |
@@ -946,7 +946,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `id` | string | yes | `R` and its rank, from 1. |
 | `repository` | string | yes | The pull request's repository, lowercase. |
 | `pull_number` | integer | yes | The pull request. |
-| `head_sha` | string | yes | The head commit the findings were raised on. |
+| `head_sha` | string | yes | The head commit the findings were raised on, on one base commit. |
 | `path` | string | yes | The file. |
 | `line` | integer | yes | The first finding's line; the others are joined to it through disagreeing pairs, each pair within three lines of one another, so a cluster may span more than three lines. |
 | `reports` | array | yes | Up to five findings there, in place order, each `<severity> <reference> <source>`: a pair that disagrees is always among them, then one of each other severity. |

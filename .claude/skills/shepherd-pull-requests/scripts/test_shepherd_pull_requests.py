@@ -2676,6 +2676,10 @@ class PremergeReviewTest(FixtureTestCase):
         git("commit", "-q", "-m", name, directory=self.hub)
         return git("rev-parse", "HEAD", directory=self.hub)
 
+    def origin_main(self) -> str:
+        """Origin's main as a tick reads it, the base commit a due review would read, shortened as a line names it."""
+        return git("rev-parse", "refs/heads/main", directory=self.origin)[:7]
+
     def stack(self) -> tuple[str, str, str]:
         """Main's first commit, a lower branch's commit on it, and an upper branch's commit on that, whose review
         read it on the lower branch's commit, as review-prs records a stacked pull request."""
@@ -2731,11 +2735,11 @@ class PremergeReviewTest(FixtureTestCase):
         self.assertEqual([REPOSITORY], opened)
         self.assertEqual(
             [
-                f"REVIEW_DUE #20 fix/topic-20 head {own[:7]} first",
+                f"REVIEW_DUE #20 fix/topic-20 head {own[:7]} base {self.origin_main()} first",
                 f'REVIEWED #21 fix/topic-21 head {own[:7]} v1 APPROVE report "{REPORT}"',
                 f'REVIEWED #22 fix/topic-22 head {merged[:7]} v2 CHANGES_REQUESTED report "{REPORT}" carried from '
                 f"{own[:7]}",
-                f"REVIEW_DUE #23 fix/topic-23 head {more[:7]} since {own[:7]}",
+                f"REVIEW_DUE #23 fix/topic-23 head {more[:7]} base {self.origin_main()} since {own[:7]}",
                 f"REVIEWED #24 fix/topic-24 head {HEAD[:7]} legacy APPROVE report none",
                 "REVIEW_ARGUMENTS --pull owner/repo#20 --re-review owner/repo#23 --scope auto",
             ],
@@ -2803,12 +2807,30 @@ class PremergeReviewTest(FixtureTestCase):
         self.assertEqual(0, status, lines)
         self.assertEqual(
             [
-                f"REVIEW_DUE #60 fix/topic-60 head {upper[:7]} since {upper[:7]}",
+                f"REVIEW_DUE #60 fix/topic-60 head {upper[:7]} base {self.origin_main()} since {upper[:7]}",
                 "REVIEW_ARGUMENTS --re-review owner/repo#60 --scope auto",
             ],
             [line for line in lines if line.startswith("REVIEW")],
         )
         self.assertEqual(2, len(self.compares(gh)), "two merge bases decide it")
+
+    def test_a_retargeted_head_is_due_on_its_new_base_and_its_review_there_is_named_by_its_new_version(self) -> None:
+        # The upper pull request is retargeted with no new head: the review due is named by the head and the base it
+        # would read, which a retry is spent on, and the review-prs record written there, at the same head, is a new
+        # version, which the REVIEWED line names and the relay keys on.
+        _, lower, upper = self.stack()
+        tip = self.squash(lower, git("rev-parse", "main", directory=self.hub))
+        gh = StubGh([pull(65, head=upper)])
+        _, lines, _ = self.review_tick(gh, {65: reviewed(upper, base=lower)})
+        self.assertEqual(
+            f"REVIEW_DUE #65 fix/topic-65 head {upper[:7]} base {tip[:7]} since {upper[:7]}",
+            self.line(lines, "REVIEW_DUE "),
+        )
+        _, lines, _ = self.review_tick(StubGh([pull(65, head=upper)]), {65: reviewed(upper, 2, base=tip)})
+        self.assertEqual(
+            [f'REVIEWED #65 fix/topic-65 head {upper[:7]} v2 APPROVE report "{REPORT}"'],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
 
     def test_a_retarget_that_left_its_merge_base_is_reviewed(self) -> None:
         # A merge of the lower branch keeps its commit in main, so the upper pull request's diff on main is the one
@@ -2840,7 +2862,7 @@ class PremergeReviewTest(FixtureTestCase):
         _, lines, _ = self.review_tick(StubGh([pull(62, head=merged)]), {62: reviewed(upper, base=lower)})
         self.assertEqual(
             [
-                f"REVIEW_DUE #62 fix/topic-62 head {merged[:7]} since {upper[:7]}",
+                f"REVIEW_DUE #62 fix/topic-62 head {merged[:7]} base {self.origin_main()} since {upper[:7]}",
                 "REVIEW_ARGUMENTS --re-review owner/repo#62 --scope auto",
             ],
             [line for line in lines if line.startswith("REVIEW")],
@@ -2870,7 +2892,7 @@ class PremergeReviewTest(FixtureTestCase):
                 _, lines, _ = self.review_tick(gh, {64: reviewed(own, base=base)})
                 self.assertEqual(
                     [
-                        f"REVIEW_DUE #64 fix/topic-64 head {own[:7]} since {own[:7]}",
+                        f"REVIEW_DUE #64 fix/topic-64 head {own[:7]} base {self.origin_main()} since {own[:7]}",
                         "REVIEW_ARGUMENTS --re-review owner/repo#64 --scope auto",
                     ],
                     [line for line in lines if line.startswith("REVIEW")],
@@ -2889,8 +2911,8 @@ class PremergeReviewTest(FixtureTestCase):
         lines = premerge_review.review_lines(client, None, REPOSITORY, heads, records.get)
         self.assertEqual(
             [
-                f"REVIEW_DUE #70 fix/topic-70 head {HEAD[:7]} since {HEAD[:7]}",
-                f"REVIEW_DUE #71 fix/topic-71 head {HEAD[:7]} since ccccccc",
+                f"REVIEW_DUE #70 fix/topic-70 head {HEAD[:7]} base unknown since {HEAD[:7]}",
+                f"REVIEW_DUE #71 fix/topic-71 head {HEAD[:7]} base unknown since ccccccc",
                 f'REVIEWED #72 fix/topic-72 head {HEAD[:7]} legacy APPROVE report "{REPORT}"',
                 "REVIEW_ARGUMENTS --re-review owner/repo#70 --re-review owner/repo#71 --scope auto",
             ],

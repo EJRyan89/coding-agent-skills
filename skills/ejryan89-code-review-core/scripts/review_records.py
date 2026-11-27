@@ -9,7 +9,7 @@ import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, NamedTuple, NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -418,6 +418,46 @@ class ReviewRecord(TypedDict):
     comment_dispositions: NotRequired[list[CommentDisposition]]
     artifacts: NotRequired[Artifacts | None]
     ledger: NotRequired[list[LedgerEntry]]
+
+
+class ReviewSubject(NamedTuple):
+    """The pull request as a review read it: its repository, in the one form a repository identity is compared in, its
+    number, the head commit the review read, and the base commit it compared that head with. Two reviews of one
+    subject read one diff, and differ only by their version."""
+
+    repository: str
+    number: int
+    head_sha: str
+    base_sha: str
+
+
+class ReviewIdentity(NamedTuple):
+    """Which review a record holds: its subject's fields and its version. The same head on another base, as once
+    GitHub retargets a pull request, is another subject, and a later version of one subject, as a re-review is,
+    another review, so a reader that groups, compares, or relays reviews keys them by this or by its `subject`, never
+    by the head alone."""
+
+    repository: str
+    number: int
+    head_sha: str
+    base_sha: str
+    version: int
+
+    @property
+    def subject(self) -> ReviewSubject:
+        return ReviewSubject(self.repository, self.number, self.head_sha, self.base_sha)
+
+
+def review_identity(record: ReviewRecord) -> ReviewIdentity:
+    """The identity of a validated record's review: its repository, pull request number, head, base, and version."""
+    pull = record["pull_request"]
+    return ReviewIdentity(
+        validate_repository_identity(record["repository"]),
+        pull["number"],
+        pull["head_sha"],
+        pull["base_sha"],
+        record["review"]["version"],
+    )
 
 
 class RecordError(ValueError):

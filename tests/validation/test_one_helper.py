@@ -10,7 +10,9 @@ endpoint of a pull request, or reads list_pull_files' listing without checking i
 for, and passes on one that checks both. The snapshot-path rule fails on a module other than diff_paths.py that joins a
 name it judged with unsafe_snapshot_name itself, and passes on one that judges it through snapshot_path. The
 repository-name rule fails on a module other than github_remote.py that spells an owner/name pattern with its own
-copy of the repository characters, and passes on one that builds the pattern on the helper's.
+copy of the repository characters, and passes on one that builds the pattern on the helper's. The review-identity rule
+fails on a module other than review_records.py that keys reviews by a record's head, and passes on one that keys them by
+review_identity.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from one_helper import (
     PULL_FILES_HELPER,
     REFERENCE_PATTERN,
     REPOSITORY_HELPER,
+    REVIEW_IDENTITY_HELPER,
     SAMPLE_REFERENCES,
     SNAPSHOT_HELPER,
     STATUS_HELPER,
@@ -50,6 +53,7 @@ from one_helper import (
     place_lookup_problems,
     pull_files_problems,
     repository_problems,
+    review_identity_problems,
     snapshot_path_problems,
     status_problems,
 )
@@ -1432,6 +1436,151 @@ class RepositoryTests(unittest.TestCase):
     def test_the_helper_s_own_pattern_is_the_form_the_rule_refuses_elsewhere(self) -> None:
         self.assertTrue(one_helper.spells_owner_and_name(github_remote.OWNER_AND_NAME))
         self.assertTrue(one_helper.spells_owner_and_name(github_remote.GITHUB_REMOTE.pattern))
+
+    def test_a_module_that_does_not_parse_is_named(self) -> None:
+        problems = self.problems({"tools/broken.py": "def f(:\n"})
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/broken.py"), problems)
+
+
+# A record's head, as a reader of review records spells it.
+HEAD = 'record["pull_request"]["head_sha"]'
+# Modules that key reviews by a record's head themselves.
+REFUSED_REVIEW_KEYS = {
+    "setdefault": (
+        "def f(records):\n    by_head = {}\n    for record in records:\n"
+        f"        by_head.setdefault({HEAD}, []).append(record)\n    return by_head\n"
+    ),
+    "get": f"def f(seen, record):\n    return seen.get({HEAD})\n",
+    "pop": f"def f(seen, record):\n    return seen.pop({HEAD}, None)\n",
+    "a subscript": f"def f(seen, record):\n    seen[{HEAD}] = record\n",
+    "a tuple key": f'def f(seen, record):\n    seen[(record["repository"], {HEAD})] = record\n',
+    "a dictionary display": f"def f(record):\n    return {{{HEAD}: record}}\n",
+    "a dictionary comprehension": f"def f(records):\n    return {{{HEAD}: record for record in records}}\n",
+    "a set comprehension": f"def f(records):\n    return {{{HEAD} for record in records}}\n",
+    "a set display": f"def f(record):\n    return {{{HEAD}}}\n",
+    "a membership test": f"def f(seen, record):\n    return {HEAD} not in seen\n",
+    "groupby": (
+        f"import itertools\n\n\ndef f(records):\n    return itertools.groupby(records, key=lambda record: {HEAD})\n"
+    ),
+    "a key bound to a name first": (
+        "def f(heads, records):\n    for record in records:\n"
+        f'        key = (record["repository"], {HEAD})\n        heads.setdefault(key, []).append(record)\n'
+    ),
+}
+# Modules that key reviews by their identity, or read a head as a value.
+PASSED_REVIEW_KEYS = {
+    "through the helper": (
+        "from review_records import review_identity\n\n\ndef f(by_subject, record):\n"
+        "    by_subject.setdefault(review_identity(record).subject, []).append(record)\n"
+    ),
+    "a head as a value": f'def f(record):\n    return {{"head_sha": {HEAD}, "short": {HEAD}[:12]}}\n',
+    "a head compared": f"def f(record, head):\n    return {HEAD} == head\n",
+    "a head given to a call": f"def f(record, detector):\n    return detector.detect({HEAD})\n",
+    "another field as a key": 'def f(seen, record):\n    seen[record["pull_request"]["number"]] = record\n',
+    "a name bound to a head and used as a value": f"def f(seen, record):\n    head = {HEAD}\n    return head[:7]\n",
+}
+SANCTIONED_REVIEW_KEY = (
+    f'REVIEW_IDENTITY_ALLOWED = {{"f": "a reason"}}\n\n\ndef f(seen, record):\n    seen[{HEAD}] = 1\n'
+)
+
+
+class ReviewIdentityTests(unittest.TestCase):
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_fixture_tree(root, dict(files))
+            return review_identity_problems(root, [root / name for name in files])
+
+    def test_each_refused_form_fails(self) -> None:
+        for name, text in REFUSED_REVIEW_KEYS.items():
+            with self.subTest(name):
+                problems = self.problems({"skills/x/scripts/reader.py": text})
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("f keys reviews by a record's head", problems[0])
+                self.assertIn("by review_records.review_identity", problems[0])
+
+    def test_each_passed_form_passes(self) -> None:
+        for name, text in PASSED_REVIEW_KEYS.items():
+            with self.subTest(name):
+                self.assertEqual([], self.problems({"skills/x/scripts/reader.py": text}))
+
+    def test_the_helper_and_suites_are_not_read(self) -> None:
+        reader = REFUSED_REVIEW_KEYS["a subscript"]
+        files = {
+            REVIEW_IDENTITY_HELPER: reader,
+            "skills/x/scripts/test_reader.py": reader,
+            "skills/x/scripts/reader.py": reader,
+        }
+        problems = self.problems(files)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("skills/x/scripts/reader.py:2 f keys reviews"), problems)
+
+    def test_an_allowance_beside_the_code_sanctions_its_scope_and_one_that_holds_nothing_fails(self) -> None:
+        self.assertEqual([], self.problems({"tools/reader.py": SANCTIONED_REVIEW_KEY}))
+        stale = SANCTIONED_REVIEW_KEY.replace('{"f": "a reason"}', '{"f": "a reason", "g": "a reason"}')
+        self.assertEqual(
+            ["tools/reader.py: REVIEW_IDENTITY_ALLOWED allows g, which holds nothing it sanctions; remove the entry"],
+            self.problems({"tools/reader.py": stale}),
+        )
+        blank = SANCTIONED_REVIEW_KEY.replace('"a reason"', '" "')
+        self.assertEqual(
+            ["tools/reader.py: REVIEW_IDENTITY_ALLOWED must map each function, class, or assignment to its reason"],
+            self.problems({"tools/reader.py": blank})[:1],
+        )
+
+    def test_each_stated_limit_reads_as_its_docstring_says(self) -> None:
+        limits = {
+            # A head read by `.get`, or through the pull request bound to a name first, is not read.
+            "get": 'def f(seen, record):\n    seen[record["pull_request"].get("head_sha")] = record\n',
+            "the pull request bound first": (
+                'def f(seen, record):\n    pull = record["pull_request"]\n    seen[pull["head_sha"]] = record\n'
+            ),
+            # A name bound by unpacking, or bound in one scope and used as a key in another, is not followed.
+            "unpacked": f'def f(seen, record):\n    number, head = record["number"], {HEAD}\n    seen[head] = number\n',
+            "another scope": (
+                f"def head(record):\n    return {HEAD}\n\n\ndef f(seen, record):\n    seen[head(record)] = record\n"
+            ),
+            # A head added to a set by a method, and a comparison of two heads, are not read as a key.
+            "added": f"def f(seen, record):\n    seen.add({HEAD})\n",
+            "two heads compared": "def f(since_sha, head_sha):\n    return since_sha == head_sha\n",
+            # A head held as an attribute, as a dataclass holds one, is not read.
+            "an attribute": "def f(seen, reviewed):\n    seen[reviewed.head] = reviewed\n",
+        }
+        for name, text in limits.items():
+            with self.subTest(name):
+                self.assertEqual([], self.problems({"tools/reader.py": text}))
+
+    def test_a_script_a_workflow_and_a_markdown_fence_are_not_read(self) -> None:
+        files = {
+            "skills/x/scripts/reader.sh": "jq '.pull_request.head_sha' \"$1\"\n",
+            ".github/workflows/reader.yml": "on: push\njobs:\n  r:\n    steps:\n      - run: jq .pull_request.head_sha\n",
+            "docs/reader.md": f"```python\nseen[{HEAD}] = record\n```\n",
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_the_names_are_the_ones_the_rule_names(self) -> None:
+        # Pinned against independent literals: the helper, its reader, the head it refuses as a key, and the allowance.
+        self.assertEqual("skills/ejryan89-code-review-core/scripts/review_records.py", REVIEW_IDENTITY_HELPER)
+        self.assertEqual("review_records.review_identity", one_helper.REVIEW_IDENTITY_READER)
+        self.assertEqual(("pull_request", "head_sha"), one_helper.RECORD_HEAD)
+        self.assertEqual("REVIEW_IDENTITY_ALLOWED", one_helper.REVIEW_IDENTITY_ALLOWANCE)
+
+    def test_the_helper_defines_the_reader_and_the_record_holds_the_head_the_rule_names(self) -> None:
+        tree = ast.parse((REPOSITORY_ROOT / REVIEW_IDENTITY_HELPER).read_text(encoding="utf-8"))
+        functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        self.assertIn(one_helper.REVIEW_IDENTITY_READER.rsplit(".", 1)[1], functions)
+        fields = {
+            node.name: {
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            }
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        self.assertIn(one_helper.RECORD_HEAD[0], fields["ReviewRecord"])
+        self.assertIn(one_helper.RECORD_HEAD[1], fields["PullRequest"])
 
     def test_a_module_that_does_not_parse_is_named(self) -> None:
         problems = self.problems({"tools/broken.py": "def f(:\n"})

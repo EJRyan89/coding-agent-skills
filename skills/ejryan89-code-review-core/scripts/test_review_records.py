@@ -22,13 +22,16 @@ from review_records import (
     AdapterResult,
     RecordError,
     RecordFieldError,
+    ReviewIdentity,
     ReviewRecord,
+    ReviewSubject,
     build_record,
     calculate_verdict,
     canonical_json,
     read_title,
     record_artifacts,
     render_markdown,
+    review_identity,
     sha256_text,
     valid_analyzer,
     validate_adapter_result,
@@ -596,6 +599,25 @@ class RecordTests(unittest.TestCase):
             validate_adapter_result(
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
+
+    def test_a_review_is_identified_by_its_pull_request_head_base_and_version(self) -> None:
+        request = valid_request("Example/One")
+        record = build_record(request, valid_adapter_result("Example/One"), version=1, policy={})
+        identity = review_identity(record)
+        # Pinned against literals, the repository in the one form a repository identity is compared in.
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "a" * 40, 1), identity)
+        self.assertEqual(ReviewSubject("example/one", 12, "b" * 40, "a" * 40), identity.subject)
+        # A re-review of the same head on the same base reads the same subject and is another review.
+        again = copy.deepcopy(record)
+        again["review"]["version"] = 2
+        self.assertEqual(identity.subject, review_identity(again).subject)
+        self.assertNotEqual(identity, review_identity(again))
+        # The same head retargeted to another base, reviewed at a new version, is another subject and another review.
+        retargeted = copy.deepcopy(again)
+        retargeted["pull_request"]["base_sha"] = "c" * 40
+        self.assertNotEqual(identity.subject, review_identity(retargeted).subject)
+        self.assertNotEqual(review_identity(again), review_identity(retargeted))
+        self.assertEqual("c" * 40, review_identity(retargeted).base_sha)
 
     def test_verdict_policy_is_centralized(self) -> None:
         ledger: Any = [{"severity": "SHOULD_FIX", "state": "open"}] * 2

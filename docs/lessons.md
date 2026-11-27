@@ -1223,20 +1223,26 @@ or removed fails validation until its pattern follows it.
   can be reused.
 - **Why:** A branch name or a path outlives what it named, so a new branch with an old name is judged merged.
 - **Use:** `pull_carried:carried`, `review_insights:decide_custom`, which decides only the custom-candidate rules
-  whose IDs the user was shown
+  whose IDs the user was shown, `review_records:review_identity`, a review's repository, number, head, base, and
+  version, whose `subject` drops the version, so a reader that groups, compares, or relays reviews never takes the
+  same head on another base for the review before it
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back`,
-  `skills/review-insights/scripts/test_review_insights.py::AnalyzerTests::test_custom_candidates_a_regenerated_report_added_are_refused_and_nothing_is_decided`
+  `skills/review-insights/scripts/test_review_insights.py::AnalyzerTests::test_custom_candidates_a_regenerated_report_added_are_refused_and_nothing_is_decided`,
+  `tests/validation/one_helper.py::OneHelperPolicies::test_reviews_are_keyed_only_by_their_one_helper_s_identity`,
+  `tests/validation/test_one_helper.py::ReviewIdentityTests::test_each_refused_form_fails`
 - **Search for:** a branch, a ref, or a path compared by name, `== branch` or `in branches`, in a decision that a
   pull request is merged, a worktree retired, or a file owned; a `headRefName` read where a `headRefOid` or a commit
   is meant; a name or a head read from another repository's pull request, `isCrossRepository` true, in a decision
   about this repository's own branches; a confirmation checked against a value derived from what was confirmed, such
   as the union of the flags or the count of the items a question named, rather than the items' own IDs, so an item
-  added since passes as confirmed.
-- **Examples:** #1901, #2238, #2722
+  added since passes as confirmed; a review keyed, relayed, or retried by its head alone, `["pull_request"]["head_sha"]`
+  as a key, "once per head", or a fake change detector's `since_sha == head_sha`, where the same head on another base
+  is another review.
+- **Examples:** #1901, #2238, #2722, #3182
 
 ### A time option is a positive finite number of seconds
 

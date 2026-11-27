@@ -20,9 +20,12 @@ Its lines, printed after the PR lines:
                                        its Markdown report, none for a legacy review whose report is gone; carried
                                        from the reviewed head when the head moved and its changes compare as that
                                        review read them
-    REVIEW_DUE #<number> <branch> head <commit> first|since <commit>
-                                       a pull request no record covers: first when it has no review, else the head
-                                       the latest record reviewed, which is the head itself when only its base moved
+    REVIEW_DUE #<number> <branch> head <commit> base <commit>|unknown first|since <commit>
+                                       a pull request no record covers, with the base commit its review would read,
+                                       origin's main as the tick reads it, unknown when the tick could not: first
+                                       when it has no review, else the head the latest record reviewed, which is the
+                                       head itself when only its base moved. A head and a base name the review due,
+                                       so a head retargeted to another base is another review
     REVIEW_ARGUMENTS <arguments>       after the REVIEW_DUE lines: the review-prs arguments that review every one of
                                        them in one run, --pull for a first review and --re-review --scope auto after
     REVIEW_UNREAD [#<number>] <reason> the configuration, or one pull request's records, could not be read
@@ -148,15 +151,16 @@ def review_lines(
     lines: list[str] = []
     first: list[int] = []
     again: list[int] = []
+    due_base = "unknown" if base is None else base[:7]
     for pull, outcome in found:
         named = f"#{pull.number} {flat_text(pull.branch)} head {pull.head[:7]}"
         if isinstance(outcome, ReviewUnread):
             lines.append(f"REVIEW_UNREAD #{pull.number} {flat_text(str(outcome))}")
         elif outcome is None:
-            lines.append(f"REVIEW_DUE {named} first")
+            lines.append(f"REVIEW_DUE {named} base {due_base} first")
             first.append(pull.number)
         elif pull.number not in covered:
-            lines.append(f"REVIEW_DUE {named} since {outcome.head[:7]}")
+            lines.append(f"REVIEW_DUE {named} base {due_base} since {outcome.head[:7]}")
             again.append(pull.number)
         else:
             version = "legacy" if outcome.version is None else f"v{outcome.version}"
