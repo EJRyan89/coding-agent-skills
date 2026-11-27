@@ -1835,6 +1835,74 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(result):\n    if not result.output:\n        return f'git exited {result.returncode}'\n",
         refused=False,
     ),
+    **{
+        f"an exit status named with its output read as {form}": _form(
+            reason_problems,
+            "from flat_text import flat_text\n\n\ndef f(result):\n"
+            f"    return f'git exited {{result.returncode}}: {{{read}}}'\n",
+            refused=False,
+        )
+        for form, read in (
+            ("stdout", "result.stdout"),
+            ("stderr", "result.stderr"),
+            ("output", "result.output"),
+            ("flat_text of it", "flat_text(result.stderr)"),
+        )
+    },
+    "an exit status named with a name bound to its output": _form(
+        reason_problems,
+        "def f(result):\n    said = result.stderr.strip()\n    return f'git exited {result.returncode}: {said}'\n",
+        refused=False,
+    ),
+    "an exit status named with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe):\n    return f'git exited {result.returncode}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named with its output in a string concatenated to it": _form(
+        reason_problems,
+        "def f(result):\n    return f'git exited {result.returncode}: ' + result.stderr\n",
+        refused=False,
+    ),
+    "an exit status named in the branch of a conditional expression taken when the output is empty": _form(
+        reason_problems,
+        "def f(result):\n    return result.stderr if result.stderr else f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    "an exit status named in a conditional expression's branch that its output does not test": _form(
+        reason_problems,
+        "def f(result, ok):\n    return 'fine' if ok else f'git exited {result.returncode}'\n",
+    ),
+    "an exit status kept in a name later joined to its output": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n    stated = f'git exited {result.returncode}'\n"
+        "    said = reason_line(result.stderr)\n    return f'{stated}: {said}' if said else stated\n",
+        refused=False,
+    ),
+    "an exit status kept in a name never joined to its output": _form(
+        reason_problems,
+        "def f(result):\n    stated = f'git exited {result.returncode}'\n    return stated\n",
+    ),
+    "an exit status named as all a command that printed nothing gave": _form(
+        reason_problems,
+        "def f(result):\n    return f'git exited {result.returncode} and printed nothing'\n",
+        refused=False,
+    ),
+    "a failed read answered with a message that reads its error only as a raise-from cause": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        raise RuntimeError('the file could not be read') from exc\n",
+    ),
+    "a failed read answered by a bare except with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except:\n"
+        "        return 'the file could not be read'\n",
+    ),
+    "a failed read answered by a tuple holding OSError with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except (OSError, UnicodeError):\n"
+        "        return 'the file could not be read'\n",
+    ),
     # "an `except` clause ... that takes the read's OSError ... and answers with a message of its own".
     "a failed read answered with a message of its own": _form(
         reason_problems,

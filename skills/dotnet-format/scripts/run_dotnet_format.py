@@ -83,7 +83,7 @@ from dotnet_format_targets import (
     Failed as TargetsFailed,
 )
 from executable_locator import find_program, located_command
-from flat_text import fact_line, flat_text, reason_line
+from flat_text import fact_line, flat_text
 from path_containment import relative_within
 from seconds_option import positive_seconds
 
@@ -234,6 +234,11 @@ def display_path(path: str, root: Path) -> str:
 INT_PARSE_ALLOWED = {
     "parse_diagnostics": "dotnet format writes each diagnostic's line and column",
 }
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "run_failure": "the formatter's output quotes the formatted repository's paths and code, so the failure names "
+    "the log that holds that output whole, which the LOG line just before it gives, and none of its text",
+}
 
 
 def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
@@ -279,13 +284,9 @@ def run_failure(formatter: str, mode: str, root: Path, result: Completed) -> str
         return f"{formatter} reported changes it did not itemize; see the log"
     if result.returncode == 0:
         return None
-    exited = f"{formatter} exited with code {result.returncode}"
     if formatter != SDK_FORMATTER and ANALYZER_LOAD_FAILURE in result.output:
-        # The crash the output names is the reason, given with its remedy.
-        return f"{exited}: {ANALYZER_LOAD_REASON}; see the log"
-    # The end of what it printed, on one bounded line, where a failed run states its error; the log holds the rest.
-    said = reason_line(result.output.decode("utf-8", errors="replace"), end=True)
-    return f"{exited}: {said}; see the log" if said else f"{exited} and printed nothing"
+        return f"{formatter} exited with code {result.returncode}: {ANALYZER_LOAD_REASON}; see the log"
+    return f"{formatter} exited with code {result.returncode}; see the log"
 
 
 def run_batches(

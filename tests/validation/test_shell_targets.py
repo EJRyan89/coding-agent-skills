@@ -761,6 +761,27 @@ class ShellPresenceFixtures(unittest.TestCase):
             ],
         )
 
+    def test_a_script_that_cannot_be_read_or_is_not_utf_8_is_named_never_passed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"skills/alpha/scripts/run.sh": PRESENCE_REFUSED})
+            (root / "skills/alpha/scripts/latin.sh").write_bytes(b"echo \xe9\n")
+            (root / "skills/alpha/scripts/folder.sh").mkdir()
+            found = shell_presence_problems(root, sorted(path for path in root.rglob("*.sh")))
+        self.assertEqual(
+            [
+                "skills/alpha/scripts/folder.sh cannot be read",
+                "skills/alpha/scripts/latin.sh is not UTF-8 text, so its presence tests cannot be judged",
+            ],
+            [problem.split(" (")[0] for problem in found if not problem.startswith("skills/alpha/scripts/run.sh")],
+        )
+
+    def test_no_script_to_read_is_a_failure_never_a_pass(self) -> None:
+        self.assertEqual(
+            ["could not measure: no skill's Bash script was given, so no presence test was read"],
+            self.problems({"skills/alpha/SKILL.md": "", "tools/run.sh": PRESENCE_REFUSED}),
+        )
+
     def test_a_script_validation_cannot_read_is_named(self) -> None:
         self.assertEqual(
             ["skills/alpha/scripts/run.sh holds Bash validation cannot read"],

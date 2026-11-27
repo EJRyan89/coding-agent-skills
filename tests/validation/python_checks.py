@@ -2451,8 +2451,10 @@ def presence_problems(root: Path, files: list[Path]) -> list[str]:
 # Stated limits: a status read through an attribute or a name bound outside the message's own function, or through a
 # getattr of a constant name; output read through a name bound in another function, as a helper's parameter; a reason
 # held in a name the message's function binds only after a branch, which reads as bound; a message kept in a name the
-# function joins to the output in any one formatted string, though another may return it alone; and a handler that
-# hands its message to a function that reads the error from sys.exc_info().
+# function joins to the output in any one formatted string, though another may return it alone; a status formatted by
+# `%`, `.format`, `+ str()`, or a join; a handler of an error outside the OSError family, such as CalledProcessError; a
+# message held in a module constant or a single word; a handler that reads the error only for its type's name; and a
+# handler that hands its message to a function that reads the error from sys.exc_info().
 REASON_ALLOWANCE = "REASON_ALLOWED"
 EXIT_STATUS = "returncode"
 # What a command printed, as a finished run holds it: subprocess's and bounded_process's results, git_client's

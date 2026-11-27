@@ -26,7 +26,7 @@ import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import COPILOT_LABEL, COPILOT_PROGRAM_INSTALL, ShellScriptsOnly, find_only_program
-from flat_text import flat_text, reason_line
+from flat_text import flat_text
 from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
 from path_containment import resolved_path, strictly_resolved_path, within
@@ -123,6 +123,12 @@ class HostState:
 COMMANDS_ALLOWED = {
     "subprocess_runner": "the default Copilot CLI runner, which this module's calls reach through _run_bounded, "
     "where the policy reads the program each passes",
+}
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "_require_copilot_result": "Copilot runs on a prompt that carries the pull request's diff, title, comments, and "
+    "documents, so its output may quote the author's text; the failure names the diagnostic file that holds both "
+    "streams whole, which _write_diagnostic writes before the check, and never their text",
 }
 
 
@@ -738,11 +744,9 @@ def _copilot_prompt(
 def _require_copilot_result(result: ProcessResult, staging_path: Path, diagnostic_path: Path) -> None:
     """Copilot exited cleanly and left a JSON object in the staging file."""
     if result.returncode != 0:
-        # Copilot's own reason is its stderr, on one bounded line; the diagnostic file holds both streams whole.
-        said = reason_line(result.stderr)
-        exited = f"GitHub Copilot CLI failed with exit code {result.returncode}"
-        stated = f"{exited}: {said}" if said else f"{exited} and printed nothing on stderr"
-        raise RuntimeContractError(f"{stated}; see {diagnostic_path}")
+        raise RuntimeContractError(
+            f"GitHub Copilot CLI failed with exit code {result.returncode}; see {diagnostic_path}"
+        )
     file_presence.require(
         staging_path,
         RuntimeContractError,

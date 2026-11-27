@@ -699,8 +699,10 @@ def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
 # when the test is false, prints one, the `then` branch after a negated test and the later branches after a plain one,
 # or before a `&&` after a negated test or a `||` after a plain one whose next command prints one. A FAILED line is a
 # word, after the command's name, whose text starts with FAILED and a space or ends there. Stated limits: a test
-# compound of `-a`, `-o`, or parentheses is not read, nor a FAILED line a function the branch calls prints, or one a
-# here-document's body holds; no shipped script writes either.
+# compound of `-a`, `-o`, or parentheses is not read, nor a FAILED line a function the branch calls prints, one a
+# here-document's body holds, or one held in a variable the branch prints, nor a test whose False reaches FAILED
+# through `A && B || C`, a test inside `{ }` or `( )` in a condition, or a `$?` read later; no shipped script writes
+# any of them.
 PRESENCE_TEST_OPERATORS = frozenset({"-a", "-b", "-c", "-d", "-e", "-f", "-h", "-L", "-p", "-S", "-s"})
 # A word gh reads as its limit, which a Bash test operator spells too.
 GH_LIMIT_ALLOWED = {
@@ -798,9 +800,20 @@ def shell_presence_problems(root: Path, files: list[Path]) -> list[str]:
         ),
         key=lambda path: path.relative_to(root).as_posix(),
     )
+    if not scripts:
+        return ["could not measure: no skill's Bash script was given, so no presence test was read"]
     for path in scripts:
         name = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            problems.append(
+                f"{name} cannot be read ({error.strerror or error}), so its presence tests cannot be judged"
+            )
+            continue
+        except UnicodeDecodeError:
+            problems.append(f"{name} is not UTF-8 text, so its presence tests cannot be judged")
+            continue
         try:
             commands = every_command(text)
             lists = [parse(text)] + [body for command in commands for body in command_bodies(command)]

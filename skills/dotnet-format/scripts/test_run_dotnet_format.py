@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
-from flat_text import flat_text, reason_line
+from flat_text import flat_text
 from test_dotnet_format_targets import link_folder, recording_reaches, remove_link
 from test_folder_walk import reached
 
@@ -620,14 +620,9 @@ class MainTests(unittest.TestCase):
             (
                 "check",
                 FakeRunner(1, "Unhandled exception: System.TypeInitializationException\n"),
-                "dotnet-format exited with code 1: Unhandled exception: System.TypeInitializationException; "
-                "see the log",
+                "dotnet-format exited with code 1; see the log",
             ),
-            (
-                "fix",
-                FakeRunner(1, sample_log(self.root)),
-                f"dotnet-format exited with code 1: {reason_line(sample_log(self.root), end=True)}; see the log",
-            ),
+            ("fix", FakeRunner(1, sample_log(self.root)), "dotnet-format exited with code 1; see the log"),
             (
                 "check",
                 FakeRunner(-1, "partial\n", timed_out=True),
@@ -643,14 +638,9 @@ class MainTests(unittest.TestCase):
                 FakeRunner(2, "changed something\n"),
                 "dotnet-format reported changes it did not itemize; see the log",
             ),
-            (
-                "fix",
-                FakeRunner(2, sample_log(self.root)),
-                f"dotnet-format exited with code 2: {reason_line(sample_log(self.root), end=True)}; see the log",
-            ),
-            # A run that printed nothing is named by its exit code alone.
-            ("check", FakeRunner(3, ""), "dotnet-format exited with code 3 and printed nothing"),
-            ("fix", FakeRunner(-1073741819, ""), "dotnet-format exited with code -1073741819 and printed nothing"),
+            ("fix", FakeRunner(2, sample_log(self.root)), "dotnet-format exited with code 2; see the log"),
+            ("check", FakeRunner(3, ""), "dotnet-format exited with code 3; see the log"),
+            ("fix", FakeRunner(-1073741819, ""), "dotnet-format exited with code -1073741819; see the log"),
         )
         for mode, runner, reason in cases:
             with self.subTest(mode=mode, reason=reason):
@@ -704,7 +694,7 @@ class MainTests(unittest.TestCase):
     def test_slnx_failures_name_dotnet_format(self) -> None:
         cases = (
             (FakeRunner(2, "changed\n"), "dotnet format reported changes it did not itemize; see the log"),
-            (FakeRunner(1, "error\n"), "dotnet format exited with code 1: error; see the log"),
+            (FakeRunner(1, "error\n"), "dotnet format exited with code 1; see the log"),
             (FakeRunner(-1, "", timed_out=True), "dotnet format did not finish within 570 seconds; see the log"),
         )
         for runner, reason in cases:
@@ -775,7 +765,7 @@ class MainTests(unittest.TestCase):
 
     def test_a_batch_that_fails_stops_the_rest_and_keeps_the_log_so_far(self) -> None:
         cases = (
-            (formatter.Completed(3, b"crash\n"), "dotnet-format exited with code 3: crash; see the log"),
+            (formatter.Completed(3, b"crash\n"), "dotnet-format exited with code 3; see the log"),
             (
                 formatter.Completed(-1, b"crash\n", timed_out=True),
                 "dotnet-format did not finish within 570 seconds; see the log",
@@ -812,7 +802,7 @@ class MainTests(unittest.TestCase):
                 reason = (
                     "dotnet-format did not finish within 570 seconds; see the log"
                     if timed_out
-                    else f"dotnet-format exited with code 1: {reason_line(crashed, end=True)}; see the log"
+                    else "dotnet-format exited with code 1; see the log"
                 )
                 lines = self.assert_failed(self.run_formatter("fix", runner), reason)
                 self.assertEqual(2, len(runner.calls))
@@ -827,7 +817,7 @@ class MainTests(unittest.TestCase):
     def test_a_fix_that_fails_in_its_only_run_saved_nothing(self) -> None:
         lines = self.assert_failed(
             self.run_formatter("fix", FakeRunner(1, sample_log(self.root))),
-            f"dotnet-format exited with code 1: {reason_line(sample_log(self.root), end=True)}; see the log",
+            "dotnet-format exited with code 1; see the log",
         )
         self.assertEqual(
             [["UNFINISHED", name] for name in self.files],
@@ -924,7 +914,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(crash.encode(), Path(lines[-2][1]).read_bytes())
         self.assert_failed(
             self.run_formatter("check", self.sdk_services(FakeRunner(1, crash)), True, "--solution", "App.slnx"),
-            f"dotnet format exited with code 1: {reason_line(crash, end=True)}; see the log",
+            "dotnet format exited with code 1; see the log",
         )
 
     def test_the_global_tool_skips_an_aspnet_projects_files_and_the_sdks_command_formats_them(self) -> None:
@@ -1166,7 +1156,7 @@ class OneLineFactTests(unittest.TestCase):
         self.assertEqual(
             ["REFUSED", "SUMMARY", *("UNFINISHED" for _ in names), "LOG"], [line[0] for line in fields[:-1]]
         )
-        self.assertEqual("FAILED dotnet-format exited with code 1 and printed nothing", lines[-1])
+        self.assertEqual("FAILED dotnet-format exited with code 1; see the log", lines[-1])
         self.assertEqual([flat_text(refused)], fields[0][1:2])
         self.assertEqual([[flat_text(name)] for name in names], [line[1:] for line in fields[2:-2]])
 

@@ -112,6 +112,23 @@ case "${OSTYPE:-}" in
     ;;
 esac
 
+# A clone whose folder refuses a stat, mode 000, holds a deploy.py the update cannot examine: named with the operating
+# system's reason, never as missing. Windows judges no folder's mode, and root's stat passes any mode.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    if [ "$(id -u)" != 0 ]; then
+      begin_case 'clone that cannot be examined'
+      new_clone
+      chmod 000 "$CLONE"
+      run_subject "$CLONE" main
+      chmod 755 "$CLONE"
+      expect_failed "FAILED deploy.py in $CLONE cannot be examined: Permission denied" "clone that cannot be examined"
+      expect_not_deployed "clone that cannot be examined"
+    fi
+    ;;
+esac
+
 # A TMPDIR below a shared folder that is not sticky, where another account could rename a folder above the copy of
 # update.sh and swap it between the cp and the exec: refused, naming the folder, before any copy is made. Windows judges
 # no folder's mode, so the case runs where the platform has user ids.

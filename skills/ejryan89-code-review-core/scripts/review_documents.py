@@ -45,7 +45,7 @@ import private_folder
 import whole_number
 from bounded_process import streaming
 from executable_locator import find_executables
-from flat_text import flat_text, reason_line
+from flat_text import flat_text
 from pdf_tool import PdfToolRefused, install_text, probe_pdftotext, select_pdftotext
 from text_lines import text_lines
 
@@ -263,9 +263,9 @@ def _open_package(content: bytes) -> zipfile.ZipFile:
 
 
 def _package_reason(error: BaseException) -> str:
-    """Why a package or a part could not be read, as the error says it on one bounded line, or the error's kind when it
-    says nothing."""
-    return reason_line(str(error)) or type(error).__name__
+    """Why a package or a part could not be read: the error's type alone, since a zip or LZMA error's message may quote
+    the document's own bytes, such as a local header's name, which no refusal carries."""
+    return type(error).__name__
 
 
 def _escapes(name: str) -> bool:
