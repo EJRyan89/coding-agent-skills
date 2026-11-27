@@ -23,6 +23,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import dashboard_pipeline as tp
+import path_keys
 import review_archive
 import review_config
 import test_review_fixture as review_fixture
@@ -1310,6 +1311,40 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual("tracker.json", tp.tracker_record_path(default).name)
         self.assertEqual("other.tracker.json", tp.tracker_record_path(default.with_name("other.json")).name)
 
+    def test_configurations_that_share_a_stem_keep_records_of_their_own(self) -> None:
+        # Independent literals: a configuration named <name>.json keeps <name>.tracker.json, and any other name the
+        # whole file name before -tracker.json, so none of these four shares a record.
+        expected = {
+            "config.json": "tracker.json",
+            "work.json": "work.tracker.json",
+            "work.cfg": "work.cfg-tracker.json",
+            "work": "work-tracker.json",
+            "work.tracker.json": "work.tracker.tracker.json",
+        }
+        folder = self.root / "configurations"
+        folder.mkdir()
+        for name in expected:
+            (folder / name).write_text("{}", encoding="utf-8")
+        for name, record in expected.items():
+            with self.subTest(name=name):
+                self.assertEqual(folder / record, tp.tracker_record_path(folder / name))
+
+    def test_a_name_in_another_case_has_the_record_of_the_file_it_opens(self) -> None:
+        # Where the folder folds case, config.JSON opens config.json and work.JSON opens work.json, so each has that
+        # file's record; where it keeps case apart, each is a file of its own with a record of its own.
+        work = self.root / "work.json"
+        work.write_text("{}", encoding="utf-8")
+        if path_keys.folds_case(self.root):
+            self.assertEqual(self.root / "tracker.json", tp.tracker_record_path(self.root / "config.JSON"))
+            self.assertEqual(self.root / "work.tracker.json", tp.tracker_record_path(self.root / "work.JSON"))
+        else:
+            for name in ("config.JSON", "work.JSON"):
+                (self.root / name).write_text("{}", encoding="utf-8")
+            self.assertEqual(self.root / "config.JSON-tracker.json", tp.tracker_record_path(self.root / "config.JSON"))
+            self.assertEqual(self.root / "work.JSON-tracker.json", tp.tracker_record_path(self.root / "work.JSON"))
+        self.assertEqual(self.root / "tracker.json", tp.tracker_record_path(self.config_path))
+        self.assertEqual(self.root / "work.tracker.json", tp.tracker_record_path(work))
+
     def test_update_names_each_review_that_went_stale_since_the_last_update(self) -> None:
         # The last update showed example/one#1 with no review, example/one#2 reviewed at its head, and example/one#3
         # already stale.
@@ -1950,6 +1985,62 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual((1, [f"FAILED {reason}"]), (code, out.splitlines()))
         self.config_path = default
         code, out, err = self.run_main("override", "--set", "example/two#5=on hold")
+        self.assertEqual((0, ""), (code, err))
+
+    def test_a_configuration_sharing_another_s_stem_never_reads_its_record(self) -> None:
+        # team.json's update writes team.tracker.json; team.cfg and team, which never ran one, have no record, so a set
+        # through either is refused and neither configuration changes.
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        team = self.root / "team.json"
+        team.write_bytes(self.config_path.read_bytes())
+        self.config_path = team
+        code, _, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertIn(
+            "example/two#5", json.loads((self.root / "team.tracker.json").read_text(encoding="utf-8"))["pulls"]
+        )
+        for name in ("team.cfg", "team"):
+            other = self.root / name
+            other.write_bytes(team.read_bytes())
+            self.config_path = other
+            with self.subTest(name=name):
+                code, out, _ = self.run_main("override", "--set", "example/two#5=on hold")
+                record = self.root / f"{name}-tracker.json"
+                reason = f"Status override example/two#5 names no tracked pull request: no update has written {record}"
+                self.assertEqual((1, [f"FAILED {reason}"]), (code, out.splitlines()))
+                self.assertEqual(team.read_bytes(), other.read_bytes())
+
+    def test_a_configuration_at_the_record_path_is_refused_by_that_cause(self) -> None:
+        # A configuration named work.tracker.json sits where work.json's record goes: every command reading that
+        # record is refused naming the cause, and the configuration there is never replaced.
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        work = self.root / "work.json"
+        work.write_bytes(self.config_path.read_bytes())
+        sitting = self.root / "work.tracker.json"
+        sitting.write_bytes(self.config_path.read_bytes())
+        before = sitting.read_bytes()
+        self.config_path = work
+        reason = (
+            f"{sitting} holds a code-review configuration, not a tracker record: a configuration sits at the tracker "
+            "record path; rename that configuration"
+        )
+        for arguments in (
+            ("update", "--input", str(self.input)),
+            ("override",),
+            ("override", "--set", "example/two#5=on hold"),
+            ("review-arguments", "--confirm", "example/two#5"),
+        ):
+            with self.subTest(arguments=arguments):
+                code, out, _ = self.run_main(*arguments)
+                self.assertEqual((1, f"FAILED {reason}"), (code, out.splitlines()[-1]))
+                self.assertEqual(before, sitting.read_bytes())
+        # The configuration sitting there runs as any other, with a record of its own.
+        self.config_path = sitting
+        code, out, err = self.run_main("override")
         self.assertEqual((0, ""), (code, err))
 
     def test_a_record_it_cannot_stat_is_refused_never_read_as_no_update(self) -> None:
