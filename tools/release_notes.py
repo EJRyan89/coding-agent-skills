@@ -49,7 +49,8 @@ bugs the milestone fixed, each issue labeled `bug` and closed as completed, coun
 labeled `auditor-gap` and not closed as not planned. An outside review's gaps land on the next milestone, so a release
 counts those its previous release's pass filed. An issue closed as not planned, a duplicate among them, is in neither
 count, and a pull request on the milestone is no issue. It prints an `ERROR:` line, never a count, for a title no
-milestone has, a listing that holds fewer or more items than the milestone's own open and closed counts, an answer
+milestone has, a listing that gives one number more than once, as a page that shifted during the read does while it
+drops another, a listing that holds fewer or more items than the milestone's own open and closed counts, an answer
 that is not the milestones or issues asked for, a fixed issue, one closed as completed, with no kind label (`bug`,
 `enhancement`, `documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed
 issue with an origin label and no `bug`, or a fixed bug with two origin labels. An issue closed as not planned or a
@@ -74,6 +75,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import collections
 import functools
 import re
 import sys
@@ -565,18 +567,29 @@ def milestone_counts(client: GitHubClient, version: str) -> str:
     """The release notes' line counting the milestone's fixed bugs by origin label and the auditor gaps on it.
 
     Raises ReleaseNotesError when gh cannot read the milestone or its issues, no milestone has the title, the listing
-    disagrees with the milestone's own counts, an item is not an issue, or a fixed issue's labels cannot be counted.
+    gives a number more than once or disagrees with the milestone's own counts, an item is not an issue, or a fixed
+    issue's labels cannot be counted.
     """
     number, held = _milestone(client, version)
     items = _pages(client, MILESTONE_ISSUES.replace("{number}", str(number)))
-    if len(items) != held:
-        raise ReleaseNotesError(
-            f"milestone {version} holds {held} issues and pull requests, but its listing gave {len(items)}; "
-            "count them by hand"
-        )
     if not all(isinstance(item, dict) for item in items):
         raise ReleaseNotesError(f"gh answered with an item of milestone {version} that is not an object")
-    issues = [_milestone_issue(item) for item in items if isinstance(item, dict) and "pull_request" not in item]
+    rows = [item for item in items if isinstance(item, dict)]
+    # Issues and pull requests share one sequence of numbers, so a number given twice is one row read twice: a page
+    # that shifted while gh read the next, which also drops a row, and the totals below cannot see it.
+    seen = collections.Counter(row.get("number") for row in rows)
+    repeated = sorted(key for key, times in seen.items() if times > 1 and isinstance(key, int))
+    if repeated:
+        raise ReleaseNotesError(
+            f"the listing of milestone {version} gives {', '.join(f'#{key}' for key in repeated)} more than once, "
+            "so it is not the milestone's issues and pull requests; count them by hand"
+        )
+    if len(rows) != held:
+        raise ReleaseNotesError(
+            f"milestone {version} holds {held} issues and pull requests, but its listing gave {len(rows)}; "
+            "count them by hand"
+        )
+    issues = [_milestone_issue(row) for row in rows if "pull_request" not in row]
     refused = _refused(version, issues)
     if refused:
         raise ReleaseNotesError("; ".join(refused))

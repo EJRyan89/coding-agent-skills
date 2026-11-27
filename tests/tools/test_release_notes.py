@@ -1176,6 +1176,30 @@ class CountsTests(unittest.TestCase):
                     error,
                 )
 
+    def test_a_listing_that_repeats_a_number_is_refused_even_when_the_totals_hold(self) -> None:
+        # The milestone holds a latent bug and a regression; an issue joining or leaving during the paginated read can
+        # shift a page, so the latent bug comes on both pages and the regression on neither, and the totals agree.
+        for items, repeated in (
+            ([issue(3, "bug", "latent"), issue(3, "bug", "latent")], "#3"),
+            ([issue(3, "bug", "latent"), pull_request(5), issue(4, "bug", "regression"), pull_request(5)], "#5"),
+            ([issue(6, "enhancement"), issue(3, "bug"), issue(6, "enhancement"), issue(3, "bug")], "#3, #6"),
+        ):
+            with self.subTest(items=items):
+                code, printed, error, _ = self.counts(items, pages=2)
+                self.assertEqual((2, ""), (code, printed))
+                self.assertEqual(
+                    f"ERROR: the listing of milestone v0.2.0 gives {repeated} more than once, so it is not the "
+                    "milestone's issues and pull requests; count them by hand\n",
+                    error,
+                )
+
+    def test_a_repeated_number_is_named_before_totals_that_disagree(self) -> None:
+        # A repeat is the more precise cause, so it is named even when the totals also disagree.
+        items = [issue(3, "bug", "latent"), issue(3, "bug", "latent")]
+        code, printed, error, _ = self.counts(items, milestones=[milestone("v0.2.0", 7, 0, 3)], pages=2)
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith("ERROR: the listing of milestone v0.2.0 gives #3 more than once"), error)
+
     def test_a_fixed_issue_whose_labels_cannot_be_counted_is_refused_by_number(self) -> None:
         items = [
             issue(4, "bug", "latent", "regression"),
