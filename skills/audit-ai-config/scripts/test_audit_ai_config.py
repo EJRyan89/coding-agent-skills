@@ -1097,7 +1097,8 @@ class InstructionLayeringTests(unittest.TestCase):
             "End of the overview.\n\n## Formatting Rules\n\nUse tabs.\n"
         )
         self.assertEqual(
-            "## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\nEnd of the overview.",
+            "## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\n"
+            "End of the overview.",
             audit._extract_sections(claude_content, ["Overview"]),
         )
         self.assertEqual("", audit._extract_sections(claude_content, ["Not a section", "Nor this", "Hidden"]))

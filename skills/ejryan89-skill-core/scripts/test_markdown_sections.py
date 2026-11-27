@@ -36,10 +36,10 @@ from markdown_sections import (
     list_item,
     markdown_section,
     outside_fences,
-    session_commands,
-    top_level_sections,
     prose_code_spans,
+    session_commands,
     starts_block,
+    top_level_sections,
     without_code_spans,
 )
 from test_time_in_proportion import assert_time_in_proportion
