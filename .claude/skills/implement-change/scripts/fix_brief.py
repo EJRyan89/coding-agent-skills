@@ -29,9 +29,9 @@ The brief, a Markdown file written to a new private folder under the temporary d
 
 - the files, each named by the issue or by `--path`, or not there yet;
 - the construct and its spellings, for the author to name, as the sibling-spellings reviewer will, and each Python file
-  among the brief's files that binds a module-level `NOT_READ`, read through `ast`, with the suites holding that table
-  and the module's name, as a symbol's callers are found, since a catalogue test holds that file's catalogue and the
-  author decides only the entries the change moves there;
+  among the brief's files that binds a module-level `NOT_READ`, read through ejryan89-skill-core's `python_reader`,
+  with the suites holding that table and the module's name, as a symbol's callers are found, since a catalogue test
+  holds that file's catalogue and the author decides only the entries the change moves there;
 - for each symbol, the tracked files holding it as a whole word, as `git grep -w -F` matches one, with their line
   numbers, each file read through lessons_patterns' `Corpus`, which judges its name inside the repository first;
 - for each file, its twin in the other shell, `<name>.sh` beside `<name>.ps1`, each other tracked file of its name in
@@ -98,6 +98,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import file_presence
 import lessons_patterns
 import private_folder
+import python_reader
 import whole_number
 from console import run_main
 from flat_text import fact_line, flat_text
@@ -414,10 +415,10 @@ def _files_section(named_files: Named, given: Sequence[str], tracked: frozenset[
 
 def binds_not_read(text: str) -> bool:
     """Whether Python source binds NOT_READ_TABLE at module level, by an assignment or an annotated one; source that
-    does not parse binds nothing."""
+    python_reader refuses binds nothing."""
     try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+        tree = python_reader.parse(text)
+    except python_reader.PythonRefused:
         return False
     targets = [
         target
