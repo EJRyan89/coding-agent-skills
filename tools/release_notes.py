@@ -1,7 +1,7 @@
 """Write a release's section of docs/upgrade-notes.md from the upgrade notes its merged commits carry.
 
 Usage:
-  python tools/release_notes.py VERSION [--from REF] [--to REF] [--write | --check]
+  python tools/release_notes.py VERSION [--from REF] [--to REF] [--write | --check --notes FILE]
   python tools/release_notes.py VERSION --counts
 
 Each pull request states what it asks of a user who updates under a `## Upgrade note` heading in its body, and the
@@ -25,12 +25,21 @@ section opens with the largest leading Level word of its entries, ordered by doc
 no upgrade-note entries.
 
 --check compares the `## VERSION` section of docs/upgrade-notes.md as --to holds it with the entries the commits in
-the range carry, by heading, and fetches nothing, so the one entry a release preparer merges from the entries a
+the range carry, by heading, and fetches no ref, so the one entry a release preparer merges from the entries a
 SHARED line names holds each of them. The release pull request is squash-merged, so the commit the
 section was written at never reaches main, and a pull request merged into main or into the release branch after the
-section was written is in the tag and in no section. It prints `CURRENT` when the section holds every entry, and
-otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
-beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
+section was written is in the tag and in no section. When the section lacks an entry, it prints `BEHIND <n> entries`
+and each entry the section lacks, ready to carry into it, and reads nothing more. An entry the section holds beyond the
+range's, such as an obligation the release's preparation issue records, is the releaser's own. It then reads the
+release notes the tag will publish, the file --notes names, which --check requires, as UTF-8 text with or without a
+byte order mark: they must open with the `## VERSION` heading, and their `## VERSION` section must hold the committed
+section's `Level:` line as it is written, each entry the committed section holds, by heading, and the line --counts
+prints at that moment, whatever its numbers, each line read without the blanks around it. It prints a
+`NOTES_INCOMPLETE <what>` line for each that fails, and `CURRENT` only when the section holds every entry and the notes
+hold all four. Each line is read as a line of the section's text, so a Level or counts line inside an HTML comment,
+which GitHub hides, is read as present; and the section runs, as markdown_section reads it, to the next `## ` heading,
+so a `# ` heading does not end it. A held Level line indented by a blank is not read as the section's level, so the
+notes are not held to it.
 
 --counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, the
 milestone titled VERSION and every issue on it, through GitHub's REST API, since `gh issue list` searches and answers an
@@ -49,15 +58,16 @@ duplicate is not read for labels. It takes no range and writes nothing.
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
 documented levels, or an entry's Level; with --write, docs/upgrade-notes.md, when it cannot be read as UTF-8 text or
-written; or with --check, a `## VERSION` section --to does not hold. Git runs through ejryan89-skill-core's
+written; or with --check, a `## VERSION` section --to does not hold, release notes that cannot be read as UTF-8
+text, or anything --counts cannot read or count. Git runs through ejryan89-skill-core's
 GitClient, which starts it without the repository-selecting variables that would read another repository. The
 release procedure in docs/releasing.md runs it before tagging and again at the tag, and the upgrade-notes check in
 tests/validation reads the same entries through the same git.
 
 Exit status:
   0  the section was printed or written, --check found it CURRENT, or --counts printed its line
-  1  --write refused a version the file already has, --check found the section BEHIND, or a last line
-     FAILED <reason>
+  1  --write refused a version the file already has, --check found the section BEHIND or the release notes
+     NOTES_INCOMPLETE, or a last line FAILED <reason>
   2  a usage error, or an ERROR: line naming what it could not read or write
 """
 
@@ -103,6 +113,8 @@ NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*
 # The deepest heading that starts an entry, or that, above one, ends the entry before it, and an entry's own marks.
 ENTRY_LEVEL = 3
 ENTRY_MARKS = "#" * ENTRY_LEVEL
+# What a section's summary line opens with, just below its version heading, before the entries.
+LEVEL_LINE = "Level: "
 # The blocks whose lines a hard wrap may split, which unwrapped joins back into one line.
 JOINED_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK})
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
@@ -355,7 +367,7 @@ def version_section(version: str, entries: list[SourcedEntry], levels: list[str]
         level = largest_level((item.entry.fields.get("Level", "") for item in entries), levels)
     except ValueError as error:
         raise ReleaseNotesError(str(error)) from error
-    summary = f"Level: {level}." if level is not None else "Level: none (no upgrade-note entries)."
+    summary = f"{LEVEL_LINE}{level}." if level is not None else f"{LEVEL_LINE}none (no upgrade-note entries)."
     return "\n\n".join([f"## {version}", summary, *(item.rendered() for item in entries)]) + "\n"
 
 
@@ -399,33 +411,87 @@ def insert_section(notes: str, version: str, section: str) -> str:
     return notes[:start] + section + "\n" + notes[start:]
 
 
-def missing_entries(root: Path, version: str, start: str, end: str) -> list[SourcedEntry]:
-    """The entries the commits between two refs carry that the version's section of the notes file at end lacks, by
-    heading, newest first."""
+def held_section(root: Path, version: str, end: str) -> str:
+    """The version's section of the notes file at end; ReleaseNotesError when end holds none."""
     section = markdown_section(_notes_at(root, end) or "", f"## {version}")
     if section is None:
         raise ReleaseNotesError(f"{UPGRADE_NOTES} at {end} has no ## {version} section; write it with --write first")
-    held = {entry.heading for entry in notes_entries(section)}
+    return section
+
+
+def missing_entries(root: Path, version: str, start: str, end: str) -> list[SourcedEntry]:
+    """The entries the commits between two refs carry that the version's section of the notes file at end lacks, by
+    heading, newest first."""
+    held = {entry.heading for entry in notes_entries(held_section(root, version, end))}
     return [item for item in range_entries(root, start, end) if item.entry.heading not in held]
 
 
-def _check(root: Path, version: str, start: str, end: str) -> int:
+def notes_problems(notes: str, version: str, held: str, counts: str, end: str) -> list[str]:
+    """What the release notes lack: the version's heading as their first line that is not blank, and, in their own
+    section of the version, the held section's Level line, each entry it holds, by heading, and the counts line, each
+    line read without the blanks around it."""
+    heading = f"## {version}"
+    opening = next((line for line in LINE_BREAK.split(notes) if line.strip(" \t")), "")
+    problems = [] if opening.rstrip(" \t") == heading else [f"the release notes do not open with {heading}"]
+    section = markdown_section(notes, heading) or ""
+    lines = {line.strip(" \t") for line in section.split("\n")}
+    level = next((line.strip(" \t") for line in held.split("\n") if line.startswith(LEVEL_LINE)), None)
+    if level is not None and level not in lines:
+        problems.append(
+            f"the release notes' {heading} section lacks the line {flat_text(level)} that {heading} in "
+            f"{UPGRADE_NOTES} at {end} holds"
+        )
+    published = {entry.heading for entry in notes_entries(section)}
+    problems.extend(
+        f"the release notes' {heading} section lacks the entry {ENTRY_MARKS} {flat_text(entry.heading)} that "
+        f"{heading} in {UPGRADE_NOTES} at {end} holds"
+        for entry in notes_entries(held)
+        if entry.heading not in published
+    )
+    if counts not in lines:
+        problems.append(f"the release notes' {heading} section lacks the line --counts prints: {counts}")
+    return problems
+
+
+def _read_notes(path: Path) -> str:
+    try:
+        # utf-8-sig: a notes file Windows PowerShell 5's Set-Content -Encoding UTF8 writes opens with a byte order mark.
+        return path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as error:
+        raise ReleaseNotesError(
+            f'cannot read the release notes "{flat_text(str(path))}": {flat_text(str(error))}'
+        ) from error
+
+
+def _check(root: Path, version: str, start: str, end: str, notes: Path, client: GitHubClient) -> int:
+    problems: list[str] = []
     try:
         missing = missing_entries(root, version, start, end)
+        if not missing:
+            problems = notes_problems(
+                _read_notes(notes), version, held_section(root, version, end), milestone_counts(client, version), end
+            )
     except ReleaseNotesError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
-    if not missing:
-        print(f"CURRENT ## {version} in {UPGRADE_NOTES} at {end} holds every upgrade-note entry from {start} to {end}.")
-        return 0
+    if missing:
+        print(
+            f"BEHIND {len(missing)} {'entry' if len(missing) == 1 else 'entries'}: the commits from {start} to {end} "
+            f"carry upgrade-note entries the ## {version} section of {UPGRADE_NOTES} at {end} lacks; carry them into "
+            "it through a pull request before tagging."
+        )
+        for item in missing:
+            print(f"\n{item.rendered()}")
+        return 1
+    for problem in problems:
+        print(f"NOTES_INCOMPLETE {problem}")
+    if problems:
+        return 1
     print(
-        f"BEHIND {len(missing)} {'entry' if len(missing) == 1 else 'entries'}: the commits from {start} to {end} carry "
-        f"upgrade-note entries the ## {version} section of {UPGRADE_NOTES} at {end} lacks; carry them into it through "
-        "a pull request before tagging."
+        f"CURRENT ## {version} in {UPGRADE_NOTES} at {end} holds every upgrade-note entry from {start} to {end}, and "
+        "the release notes open with it and carry the line --counts prints."
     )
-    for item in missing:
-        print(f"\n{item.rendered()}")
-    return 1
+    return 0
 
 
 @dataclass(frozen=True)
@@ -523,8 +589,12 @@ def milestone_counts(client: GitHubClient, version: str) -> str:
     )
 
 
-def _counts(root: Path, version: str, client: GitHubClient | None) -> int:
-    client = client or GitHubClient(runner=functools.partial(subprocess_runner, cwd=root))
+def _client(root: Path, client: GitHubClient | None) -> GitHubClient:
+    """The client given, or one whose gh runs in the checkout, since gh reads the repository from its directory."""
+    return client or GitHubClient(runner=functools.partial(subprocess_runner, cwd=root))
+
+
+def _counts(version: str, client: GitHubClient) -> int:
     try:
         print(milestone_counts(client, version))
     except ReleaseNotesError as error:
@@ -559,13 +629,23 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT, client: Gi
         action="store_true",
         help="print the release notes' counts of the milestone's fixed bugs by origin and the auditor gaps on it",
     )
+    parser.add_argument(
+        "--notes",
+        type=Path,
+        metavar="FILE",
+        help="with --check, the release notes to publish, which must hold the section and the line --counts prints",
+    )
     options = parser.parse_args(argv)
     if not is_release_tag(options.version):
         parser.error(f"the version must be a release tag such as v1.2.3, not {options.version!r}")
+    if options.check and options.notes is None:
+        parser.error("--check reads the release notes too: give --notes FILE")
+    if options.notes is not None and not options.check:
+        parser.error("--notes is read only with --check")
     if options.counts:
         if options.start is not None or options.end is not None:
             parser.error("--counts reads the milestone, not a range: drop --from and --to")
-        return _counts(root, options.version, client)
+        return _counts(options.version, _client(root, client))
     options.end = options.end or (RELEASE_BRANCH if options.check else "HEAD")
     try:
         start = options.start or last_release_before(root, options.end)
@@ -573,7 +653,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT, client: Gi
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     if options.check:
-        return _check(root, options.version, start, options.end)
+        return _check(root, options.version, start, options.end, options.notes, _client(root, client))
     try:
         levels = versioning_levels(_read_releasing(root))
         entries = range_entries(root, start, options.end)
