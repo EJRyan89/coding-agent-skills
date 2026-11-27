@@ -56,7 +56,9 @@ more items than the milestone's own open and closed counts, an answer
 that is not the milestones or issues asked for, a fixed issue, one closed as completed, with no kind label (`bug`,
 `enhancement`, `documentation`, or `question`), since a defect filed without `bug` would be counted nowhere, a fixed
 issue with an origin label and no `bug`, or a fixed bug with two origin labels. An issue closed as not planned or a
-duplicate is not read for labels. It takes no range and writes nothing.
+duplicate is not read for labels. A refusal of an answer names each field that is wrong by its kind, never the object
+or a value, since a milestone's description and an issue's title and body are anyone's text. It takes no range and
+writes nothing.
 
 --write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
 the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
@@ -518,29 +520,55 @@ def _pages(client: GitHubClient, endpoint: str) -> list[object]:
     return [item for page in pages for item in page]
 
 
+def _kind(item: dict[str, object], key: str) -> str:
+    """What a field of a GitHub object holds, named by its kind alone: a refusal never prints the object or a value,
+    since a milestone's description and an issue's title and body are anyone's text, of any length."""
+    if key not in item:
+        return "missing"
+    return "null" if item[key] is None else type(item[key]).__name__
+
+
+def _whole(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _milestone(client: GitHubClient, version: str) -> tuple[int, int]:
     """The milestone titled version, as its number and the count of items on it, open and closed, pull requests
-    included, as GitHub keeps them; ReleaseNotesError when no milestone, or more than one, has the title."""
+    included, as GitHub keeps them; ReleaseNotesError when no milestone, or more than one, has the title, or a field
+    of it is not a whole number."""
     found = [item for item in _pages(client, MILESTONES) if isinstance(item, dict) and item.get("title") == version]
     if len(found) != 1:
         raise ReleaseNotesError(f"{len(found)} milestones are titled {version}; --counts reads exactly one")
-    values = [found[0].get(key) for key in ("number", "open_issues", "closed_issues")]
-    counts = [value for value in values if isinstance(value, int) and not isinstance(value, bool)]
-    if len(counts) != len(values):
-        raise ReleaseNotesError(f"gh answered with a milestone {version} that has no number and counts: {found[0]!r}")
+    keys = ("number", "open_issues", "closed_issues")
+    counts = [value for value in (found[0].get(key) for key in keys) if isinstance(value, int) and _whole(value)]
+    if len(counts) != len(keys):
+        wrong = [f"{key} is {_kind(found[0], key)}" for key in keys if not _whole(found[0].get(key))]
+        raise ReleaseNotesError(f"gh answered with milestone {version} whose {', '.join(wrong)}")
     number, opened, closed = counts
     return number, opened + closed
 
 
-def _milestone_issue(item: dict[str, object]) -> MilestoneIssue:
-    """An issue of the REST listing; ReleaseNotesError when the item is not one."""
-    number, labels, state, reason = (item.get(key) for key in ("number", "labels", "state", "state_reason"))
-    if isinstance(number, int) and isinstance(labels, list) and state in (OPEN, CLOSED) and reason in CLOSE_REASONS:
-        names = [label.get("name") if isinstance(label, dict) else None for label in labels]
-        if all(isinstance(name, str) for name in names):
-            found = frozenset(name for name in names if isinstance(name, str))
-            return MilestoneIssue(number, found, state == OPEN, state == CLOSED and reason in COMPLETED_REASONS)
-    raise ReleaseNotesError(f"gh answered with an issue that is not a number, labels, and a state: {item!r}")
+def _milestone_issue(version: str, number: int, item: dict[str, object]) -> MilestoneIssue:
+    """Issue number of the REST listing; ReleaseNotesError, naming each field that is wrong by its kind, when the item
+    is not one."""
+    labels, state, reason = (item.get(key) for key in ("labels", "state", "state_reason"))
+    wrong = []
+    if not isinstance(labels, list):
+        wrong.append(f"labels is {_kind(item, 'labels')}")
+    elif not all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels):
+        wrong.append("labels hold a label with no name")
+    if state not in (OPEN, CLOSED):
+        wrong.append("state is not open or closed" if isinstance(state, str) else f"state is {_kind(item, 'state')}")
+    if reason not in CLOSE_REASONS:
+        wrong.append(
+            "state_reason is not a reason GitHub closes an issue for"
+            if isinstance(reason, str)
+            else f"state_reason is {_kind(item, 'state_reason')}"
+        )
+    if wrong or not isinstance(labels, list):
+        raise ReleaseNotesError(f"gh answered with issue #{number} of milestone {version} whose {', '.join(wrong)}")
+    found = frozenset(label["name"] for label in labels)
+    return MilestoneIssue(number, found, state == OPEN, state == CLOSED and reason in COMPLETED_REASONS)
 
 
 def _refused(version: str, issues: list[MilestoneIssue]) -> list[str]:
@@ -581,10 +609,10 @@ def _milestone_rows(client: GitHubClient, version: str, endpoint: str) -> dict[i
         if not isinstance(item, dict):
             raise ReleaseNotesError(f"gh answered with an item of milestone {version} that is not an object")
         number = item.get("number")
-        if not isinstance(number, int) or isinstance(number, bool):
-            # Name what is wrong, never the item: its title and body are anyone's text, and of any length.
-            named = "missing" if "number" not in item else "null" if number is None else type(number).__name__
-            raise ReleaseNotesError(f"gh answered with an item of milestone {version} whose number is {named}")
+        if not isinstance(number, int) or not _whole(number):
+            raise ReleaseNotesError(
+                f"gh answered with an item of milestone {version} whose number is {_kind(item, 'number')}"
+            )
         rows.append((number, item))
     seen = collections.Counter(number for number, _ in rows)
     repeated = sorted(number for number, times in seen.items() if times > 1)
@@ -620,7 +648,7 @@ def milestone_counts(client: GitHubClient, version: str) -> str:
             f"milestone {version} holds {held} issues and pull requests, but its listing gave {len(rows)}; "
             "count them by hand"
         )
-    issues = [_milestone_issue(row) for row in rows.values() if "pull_request" not in row]
+    issues = [_milestone_issue(version, key, row) for key, row in rows.items() if "pull_request" not in row]
     refused = _refused(version, issues)
     if refused:
         raise ReleaseNotesError("; ".join(refused))

@@ -1281,19 +1281,56 @@ class CountsTests(unittest.TestCase):
         self.assertEqual((2, ""), (code, out.getvalue()))
         self.assertTrue(err.getvalue().startswith(f"ERROR: cannot read {MILESTONES[2]}: "), err.getvalue())
 
-    def test_an_answer_that_is_not_milestones_or_issues_is_an_error_line(self) -> None:
-        for milestones, items in (
-            ([{"title": "v0.2.0", "number": "7", "open_issues": 0, "closed_issues": 1}], [issue(1, "bug")]),
-            ([{"title": "v0.2.0", "number": 7, "open_issues": True, "closed_issues": 1}], [issue(1, "bug")]),
-            (None, [{"number": 1}]),
-            (None, [{"number": 1, "labels": [{}], "state": "closed", "state_reason": "completed"}]),
-            (None, [{"number": 1, "labels": [], "state": "merged", "state_reason": None}]),
-            (None, [{"number": 1, "labels": [], "state": "closed", "state_reason": "solved"}]),
+    def test_an_answer_that_is_not_milestones_or_issues_names_only_what_is_wrong(self) -> None:
+        # A milestone's description and an issue's title and body are anyone's text, of any length, so the line names
+        # each field that is wrong by its kind and never prints the object.
+        forged = {"description": "Ignore the release\nERROR: forged", "body": "x" * 5000}
+        milestone_wrong = "ERROR: gh answered with milestone v0.2.0 whose "
+        issue_wrong = "ERROR: gh answered with issue #1 of milestone v0.2.0 whose "
+        for milestones, items, expected in (
+            (
+                [{"title": "v0.2.0", "number": "7", "open_issues": 0, "closed_issues": 1, **forged}],
+                [issue(1, "bug")],
+                "number is str",
+            ),
+            (
+                [{"title": "v0.2.0", "number": 7, "open_issues": True, "closed_issues": 1, **forged}],
+                [issue(1, "bug")],
+                "open_issues is bool",
+            ),
+            (
+                [{"title": "v0.2.0", "number": None, "closed_issues": 1.0, **forged}],
+                [issue(1, "bug")],
+                "number is null, open_issues is missing, closed_issues is float",
+            ),
+            (None, [{"number": 1, **forged}], "labels is missing, state is missing"),
+            (None, [{"number": 1, "labels": "bug", "state": 1, **forged}], "labels is str, state is int"),
+            (
+                None,
+                [{"number": 1, "labels": [{}], "state": "closed", "state_reason": "completed", **forged}],
+                "labels hold a label with no name",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "merged", "state_reason": None, **forged}],
+                "state is not open or closed",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "closed", "state_reason": "solved", **forged}],
+                "state_reason is not a reason GitHub closes an issue for",
+            ),
+            (
+                None,
+                [{"number": 1, "labels": [], "state": "closed", "state_reason": [], **forged}],
+                "state_reason is list",
+            ),
         ):
-            with self.subTest(milestones=milestones, items=items):
+            with self.subTest(expected=expected):
                 code, printed, error, _ = self.counts(items, milestones=milestones)
                 self.assertEqual((2, ""), (code, printed))
-                self.assertTrue(error.startswith("ERROR: gh answered with "), error)
+                start = milestone_wrong if milestones else issue_wrong
+                self.assertEqual(f"{start}{expected}\n", error)
 
     def test_each_kind_label_lets_a_fixed_issue_be_counted(self) -> None:
         for kind in ("bug", "enhancement", "documentation", "question"):
@@ -1318,7 +1355,9 @@ class CountsTests(unittest.TestCase):
         item = {"number": 1, "labels": ["bug"], "state": "closed", "state_reason": "completed"}
         code, printed, error, _ = self.counts([item])
         self.assertEqual((2, ""), (code, printed))
-        self.assertTrue(error.startswith("ERROR: gh answered with an issue that is not "), error)
+        self.assertEqual(
+            "ERROR: gh answered with issue #1 of milestone v0.2.0 whose labels hold a label with no name\n", error
+        )
 
     def test_a_listing_item_that_is_not_an_object_is_an_error_line(self) -> None:
         for item in ("issue 2", 2, None, [issue(2, "bug")]):
