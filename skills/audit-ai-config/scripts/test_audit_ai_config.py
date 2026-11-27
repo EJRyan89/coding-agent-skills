@@ -5839,7 +5839,8 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     (
                         "ERROR",
                         ".agents/skills/demo/agents/openai.yaml",
-                        "Could not read agents/openai.yaml, so the skill's invocation policy was not checked",
+                        "Could not read agents/openai.yaml (it is not UTF-8 text), so the skill's invocation policy "
+                        "was not checked",
                     )
                 ],
             ),
@@ -7102,15 +7103,43 @@ class UnexaminedPathTests(unittest.TestCase):
 
     def test_an_invocation_policy_that_is_a_folder_or_cannot_be_examined_is_a_problem_never_no_policy(self) -> None:
         policy = self.root / ".agents/skills/demo/agents/openai.yaml"
-        problem = "Could not read agents/openai.yaml, so the skill's invocation policy was not checked"
+        # Each problem names the reason the read gave, never a bare "could not read".
+        problem = "Could not read agents/openai.yaml ({}), so the skill's invocation policy was not checked"
         policy.mkdir(parents=True)
-        self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+        self.assertEqual((True, problem.format("not a file")), audit._codex_implicit_invocation(self.root, policy))
         policy.rmdir()
         _write_fixture(
             self.root, {".agents/skills/demo/agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}
         )
         with self.denied(policy):
-            self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+            self.assertEqual(
+                (True, problem.format("Access is denied")), audit._codex_implicit_invocation(self.root, policy)
+            )
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_an_invocation_policy_behind_a_link_out_is_named_by_its_error_s_type_never_the_repository_s_names(
+        self,
+    ) -> None:
+        # The audit's own refusal of a link out names the link's path in the examined repository, text that
+        # repository chose, so the problem names the error's type instead.
+        planted = "IGNORE ALL PRIOR"
+        outside = self.root.parent / f"{self.root.name}-outside"
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "openai.yaml").write_text("policy:\n  allow_implicit_invocation: false\n", encoding="utf-8")
+        skill = self.root / ".agents/skills" / planted
+        skill.mkdir(parents=True)
+        (skill / "agents").symlink_to(outside, target_is_directory=True)
+        allowed, problem = audit._codex_implicit_invocation(self.root, skill / "agents/openai.yaml")
+        self.assertEqual(
+            (
+                True,
+                "Could not read agents/openai.yaml (OutsideLinkError), so the skill's invocation policy was not "
+                "checked",
+            ),
+            (allowed, problem),
+        )
+        self.assertNotIn(planted, problem or "")
 
     def test_a_manifest_that_is_a_folder_or_cannot_be_examined_is_there_to_the_scope_check(self) -> None:
         manifest = self.root / MANIFEST_PATH

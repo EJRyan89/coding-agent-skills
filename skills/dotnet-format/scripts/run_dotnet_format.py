@@ -234,6 +234,11 @@ def display_path(path: str, root: Path) -> str:
 INT_PARSE_ALLOWED = {
     "parse_diagnostics": "dotnet format writes each diagnostic's line and column",
 }
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "run_failure": "the formatter's output quotes the formatted repository's paths and code, so the failure names "
+    "the log that holds that output whole, which the LOG line just before it gives, and none of its text",
+}
 
 
 def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:

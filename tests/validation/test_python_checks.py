@@ -63,6 +63,7 @@ from python_checks import (
     output_split_problems,
     python_suppression_problems,
     ratchet_problems,
+    reason_problems,
     ruff_format_check,
     ruff_lint_check,
     strict_area_problems,
@@ -1809,6 +1810,197 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         discarded_result_problems,
         "from github_client import GitHubClient\n\n\ndef f():\n    GitHubClient().run(['pr', 'list'])\n",
         refused=False,
+    ),
+    # "a formatted string that names the exit status a command ended with ... names the reason the command gave too".
+    "an exit status named alone": _form(
+        reason_problems, "def f(result):\n    raise RuntimeError(f'git exited {result.returncode}')\n"
+    ),
+    "an exit status named through a name bound to it": _form(
+        reason_problems, "def f(result):\n    code = result.returncode\n    return f'git exited {code}'\n"
+    ),
+    "an exit status named with the reason_line of its output": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n"
+        "    return f'git exited {result.returncode}: {reason_line(result.stderr)}'\n",
+        refused=False,
+    ),
+    "an exit status named after the output it falls back from": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n"
+        "    return reason_line(result.stderr) or f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    "an exit status named where the output is empty": _form(
+        reason_problems,
+        "def f(result):\n    if not result.output:\n        return f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    **{
+        f"an exit status named with its output read as {form}": _form(
+            reason_problems,
+            "from flat_text import flat_text\n\n\ndef f(result):\n"
+            f"    return f'git exited {{result.returncode}}: {{{read}}}'\n",
+            refused=False,
+        )
+        for form, read in (
+            ("stdout", "result.stdout"),
+            ("stderr", "result.stderr"),
+            ("output", "result.output"),
+            ("flat_text of it", "flat_text(result.stderr)"),
+        )
+    },
+    "an exit status named with a name bound to its output": _form(
+        reason_problems,
+        "def f(result):\n    said = result.stderr.strip()\n    return f'git exited {result.returncode}: {said}'\n",
+        refused=False,
+    ),
+    # A name its function binds by an annotated assignment or an assignment expression, as by a plain one.
+    "an exit status named through a name an annotated assignment binds to it": _form(
+        reason_problems, "def f(result):\n    code: int = result.returncode\n    return f'git exited {code}'\n"
+    ),
+    "an exit status named through a name an assignment expression binds to it": _form(
+        reason_problems,
+        "def f(result):\n    if (code := result.returncode) != 0:\n        return f'git exited {code}'\n"
+        "    return None\n",
+    ),
+    "an exit status named with a name an annotated assignment binds to its output": _form(
+        reason_problems,
+        "def f(result):\n    said: str = result.stderr\n    return f'git exited {result.returncode}: {said}'\n",
+        refused=False,
+    ),
+    "an exit status named with a name an assignment expression binds to its output": _form(
+        reason_problems,
+        "def f(result):\n    if (said := result.stderr.strip()):\n"
+        "        return f'git exited {result.returncode}: {said}'\n    return None\n",
+        refused=False,
+    ),
+    "an exit status named with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe):\n    return f'git exited {result.returncode}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named with its output in a string concatenated to it": _form(
+        reason_problems,
+        "def f(result):\n    return f'git exited {result.returncode}: ' + result.stderr\n",
+        refused=False,
+    ),
+    "an exit status named in the branch of a conditional expression taken when the output is empty": _form(
+        reason_problems,
+        "def f(result):\n    return result.stderr if result.stderr else f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    "an exit status named in a conditional expression's branch that its output does not test": _form(
+        reason_problems,
+        "def f(result, ok):\n    return 'fine' if ok else f'git exited {result.returncode}'\n",
+    ),
+    "an exit status kept in a name later joined to its output": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n    stated = f'git exited {result.returncode}'\n"
+        "    said = reason_line(result.stderr)\n    return f'{stated}: {said}' if said else stated\n",
+        refused=False,
+    ),
+    "an exit status kept in a name never joined to its output": _form(
+        reason_problems,
+        "def f(result):\n    stated = f'git exited {result.returncode}'\n    return stated\n",
+    ),
+    "an exit status named as all a command that printed nothing gave": _form(
+        reason_problems,
+        "def f(result):\n    return f'git exited {result.returncode} and printed nothing'\n",
+        refused=False,
+    ),
+    "a failed read answered with a message that reads its error only as a raise-from cause": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        raise RuntimeError('the file could not be read') from exc\n",
+    ),
+    "a failed read answered by a bare except with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except:\n"
+        "        return 'the file could not be read'\n",
+    ),
+    "a failed read answered by a tuple holding OSError with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except (OSError, UnicodeError):\n"
+        "        return 'the file could not be read'\n",
+    ),
+    # "an `except` clause ... that takes the read's OSError ... and answers with a message of its own".
+    "a failed read answered with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        return f'cannot read {path}'\n",
+    ),
+    "a failed read answered with its error's text": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        return f'cannot read {path}: {exc.strerror or exc}'\n",
+        refused=False,
+    ),
+    "a failed decode answered with a message of its own": _form(
+        reason_problems,
+        "def f(data):\n    try:\n        return data.decode()\n    except UnicodeDecodeError:\n"
+        "        return 'it is not UTF-8 text'\n",
+        refused=False,
+    ),
+    # A message that hands its result whole to a call, where the status it names is read through a name bound to it,
+    # through two names bound to each other, and a call given another result.
+    "an exit status named through a name bound to it with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe):\n    code = result.returncode\n    return f'git exited {code}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named through a name bound to it with another result handed to a call": _form(
+        reason_problems,
+        "def f(result, other, describe):\n    code = result.returncode\n"
+        "    return f'git exited {code}: {describe(other)}'\n",
+    ),
+    "an exit status named through two names bound to each other with the result handed whole to a call": _form(
+        reason_problems,
+        "def f(result, describe, tries):\n    a = result.returncode\n    for _ in tries:\n        b = a\n"
+        "        a = b\n    return f'git exited {b}: {describe(result)}'\n",
+        refused=False,
+    ),
+    "an exit status named through two names bound to each other with another result handed to a call": _form(
+        reason_problems,
+        "def f(result, other, describe, tries):\n    a = result.returncode\n    for _ in tries:\n        b = a\n"
+        "        a = b\n    return f'git exited {b}: {describe(other)}'\n",
+    ),
+    # A function, or a class, a function defines is a scope of its own, whose names and messages are not its definer's;
+    # a lambda's body is its definer's.
+    "an exit status named through a name a nested function binds to its output too": _form(
+        reason_problems,
+        "def f(result):\n    def said():\n        code = result.stderr\n        return code\n"
+        "    code = result.returncode\n    return f'git exited {code}'\n",
+    ),
+    "a failed read answered by a nested function's message alone": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        def explain():\n            return 'the file could not be read'\n        return explain\n",
+        refused=False,
+    ),
+    "a failed read answered by a nested class's message alone": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        class Failure:\n            note = 'the file could not be read'\n        return Failure\n",
+        refused=False,
+    ),
+    "a failed read answered with a message and its error read in a lambda": _form(
+        reason_problems,
+        "def f(path, report):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        report(lambda: exc.strerror)\n        return 'the file could not be read'\n",
+        refused=False,
+    ),
+    # flat_text's readers reached as an attribute of the module, as by name.
+    "an exit status named with the reason_line of its output reached through its module": _form(
+        reason_problems,
+        "import flat_text\n\n\ndef f(result, diagnostic):\n"
+        "    return f'git exited {result.returncode}: {flat_text.reason_line(diagnostic)}'\n",
+        refused=False,
+    ),
+    # An except* clause, as an except clause.
+    "a failed read answered by an except* clause with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except* OSError:\n"
+        "        raise RuntimeError('the file could not be read')\n",
     ),
     # "gh's limit option, `--limit` or `-L`", alone, after =, or with digits attached.
     **{
@@ -5523,6 +5715,82 @@ def sanctioned(client):
 
 GH_LIMIT_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+REASON_SOURCE = """\
+from flat_text import flat_text, reason_line
+
+
+def statuses(completed, reasons, problems):
+    reason = f"exited with code {completed.returncode} before running a script"
+    reasons.append(f"Claude Code exited with code {completed.returncode}")
+    raise RuntimeError(f"FAILED gh exited {completed.returncode}")
+    code = completed.returncode
+    problems.append(f"exit {code}")
+    said = reason_line(completed.stderr)
+    problems.append(f"exited {completed.returncode}: {said}")
+    problems.append(f"exited {completed.returncode}: {flat_text(completed.output)}")
+    problems.append(said or f"exited {completed.returncode}")
+    problems.append(f"exited {completed.returncode} and printed nothing")
+    if not completed.stdout.strip():
+        problems.append(f"exited {completed.returncode}")
+    stated = f"exited {completed.returncode}"
+    problems.append(f"{stated}: {said}" if said else stated)
+    problems.append(f"exited {completed.returncode}: " + completed.stderr)
+    problems.append(f"{describe(completed)} ({completed.returncode})")
+
+
+def reads(path, problems):
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return f"could not read {path}"
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("the file could not be read") from error
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        problems.append(f"could not read {path}: {error.strerror or error}")
+    except UnicodeDecodeError:
+        problems.append(f"{path} is not UTF-8 text")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def sanctioned(completed):
+    return f"NOT_PASSED {completed.returncode}"
+
+
+REASON_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_reason_policy_refuses_an_exit_status_or_a_failed_read_named_without_its_reason() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(reason_problems, "REASON_ALLOWED", REASON_SOURCE, "tools/owner.py")
+    status = (
+        "names a command's exit status without the reason it gave; name its output through flat_text.reason_line, "
+        "or name the status alone only where it printed nothing, or state why in REASON_ALLOWED"
+    )
+    handler = (
+        "answers an OSError with a message of its own that drops the error's reason; name the error's text in it, or "
+        "state why in REASON_ALLOWED"
+    )
+    owner = "tools/owner.py"
+    expected = [
+        *(f"{alpha}:{line} {status}" for line in (5, 6, 7, 9)),
+        *(f"{alpha}:{line} {handler}" for line in (26, 30)),
+        f"{alpha}: REASON_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: REASON_ALLOWED must map each function, class, or assignment to its reason",
+        *(f"{owner}:{line} {status}" for line in (5, 6, 7, 9)),
+        *(f"{owner}:{line} {handler}" for line in (26, 30)),
+        f"{owner}: REASON_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+    ]
+    assert sorted(found) == sorted(expected)
 
 
 def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:

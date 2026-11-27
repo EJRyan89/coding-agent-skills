@@ -152,9 +152,11 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
     except OSError as exc:
         try:
             fsops.remove(paths.lock_dir)
-        except OSError:
+        except OSError as removal:
+            # Both failures are named: the one that stopped the lock's start, and the one that left its record.
             raise DeployError(
-                f"ERROR: Failed to initialize deployment lock: {exc}",
+                f"ERROR: Failed to initialize deployment lock: {exc}; its record could not be removed either: "
+                f"{removal.strerror or removal}",
                 f"Remove {platform_support.normalize(paths.lock_dir)} after confirming no deployment is running.",
                 see_recovery(LOCK),
             ) from exc

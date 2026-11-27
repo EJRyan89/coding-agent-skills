@@ -182,7 +182,7 @@ def _validate_absolute_directory(key: str, value: str) -> None:
     try:
         canonical = platform_support.canonical_directory(value)
     except OSError as exc:
-        raise DeployError(f"ERROR: {key} cannot be canonicalized: {value}") from exc
+        raise DeployError(f"ERROR: {key} cannot be canonicalized: {value}: {exc.strerror or exc}") from exc
     if platform_support.is_filesystem_root(canonical):
         raise DeployError(f"ERROR: {key} resolves to filesystem root: {canonical}")
 

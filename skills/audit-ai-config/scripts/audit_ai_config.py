@@ -1585,8 +1585,15 @@ def _codex_implicit_invocation(root: Path, policy: Path) -> tuple[bool, str | No
         if not file_at(root, policy):
             return True, None
         text = read_text(root, policy)
-    except (OSError, UnicodeError):
-        return True, f"Could not read {CODEX_METADATA}, so the skill's invocation policy was not checked"
+    except OSError as error:
+        # The operating system's reason, or the error's type where the audit raised it itself, never a message that
+        # could quote the examined repository's names.
+        reason = flat_text(error.strerror or type(error).__name__)
+        return True, f"Could not read {CODEX_METADATA} ({reason}), so the skill's invocation policy was not checked"
+    except UnicodeError:
+        return True, (
+            f"Could not read {CODEX_METADATA} (it is not UTF-8 text), so the skill's invocation policy was not checked"
+        )
     blocks = [match.group(1) for match in (*POLICY_BLOCK.finditer(text), *POLICY_FLOW.finditer(text))]
     return not any(IMPLICIT_FALSE.search(block) for block in blocks), None
 

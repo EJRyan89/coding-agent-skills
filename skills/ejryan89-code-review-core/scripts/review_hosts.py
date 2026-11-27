@@ -124,6 +124,12 @@ COMMANDS_ALLOWED = {
     "subprocess_runner": "the default Copilot CLI runner, which this module's calls reach through _run_bounded, "
     "where the policy reads the program each passes",
 }
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "_require_copilot_result": "Copilot runs on a prompt that carries the pull request's diff, title, comments, and "
+    "documents, so its output may quote the author's text; the failure names the diagnostic file that holds both "
+    "streams whole, which _write_diagnostic writes before the check, and never their text",
+}
 
 
 def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:

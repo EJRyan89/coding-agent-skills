@@ -41,15 +41,16 @@
 #                    <commit> when the deployer refused to replace a deployment made with `deploy.py --at <ref>`,
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
-#   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on:
-#                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
-#                    skill, the temporary directory is one another account could rename or cannot be examined, the
-#                    clone has no main to read the pin with or main's tree could not be written out for it,
-#                    `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
-#                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
-#                    lookup or comparison failed rather than answering, git's own reason following, remote_refs.py
-#                    failed, git failed in the clone rather than at origin, or remote_refs.py ended without its
-#                    result, or another step failed outright
+#   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on: the
+#                    clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this skill,
+#                    something other than a file stands in the place of deploy.py or of the core's script, or that place
+#                    cannot be examined, the operating system's reason following, the temporary directory is one another
+#                    account could rename or cannot be examined, the clone has no main to read the pin with or main's
+#                    tree could not be written out for it, `deploy.py check` printed nothing, printed only its error, or
+#                    named the deployed commit or the pin in a form the update cannot read, so whether the installation
+#                    is pinned is unknown, a git lookup or comparison failed rather than answering, git's own reason
+#                    following, remote_refs.py failed, git failed in the clone rather than at origin, or remote_refs.py
+#                    ended without its result, or another step failed outright
 # Each list of commits above that git cannot read, or that has no commit to start from, as when check names no deployed
 # commit the clone holds and the clone has no local main, is one UNLISTED <range> <reason> line in its place, after any
 # status line, never an empty list.
@@ -106,6 +107,48 @@ one_line() {
   printf '%s\n' "$1" | tr -d '\r' | awk 'NF { printf "%s%s", separator, $0; separator = " " }'
 }
 
+# Whether a regular file is at a path, following links, answered as ejryan89-skill-core's file_presence.refusal_reason
+# answers it, since `[ -f ]` alone is false alike for a folder, a link to nothing, and a path a stat cannot examine:
+# status 0 when a file is there; 1 when nothing is, a link to nothing or a path below a file included; and 2 when
+# something else is, printing "is not a file", or when the stat cannot tell, printing "cannot be examined: <reason>"
+# with the operating system's reason. A stat through links finds nothing in the last three cases, and changing into the
+# path fails there with the error the stat met, which Bash names last on its line, in English under the C locale.
+# Changing into it never blocks, as opening a pipe that appeared there since would, and finds a folder that did.
+file_presence() {
+  local error
+  [ -n "$1" ] || return 1
+  [ -f "$1" ] && return 0
+  if [ -e "$1" ]; then
+    echo "is not a file"
+    return 2
+  fi
+  if error=$(LC_ALL=C; CDPATH=; cd -P -- "$1" 2>&1); then
+    echo "is not a file"
+    return 2
+  fi
+  error=${error%$'\r'}
+  case "${error##*: }" in
+    "No such file or directory" | "Not a directory") return 1 ;;
+  esac
+  echo "cannot be examined: ${error##*: }"
+  return 2
+}
+
+# A file the update reads, required as file_presence.require requires one: nothing printed when it is there, and
+# otherwise a FAILED line and exit 1, naming it missing with the first reason when nothing is there, and naming what
+# file_presence found, after the second, when something else is there or the path cannot be examined, never as missing.
+require_file() {
+  local reason status
+  reason=$(file_presence "$1")
+  status=$?
+  case "$status" in
+    0) return 0 ;;
+    1) echo "FAILED $2" ;;
+    *) echo "FAILED $3 $reason" ;;
+  esac
+  exit 1
+}
+
 # Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
 # file, so the deploy below could not back up this skill's own directory. Run from a temporary copy.
 # Every temporary file is named from a template under TMPDIR, as macOS's mktemp, given no template, takes the user's
@@ -121,10 +164,9 @@ case "${OSTYPE:-}" in
     else
       PRIVATE_FOLDER="$(dirname -- "$0")/../../ejryan89-skill-core/scripts/private_folder.py"
     fi
-    if [ ! -f "$PRIVATE_FOLDER" ]; then
-      echo "FAILED no ejryan89-skill-core private_folder.py deployed beside update.sh: $PRIVATE_FOLDER"
-      exit 1
-    fi
+    require_file "$PRIVATE_FOLDER" \
+      "no ejryan89-skill-core private_folder.py deployed beside update.sh: $PRIVATE_FOLDER" \
+      "ejryan89-skill-core private_folder.py beside update.sh at $PRIVATE_FOLDER"
     if ! JUDGED=$("$PYTHON" -B "$PRIVATE_FOLDER" temporary-directory "$TEMPORARY" 2>&1); then
       REFUSAL=$(one_line "$JUDGED")
       echo "FAILED cannot make update.sh's temporary files: ${REFUSAL#FAILED }"
@@ -209,16 +251,11 @@ done
 # script put beside it, never from the clone, whose later commits may move or rename it before the update has deployed
 # them. deploy.py at the root of main's tree is the one file the update runs from the clone.
 RELEASE_TAGS="$SCRIPTS/../../ejryan89-skill-core/scripts/release_tags.py"
-if [ ! -f "$RELEASE_TAGS" ]; then
-  echo "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: $RELEASE_TAGS"
-  exit 1
-fi
+require_file "$RELEASE_TAGS" "no ejryan89-skill-core release_tags.py deployed beside update.sh: $RELEASE_TAGS" \
+  "ejryan89-skill-core release_tags.py beside update.sh at $RELEASE_TAGS"
 
 CLONE=$1
-if [ ! -f "$CLONE/deploy.py" ]; then
-  echo "FAILED no deploy.py in $CLONE"
-  exit 1
-fi
+require_file "$CLONE/deploy.py" "no deploy.py in $CLONE" "deploy.py in $CLONE"
 
 # A git command in the clone, read as ejryan89-skill-core's git_client.py reads git's exit status: status 0 when git
 # succeeded, GIT_OUT then its output; 1 when git said no, which a --quiet command, merge-base --is-ancestor, and

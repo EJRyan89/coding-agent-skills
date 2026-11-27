@@ -1395,6 +1395,13 @@ RESULT_DISCARD_ALLOWED = {
     "the record of one whose removal failed",
 }
 
+# The messages that name a command's exit status without its output, with the reason.
+REASON_ALLOWED = {
+    "run_suite": "a kill for memory names pytest's exit status with MEMORY_REASON, which words the MemoryError line "
+    "MEMORY_ERROR found in pytest's output, the reason that output gave; every other failure prints the start of the "
+    "output itself",
+}
+
 
 @contextlib.contextmanager
 def worktrees(root: Path, count: int, folder: Path, git: GitClient) -> Iterator[list[Path]]:
