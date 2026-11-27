@@ -611,7 +611,19 @@ The configuration's limits:
   compute, which leave their word one the text does not settle, as Bash's expansions do; `if` and `foreach`, whose
   conditions and bodies are read; a cast to a type `POWERSHELL_CASTS` names, such as `[int]` or `[string]`; and a
   script block handed to `ForEach-Object`, `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each
-  command inside an expression or a body is read as a command that runs within the statement holding it. A command
+  command inside an expression or a body is read as a command that runs within the statement holding it, a chain of
+  `&&` and `||` inside a subexpression, a list, parentheses, a string, or an assignment's value among them: a chain
+  is a statement's own only where it is the statement. A command nested in an argument's expression of one of the
+  statement's pipelines is read from where that pipeline starts, once the pipelines before it in the statement's
+  chain have run, as PowerShell evaluates a pipeline's arguments before any of its commands runs, so a subexpression
+  after `Set-Location <dir> &&` runs in `<dir>`. A command inside a script block handed to one of the pipeline's own
+  commands runs while the pipeline runs, after an element before it may have moved the location, so where any command
+  of the pipeline may move it, the block's commands are placed where the text does not settle, as in
+  `Set-Location <dir> | ForEach-Object { ... }`. Where a nested command may move the location, it, and every command
+  after it, its own pipeline's included, is placed where the text does not settle. A tree in which any command is in
+  neither a statement's own pipelines nor its nested commands, or a statement whose nested commands its pipelines'
+  arguments and script blocks do not list each once, is read as one holding a node type the guard does not read. A
+  command
   holding any other node type or form, a method call, a static member such as `[IO.File]::Delete`, a member the text
   does not name, a cast to another type, a script block handed to any other command, or an assignment to the
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
@@ -675,7 +687,8 @@ refuses:
 
 The refusal names what it could not settle or place, and asks for the git call to be written with literal words, or
 for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded hub in view, the same is
-allowed with a note on stderr. Each refusal ends with the step that works where the session is: from the hub's own
+allowed with a note on stderr. Each refusal, a file tool's as a command's, names what it refused, then ends with the
+step that works where the session is, which never stands in for the reason or its repair: from the hub's own
 checkout or git directory, to create a worktree and work there; from anywhere else, a worktree included, the step of
 what it refused. Where that is a git form the hub does not allow, a write into a guarded hub, or a git call that acts on
 one and is refused for its own words or for a part of the command the guard does not settle, the step is that the hub

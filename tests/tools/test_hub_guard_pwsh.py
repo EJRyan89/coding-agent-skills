@@ -61,7 +61,8 @@ NODE_SAMPLES = {
     "MergingRedirectionAst": "Get-Date 2>&1",
     "VariableExpressionAst": "Write-Output $x",
     "ParenExpressionAst": "Write-Output (1)",
-    "SubExpressionAst": "Write-Output $(1)",
+    # A chain inside an expression, whose commands run within the statement holding it, not as its own.
+    "SubExpressionAst": "Write-Output $(Get-Date && Get-Date)",
     "ArrayExpressionAst": "Write-Output @(1)",
     "ArrayLiteralAst": "Write-Output 1,2",
     "HashtableAst": "Write-Output @{a=1}",
@@ -130,6 +131,9 @@ UNSAMPLED = {
 }
 
 
+UNLISTED = "the reader's statements do not list every PowerShell command where it runs"
+
+
 def pwsh(script: str, stdin: str = "") -> str:
     found = platform_support.find_pwsh("")
     if found is None:
@@ -181,8 +185,8 @@ class NodeCatalogueTests(unittest.TestCase):
             {"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]},
         ]
         statements = [
-            {"pipelines": [[0]], "operators": [], "nested": []},
-            {"pipelines": [[1]], "operators": [], "nested": []},
+            {"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []},
+            {"pipelines": [[1]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []},
         ]
         for nodes, place in ((["ScriptBlockAst", "CommandAst"], hub), (["ScriptBlockAst", "SomeNewAst"], None)):
             with self.subTest(nodes=nodes):
@@ -190,6 +194,156 @@ class NodeCatalogueTests(unittest.TestCase):
                 self.assertEqual([], reading.unread)
                 [call] = reading.calls
                 self.assertEqual(place, call.place.start)
+
+    def test_a_command_no_statement_lists_has_its_git_call_read_from_a_location_left_unknown(self) -> None:
+        # The reader once left a chain inside an expression out of both a statement's pipelines and its nested
+        # commands, so its git call went unread; any command the statements leave out is read as in a tree the reader
+        # does not follow, from where the text does not settle once a command in the tree may move the location.
+        hub = Path.cwd()
+        commands = [
+            {"elements": [{"kind": "word", "text": "Set-Location"}, {"kind": "word", "text": str(hub)}]},
+            {"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]},
+        ]
+        # Listed as nested, the git call runs before the statement's own Set-Location, where the command started.
+        for statements, place, notes in (
+            (
+                [{"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]}],
+                Path("/elsewhere"),
+                [],
+            ),
+            ([{"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []}], None, [UNLISTED]),
+            ([{"pipelines": [], "operators": [], "stages": [], "blocks": [], "nested": []}], None, [UNLISTED]),
+            ([], None, [UNLISTED]),
+        ):
+            with self.subTest(statements=statements):
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, statements)
+                self.assertEqual(notes, reading.notes)
+                [call] = reading.calls
+                self.assertEqual(place, call.place.start)
+
+    def test_a_statement_the_reader_does_not_list_whole_has_the_tree_read_as_one_it_does_not_follow(self) -> None:
+        # Each pipeline's nested commands are read from where it starts, so a statement whose stages leave out, add,
+        # repeat, or misplace a nested command, or whose pipelines are not lists of commands, is not read statement by
+        # statement: the tree's git calls are read alone, as in a tree the reader does not follow, and none is left
+        # unread.
+        commands = [
+            {"elements": [{"kind": "word", "text": "Set-Location"}, {"kind": "word", "text": "x"}]},
+            {"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "status"}]},
+        ]
+        malformed: tuple[Any, ...] = (None, [], [[]], [[1], []], [[1, 1]], [[2]], [["1"]], [1], {"0": [1]})
+        statements: list[Any] = [
+            {
+                "pipelines": [[0]],
+                "operators": [],
+                "nested": [1],
+                **({} if stages is None else {"stages": stages}),
+                **({} if blocks is None else {"blocks": blocks}),
+            }
+            # None of malformed lists the nested command once beside the pipeline, so with the other part empty, as
+            # stages or as blocks, each leaves it unlisted, misplaced, or repeated.
+            for stages, blocks in (*((stages, [[]]) for stages in malformed), *(([[]], blocks) for blocks in malformed))
+        ]
+        # A nested command listed in both the stage and the blocks.
+        statements.append({"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[1]], "nested": [1]})
+        statements += [
+            {"pipelines": [], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [0, 1]},
+            # A statement with no pipelines of its own, whose stages are empty but whose blocks are not.
+            {"pipelines": [], "operators": [], "stages": [], "blocks": [[1]], "nested": [0, 1]},
+            {"pipelines": [0], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [["0"]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [[0]], "operators": None, "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": None},
+            "statement",
+        ]
+        for statement in statements:
+            with self.subTest(statement=statement):
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [statement])
+                self.assertEqual([UNLISTED], reading.notes)
+                [call] = reading.calls
+                self.assertIsNone(call.place.start)
+        # Listed whole: in the stage, the git call runs before the pipeline's Set-Location, where the command started;
+        # in the blocks, while the pipeline runs, after the Set-Location may have moved the location.
+        for stages, blocks, place in (([[1]], [[]], Path("/elsewhere")), ([[]], [[1]], None)):
+            with self.subTest(stages=stages, blocks=blocks):
+                listed: dict[str, Any] = {
+                    "pipelines": [[0]],
+                    "operators": [],
+                    "stages": stages,
+                    "blocks": blocks,
+                    "nested": [1],
+                }
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [listed])
+                self.assertEqual([], reading.notes)
+                [call] = reading.calls
+                self.assertEqual(place, call.place.start)
+
+    def test_read_statement_reads_no_statement_it_could_not_list_whole(self) -> None:
+        # read_statement checks each statement's shape again, though reaches_every_command has refused every shape
+        # it refuses: a statement it could not list whole is noted and leaves the location unknown, and none of its
+        # commands is read, whichever part of it is not the list it reads.
+        commands = [{"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]}]
+        whole: dict[str, Any] = {"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []}
+        reading = hub_guard.Reading({}, "x")
+        self.assertEqual(
+            Path("/elsewhere"),
+            hub_guard.PowerShellReader(reading, commands)
+            .read_statement(whole, hub_guard.Directory(Path("/elsewhere")))
+            .cwd,
+        )
+        self.assertEqual([], reading.notes)
+        malformed: list[Any] = [{**whole, key: None} for key in whole]
+        malformed.append({**whole, "stages": [[5]]})
+        malformed.append("statement")
+        for statement in malformed:
+            with self.subTest(statement=statement):
+                reading = hub_guard.Reading({}, "x")
+                reader = hub_guard.PowerShellReader(reading, commands)
+                place = reader.read_statement(statement, hub_guard.Directory(Path("/elsewhere")))
+                self.assertIs(hub_guard.UNKNOWN, place)
+                self.assertEqual(["a PowerShell statement the reader could not list"], reading.notes)
+                self.assertEqual([], reading.calls)
+
+    def test_every_command_of_every_sample_is_one_a_statement_lists(self) -> None:
+        # Each command pwsh's reader finds is in a statement's pipelines or its nested commands, so none goes unread,
+        # for every node sample and for a chain inside each expression form and body.
+        chain = "Get-Date && Get-Item x || Get-Date"
+        forms = (
+            "Write-Output $({chain})",
+            "Write-Output @({chain})",
+            "Write-Output ({chain})",
+            'Write-Output "a $({chain}) b"',
+            "$({chain})",
+            "$x = {chain}",
+            "Write-Output ($x = {chain})",
+            "Write-Output @{{ a = $({chain}) }}",
+            "Write-Output $({chain}) | Out-String && Write-Output $({chain})",
+            "if ({chain}) {{ {chain} }}",
+            "ForEach-Object -InputObject 1 {{ {chain} }}",
+            "Get-Date | ForEach-Object -Process {{ }} -End {{ {chain} }} $({chain})",
+            "Get-Date | Select-Object @{{ e = {{ {chain} }} }} | Where-Object {{ $({chain}) }}",
+        )
+        samples = [
+            *(sample for sample in NODE_SAMPLES.values() if sample),
+            *(form.format(chain=chain) for form in forms),
+        ]
+        listed = 0
+        for sample in samples:
+            with self.subTest(sample=sample):
+                reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, sample)
+                with process_limits_held():
+                    events = hub_guard.powershell_events(sample, reading)
+                if events is None or events.get("statements") is None:
+                    continue
+                listed += 1
+                reader = hub_guard.PowerShellReader(reading, events["commands"])
+                self.assertTrue(reader.reaches_every_command(events["statements"]), events)
+                for statement in events["statements"]:
+                    staged = reader.stages_listed(
+                        statement["pipelines"], statement.get("stages"), statement.get("blocks"), statement["nested"]
+                    )
+                    self.assertTrue(staged, statement)
+        # Every chain form above is one the reader lists statement by statement.
+        self.assertGreaterEqual(listed, len(forms))
 
     def read(self, nodes: list[str], commands: list[Any], statements: list[Any]) -> hub_guard.Reading:
         """The reader's reading of a tree of these node types, commands, and statements."""
