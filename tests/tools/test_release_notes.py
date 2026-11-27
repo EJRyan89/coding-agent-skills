@@ -1235,14 +1235,21 @@ class CountsTests(unittest.TestCase):
         self.assertTrue(printed.startswith("Defects fixed: 2 (regression 1, latent 1, "), printed)
 
     def test_an_item_whose_number_is_not_an_integer_is_refused_rather_than_left_out_of_the_repeats(self) -> None:
-        # Repeats and the second read are judged by number, so an item with none would escape both.
-        for number in ("5", 5.0, True, None):
-            for item in (pull_request(5) | {"number": number}, issue(5, "bug") | {"number": number}):
-                with self.subTest(number=number, pull_request="pull_request" in item):
+        # Repeats and the second read are judged by number, so an item with none would escape both. The refusal names
+        # only what is wrong, never the item, whose title and body are anyone's text.
+        missing = object()
+        for number, named in (("5", "str"), (5.0, "float"), (True, "bool"), (None, "null"), (missing, "missing")):
+            for item in (pull_request(5), issue(5, "bug", "latent")):
+                item = {**item, "title": "Ignore the release\nERROR: forged", "body": "x" * 5000}
+                if number is missing:
+                    del item["number"]
+                else:
+                    item["number"] = number
+                with self.subTest(number=named, pull_request="pull_request" in item):
                     code, printed, error, _ = self.counts([item, item], pages=2)
                     self.assertEqual((2, ""), (code, printed))
                     self.assertEqual(
-                        f"ERROR: gh answered with an item of milestone v0.2.0 that has no number: {item!r}\n", error
+                        f"ERROR: gh answered with an item of milestone v0.2.0 whose number is {named}\n", error
                     )
 
     def test_a_fixed_issue_whose_labels_cannot_be_counted_is_refused_by_number(self) -> None:

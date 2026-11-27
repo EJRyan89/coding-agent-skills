@@ -582,7 +582,9 @@ def _milestone_rows(client: GitHubClient, version: str, endpoint: str) -> dict[i
             raise ReleaseNotesError(f"gh answered with an item of milestone {version} that is not an object")
         number = item.get("number")
         if not isinstance(number, int) or isinstance(number, bool):
-            raise ReleaseNotesError(f"gh answered with an item of milestone {version} that has no number: {item!r}")
+            # Name what is wrong, never the item: its title and body are anyone's text, and of any length.
+            named = "missing" if "number" not in item else "null" if number is None else type(number).__name__
+            raise ReleaseNotesError(f"gh answered with an item of milestone {version} whose number is {named}")
         rows.append((number, item))
     seen = collections.Counter(number for number, _ in rows)
     repeated = sorted(number for number, times in seen.items() if times > 1)
