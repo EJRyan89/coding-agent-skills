@@ -19,13 +19,18 @@ It fetches the base, then runs the validation runner, `tests/run_validation.py`,
 
 Both run whatever the other's result, so one run names every failure. Each run writes to this process's standard output
 as it goes, between its RUN line and the line of its result, and starts in a process tree of its own, which ends
-whatever it started once it is done. The runner selects what runs and decides when a change is wide; this script reads
-nothing of its selection.
+whatever it started once it is done. Each is given GITHUB_BASE_REF and its own variables, which its RUN line names,
+beyond this process's environment as `bounded_process.run_bounded` hands it to every command, with prompts off and git's
+repository-selecting variables removed; a rerun in a shell that sets one of those for itself gets it. The runner
+selects what runs and decides when a change is wide; this script reads nothing of its selection.
 
 Every line of its own is one fact:
 
     BASE <remote>/<branch> <sha>    the base's tip after the fetch, which the changed files are read from
-    RUN <name> <command>            a run starting, and its command from the top of the repository, as Bash reads it
+    RUN <name> <command>            a run starting, and its command: every variable the run is given beyond this
+                                    process's environment, then the interpreter and its arguments, each word quoted
+                                    by `shlex.quote`, so the line run in Bash from the top of the repository starts
+                                    the run again with the same words and variables
     SKIPPED <name> <why>            a run not owed: no changed file is one a type check reads
     PASSED <name>                   the run passed
     NOT_PASSED <name> <status>      the run failed with that exit status, or `timeout` when it ran past RUN_SECONDS
@@ -54,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 from bounded_process import non_interactive_environment, run_bounded
 from console import run_main
-from flat_text import flat_text, single_line
+from flat_text import LINE_UNSAFE, flat_text, single_line
 from git_client import GitClient
 from job_tree import process_tree
 from pull_request import (
@@ -89,6 +94,9 @@ RUNNER_REMOTE = "origin"
 BASE_VARIABLE = "GITHUB_BASE_REF"
 # The platform whose type checks only Windows' legs run, as mypy's --platform and sys.platform spell it.
 WINDOWS = "win32"
+# What PLATFORM_VARIABLE holds for a run that type-checks as on the platform it runs on: empty, which the runner reads
+# as unset, so neither the run nor its printed command rerun in a shell that sets the variable checks another platform.
+NATIVE = ""
 # Seconds a run may take before it is ended: longer than a whole local run of the runner takes.
 RUN_SECONDS = 4 * 60 * 60.0
 
@@ -121,7 +129,7 @@ def pre_push_check(title_file: Path | None, body_file: Path | None) -> Check:
         *(["--pr-title", str(title_file.absolute())] if title_file else []),
         *(["--pr-body", str(body_file.absolute())] if body_file else []),
     ]
-    return Check("pre-push", ("--pre-push", *files))
+    return Check("pre-push", ("--pre-push", *files), ((PLATFORM_VARIABLE, NATIVE),))
 
 
 def windows_check(top: Path, changed: Sequence[str]) -> Check | None:
@@ -137,22 +145,37 @@ def windows_check(top: Path, changed: Sequence[str]) -> Check | None:
         jobs = file_type_check_jobs(top, changed, strict)
         if not jobs:
             return None
-        # Refuses a job name no single line or single quotes can hold, as the printed command would.
+        # Refuses a job name `pull_request.py type-checks` could not print, so the two name the same jobs.
         run_command(jobs)
     selection = tuple(argument for job in jobs for argument in ("-k", job))
     return Check("windows-types", selection, ((PLATFORM_VARIABLE, WINDOWS),))
 
 
-def shown(check: Check) -> str:
-    """The run's command as Bash reads it from the top of the repository, its variables before it."""
-    variables = [f"{name}={shlex.quote(value)}" for name, value in check.variables]
-    arguments = [argument if argument.startswith("-") else shell_word(argument) for argument in check.arguments]
-    return " ".join([*variables, VALIDATION_COMMAND, *arguments])
+def run_variables(check: Check, branch: str) -> tuple[tuple[str, str], ...]:
+    """Every variable the run is given beyond this process's environment: the base branch the runner compares with,
+    then the check's own."""
+    return ((BASE_VARIABLE, branch), *check.variables)
 
 
-def shell_word(argument: str) -> str:
-    """A job name in single quotes, as `pull_request.py type-checks` prints one, and a path in double quotes."""
-    return f"'{argument}'" if argument.startswith(JOB_PREFIX) else f'"{argument}"'
+def run_words(check: Check) -> list[str]:
+    """The run's command: this interpreter, the runner, and the check's arguments."""
+    return [sys.executable, *VALIDATION_COMMAND.split()[1:], *check.arguments]
+
+
+def shown(check: Check, branch: str) -> str:
+    """The run's command as Bash reads it from the top of the repository: each of its variables as an assignment, then
+    its words, each quoted by `shlex.quote`, so Bash expands nothing in a path. A value or word holding a line break or
+    a control character, which the RUN line could not carry, is a PullRequestError, before any run starts."""
+    variables = run_variables(check, branch)
+    words = run_words(check)
+    broken = [text for text in (*(value for _, value in variables), *words) if LINE_UNSAFE.search(text)]
+    if broken:
+        raise PullRequestError(
+            f"the {check.name} run's command holds a line break or a control character, which its RUN line could not "
+            f"carry: {flat_text(broken[0])}"
+        )
+    assignments = [f"{name}={shlex.quote(value)}" for name, value in variables]
+    return " ".join([*assignments, *(shlex.quote(word) for word in words)])
 
 
 def output_stream() -> IO[bytes]:
@@ -160,15 +183,16 @@ def output_stream() -> IO[bytes]:
     return sys.stdout.buffer
 
 
-def run_check(check: Check, top: Path, branch: str) -> str:
-    """Run `check` from `top`, its output on this process's, and return its result line."""
-    environment = {name: value for name, value in non_interactive_environment().items() if name != PLATFORM_VARIABLE}
-    environment.update({BASE_VARIABLE: branch, **dict(check.variables)})
-    print(single_line(f"RUN {check.name} {shown(check)}"), flush=True)
+def run_check(check: Check, top: Path, branch: str, command: str) -> str:
+    """Run `check` from `top`, its output on this process's, after its RUN line, which prints `command`, and return its
+    result line."""
+    environment = non_interactive_environment()
+    environment.update(run_variables(check, branch))
+    print(single_line(f"RUN {check.name} {command}"), flush=True)
     stream = output_stream()
     try:
         finished = run_bounded(
-            [sys.executable, *VALIDATION_COMMAND.split()[1:], *check.arguments],
+            run_words(check),
             RUN_SECONDS,
             stdout=stream,
             stderr=stream,
@@ -194,9 +218,11 @@ def local_checks(git: GitClient, repository: Path, options: argparse.Namespace) 
     changed = changed_files(git, top, commit)
     windows = windows_check(top, changed)
     checks = [pre_push_check(options.title_file, options.body_file), *([windows] if windows else [])]
+    # Every command is printed as it runs, so one no RUN line can carry is refused before the first run.
+    commands = [shown(check, base.branch) for check in checks]
     results = []
-    for check in checks:
-        results.append(run_check(check, top, base.branch))
+    for check, command in zip(checks, commands, strict=True):
+        results.append(run_check(check, top, base.branch, command))
         print(single_line(results[-1]), flush=True)
         if check.name == "pre-push" and windows is None:
             print("SKIPPED windows-types no changed file is one a type check reads", flush=True)
