@@ -137,6 +137,16 @@ class InspectionTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(expected, inspect_skill(SKILL, f"{line}\n", COMMIT, files).references)
 
+    def test_a_bare_path_is_read_whole_after_a_percent_or_a_backslash(self) -> None:
+        # The bare-path pattern started a path after `%` or `\\`, so it named a file the prose never named.
+        files = {"20x/guide.md", "docs%20x/guide.md", "b/c.md", "a\\b/c.md"}
+        for line, expected in [
+            ("Read docs%20x/guide.md now.", ["docs%20x/guide.md"]),
+            ("Read a\\b/c.md now.", ["a\\b/c.md"]),
+        ]:
+            with self.subTest(line=line):
+                self.assertEqual(expected, inspect_skill(SKILL, f"{line}\n", COMMIT, files).references)
+
     def test_references_come_from_code_spans_links_and_bare_paths_that_exist(self) -> None:
         result = inspect("Read [the rules](../../docs/rules.md#style), then src/A.cs and `missing/file.md`.\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)

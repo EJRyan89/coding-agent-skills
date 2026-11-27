@@ -44,6 +44,7 @@ from git_client import Runner, subprocess_runner
 from link_destinations import Destination, link_destinations
 from link_targets import Cover, link_spans, link_target
 from markdown_sections import code_spans
+from prose_paths import PROSE_PATH
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -73,7 +74,8 @@ PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
 # markdown_sections' code_spans pairs whole backtick runs, names a path when its whole text has no space or backtick;
 # a bare path is read anywhere outside such a span, inside a span that holds a space included.
 CODE_PATH = re.compile(r"[^`\s]+")
-BARE_PATH = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.\w+")
+# A bare path is ejryan89-skill-core's prose_paths PROSE_PATH, read whole, so a path never starts after a `%` or `\`.
+BARE_PATH = re.compile(PROSE_PATH)
 # One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
 TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")

@@ -401,7 +401,11 @@ class InventoryTests(TemporaryTestCase):
         write(self.root / "toc.md", "# Toc\n\n### Table of contents\n- One\n\n## One\n" + "line\n" * 100)
         write(self.root / "late.md", "# Late\n\n## One\n" + "line\n" * 100 + "## Contents\n")
         write(self.root / "fenced.md", "```markdown\n## Contents\n```\n" + "line\n" * 100)
-        self.assertEqual(["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 104 late.md"], self.structure_flags())
+        # A heading a list item holds is the item's, so it is no table of contents.
+        write(self.root / "held.md", "- Notes\n  ## Contents\n" + "line\n" * 100)
+        self.assertEqual(
+            ["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 102 held.md", "DOC_NO_TOC 104 late.md"], self.structure_flags()
+        )
 
     def test_a_contents_heading_is_one_markdown_reads_as_a_heading(self) -> None:
         # A no-break space after the marks is text to CommonMark, so that line is prose and the doc has no contents;
@@ -702,6 +706,9 @@ class ToolsTests(TemporaryTestCase):
         )
         self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(prompt, '["Read", "Agent"]'))
         quoted = 'Give the subagent this prompt: "Read the plan and ask the user." Then report.\n'
+        # A prompt in a double-backtick code span is read whole, by its backtick runs, as every code span is.
+        doubled = "Start one subagent with the Agent tool, with this prompt: ``Read `notes.md` and follow it.``\n"
+        self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(doubled, '["Read", "Agent"]'))
         self.assertEqual(
             ["UNUSED_ALLOWED Read", "UNUSED_ALLOWED AskUserQuestion"],
             self.implied(quoted, '["Read", "AskUserQuestion"]'),

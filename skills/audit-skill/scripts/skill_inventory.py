@@ -197,7 +197,7 @@ cue and the grant checks read on its prompted lines and the lines that continue 
 prompt, without the prompt, the rest being output. A prompt takes a form Pygments' console lexer reads, `$`, `%`, or
 U+276F, or one of those or `#` after a user and host, as `user@host:~$`, a bracketed one, as `[root@host dir]#`, or
 `sh-5.2`, any of them after a virtual environment, as `(venv) `, and then a space; a bare `# ` starts a comment, and
-session_commands names where the two readings differ. A console fence
+markdown_sections' session_commands names where the two readings differ. A console fence
 with no prompt line is read whole, and another shell's fence on every line, after any `$ ` or `> ` prompt. A fence of
 any other language holds none. A Bash script given to scan is read whole the
 same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
@@ -284,21 +284,26 @@ from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_destinations import link_destinations
 from markdown_sections import (
-    ATX_HEADING,
+    BASH_PROMPT,
     FENCE_LANGUAGES,
+    LINE_PROMPT,
     LIST_MARKER,
     POWERSHELL_FENCES,
     SHELL_FENCES,
     Fence,
     code_spans,
+    continues,
+    document_headings,
     find_fences,
+    prompted_commands,
     prose_code_spans,
+    session_commands,
 )
 from module_assignments import assigned_names, sole_assignment
 from path_containment import resolved_path, within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
-from prose_paths import PATH_CHARACTER, PATH_START
+from prose_paths import PATH_CHARACTER, RELATIVE_PATH
 from python_names import import_aliases, qualified_name, type_parameter_names
 from suite_names import is_suite_name
 from text_lines import LINE_FEED, line_index, line_starts, text_lines
@@ -393,9 +398,12 @@ SUBORDINATOR = re.compile(
 SUBORDINATE_END = re.compile(r"(?i),(?!\s*(?:or|and|nor)\b)")
 GOVERNED_DIRECTLY = re.compile(r"(?i)\s*(?:to\s+)?")
 GOVERNED_LIST_ITEM = re.compile(r"(?i)(?:,\s*(?:(?:or|and|nor)\s+)?|\s(?:or|and|nor)\s+)$")
-# The prompt a skill hands a subagent, quoted after "prompt ...:" on a line that names a subagent. Its verbs are the
-# subagent's actions, not the skill's, so they neither use nor imply a tool.
-SUBAGENT_PROMPT = re.compile(r"(?i)\bprompts?\b[^`\"\n]*?:\s*(`[^`\n]+`|\"[^\"\n]+\")")
+# What comes before the prompt a skill hands a subagent, on a line that names a subagent: "prompt ...:" and its blanks.
+# The prompt is the code span, as markdown_sections' code_spans pairs whole backtick runs, or the double-quoted string,
+# that starts right after it. Its verbs are the subagent's actions, not the skill's, so they neither use nor imply a
+# tool.
+SUBAGENT_PROMPT_LEAD = re.compile(r"(?i)\bprompts?\b[^`\"\n]*?:\s*")
+QUOTED_PROMPT = re.compile(r"\"[^\"\n]+\"")
 # Wording that marks a skill as internal; such a skill should not sit in the model's skill list.
 INTERNAL_WORDING = re.compile(r"(?i)\binternal\b|not intended for direct invocation|do not invoke")
 # The end of a description's first sentence: a full stop, question, or exclamation mark before the next sentence's
@@ -446,29 +454,9 @@ FIRST_WORD_FENCES = (
 # console fence's commands, and fish match a function, an alias, or a builtin as written, and find a program in any
 # case only where the file system ignores case; scan reads their first word as written, as it reads a Bash fence.
 ANY_CASE_FENCES = FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
-# The FIRST_WORD_FENCES labels of a shell session, a command after each prompt and its output on the lines between:
-# console's. The other labels name a script, every line of which is a command.
-SESSION_FENCES = frozenset({"console"})
-PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
-# A session's prompt, which starts a command line, in the forms Pygments' console lexer reads, then a space: after the
-# blanks and any virtual environment, as `(venv) `, either `$`, `%`, or U+276F alone, or one of those or `#` after a
-# user and host, as `user@host:~$` or `MacBook:~ user$`, a bracketed one, as `[user@host dir]#`, or `sh-5.2`. A
-# bare `# ` starts a comment, as it does in a fence of bare commands, and output, such as a configuration file's,
-# often starts with one.
-# A user and host and the word after them hold no prompt character, so `user@host:~$ ls # list` runs `ls # list`.
-PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:][^\s$#%\u276f]+(?:[ \t]+[^\s$#%\u276f]+)?|sh-[\d.]+"
-SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST})[ \t]*[$#%\u276f]|[$%\u276f]) ")
-# The prompt that makes a BASH_FENCES fence a session, as SESSION_PROMPT makes a console fence one: `$` alone, then a
-# space, which starts no Bash command. The other forms SESSION_PROMPT reads are not taken there, since a Bash line
-# such as `[ -d build ] # check` starts like a bracketed one.
-BASH_PROMPT = re.compile(r"\A[ \t]*\$ ")
 # Where a command line read by its first word stops naming the command's own words: a redirection, a pipe, or the
 # next command, in a POSIX shell's, fish's, cmd's, and PowerShell's own syntax.
 COMMAND_END = re.compile(r"[>|;&]")
-# The prompt Bash shows on each line that continues a command.
-CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
-# A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
-CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
 # The labels of a fence whose shell joins a line a backslash continues to the next: the POSIX shells', console's, and
 # fish's. PowerShell continues a line with a backtick and cmd with a caret, which the grant checks do not join.
 BACKSLASH_FENCES = FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"]
@@ -778,13 +766,13 @@ SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # `~`, or `&`, so `%` is read as written, as prose is not percent-encoded, and `\` is kept for `markdown_links` to read
 # as the platform reads a path: a separator on Windows, part of the name elsewhere. It ends at `.md` that is followed
 # by none of those characters other than `.`, and by no `.` followed by one. `markdown_links` resolves where it leads.
-# PATH_START and PATH_CHARACTER are ejryan89-skill-core's prose_paths classes, which review-insights reads a path in a
-# code span with too.
+# RELATIVE_PATH and PATH_CHARACTER are ejryan89-skill-core's prose_paths pieces, which review-insights reads a path in a
+# code span with too, and which the code-review core's bare path, prose_paths' PROSE_PATH, is built from.
 PROSE_REFERENCE = re.compile(
     rf"(?:(?<![^\s(\[<])|(?<=(?<!{PATH_CHARACTER})[`'\"])"
-    rf"|(?<=(?<!{PATH_CHARACTER})\*)(?=(?:\$\{{CLAUDE_SKILL_DIR\}}/)?{PATH_START}{PATH_CHARACTER}*\.md\*))"
+    rf"|(?<=(?<!{PATH_CHARACTER})\*)(?=(?:\$\{{CLAUDE_SKILL_DIR\}}/)?{RELATIVE_PATH}\.md\*))"
     r"(\$\{CLAUDE_SKILL_DIR\}/)?"
-    rf"((?:[A-Za-z]:[/\\]|[/\\])?{PATH_START}{PATH_CHARACTER}*\.md)(?!\.?[\w%+@~&/\\-])"
+    rf"((?:[A-Za-z]:[/\\]|[/\\])?{RELATIVE_PATH}\.md)(?!\.?[\w%+@~&/\\-])"
 )
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
@@ -1237,12 +1225,6 @@ def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
     return commands
 
 
-def continues(command: str) -> bool:
-    """Whether Bash runs a command's line on into the next: it ends in a backslash no other escapes, as
-    CONTINUED_LINE reads one, and is no comment's line, whose backslash continues nothing."""
-    return CONTINUED_LINE.search(command) is not None and not command.lstrip().startswith("#")
-
-
 def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
     r"""Each command of a fence's lines, by its first line's index: a line that continues, as continues reads it,
     runs on into the next, the backslash and the line break dropped as Bash drops them, the next line's blanks
@@ -1261,57 +1243,6 @@ def continued_commands(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
             continued = None
             commands.append((index, text))
     return commands if continued is None else [*commands, continued]
-
-
-def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | None:
-    r"""The body lines a SESSION_FENCES fence runs, by index, each as CommonMark gives it to the fence's content
-    without its prompt, or None for a fence of another label or one with no line SESSION_PROMPT starts, which is no
-    session: no prompt tells a command from output there, and a fence labelled so may hold commands alone, which a
-    model runs. A session runs the lines a prompt starts and the lines that continue them: a line after one that
-    continues, as continues reads it, with or without the `> ` prompt Bash shows there, as Pygments' console lexer
-    reads it, though Pygments also continues a comment's line, as `$ # note \`, which Bash does not; and a `> ` line
-    right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
-    Any other line is output.
-
-    SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
-    root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
-    output as commands. Pygments also takes a prompt with no space after it, as in `$HOME/bin/tool`, a word starting
-    with `sh` before one, as in `shellcheck # note`, and a prompt character inside a user and host or the word after
-    them, as in `user@host:~$ ls # list`, whose command it reads as `list`; here the first two are not prompts and the
-    third's command is `ls # list`. Pygments reads a prompt after two virtual environments, as `(venv) (base) $ `,
-    after a bracket and a further word, as `[user@host dir] (main)$ `, or followed by a tab, which here is not one; and
-    here a user and host may start with any word character, `.`, or `-`, so `-x:y$ ` is a prompt, where Pygments takes
-    a word character first. A command line that starts like a bracketed prompt, as `[ -d build ] # check`, makes a
-    fence of bare commands a session and its other lines output. A line of output that starts like a prompt, such as
-    curl's `  % Total` progress header, reads as a command. So does a `> ` line of output right after a command line,
-    as diff prints one, a line after a backslash that ends a quoted string's line or a comment, as in
-    `$ echo a # note \`, and a here-document's body, which Bash also prompts for with `> `; only running the session
-    would settle them."""
-    if fence.language.casefold() not in SESSION_FENCES:
-        return None
-    return prompted_commands(fence, lines, SESSION_PROMPT)
-
-
-def prompted_commands(fence: Fence, lines: list[str], prompt_pattern: re.Pattern[str]) -> list[tuple[int, str]] | None:
-    """The body lines a fence runs as a session, by index, each as CommonMark gives it to the fence's content without
-    its prompt, where `prompt_pattern` reads a command line's prompt, as session_commands reads them, or None for a
-    fence no line of which that prompt starts."""
-    contents = [(index, fence.content(lines[index])) for index in fence.body()]
-    if not any(prompt_pattern.match(text) for _, text in contents):
-        return None
-    commands: list[tuple[int, str]] = []
-    prompted = continued = False
-    for index, text in contents:
-        if (prompt := prompt_pattern.match(text)) is not None:
-            command = text[prompt.end() :]
-        elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
-            command = CONTINUATION_PROMPT.sub("", text, count=1)
-        else:
-            prompted = continued = False
-            continue
-        prompted, continued = True, continues(command)
-        commands.append((index, command))
-    return commands
 
 
 def runs_a_script(words: list[str]) -> bool:
@@ -1970,10 +1901,9 @@ def structure_flags(kind: str, text: str, relative: str) -> list[str]:
         return [f"BODY_OVER_500_LINES {body}"] if body > BODY_LINE_LIMIT else []
     if kind != "doc" or len(lines) <= DOC_TOC_LINE_LIMIT:
         return []
-    languages, _ = parse_fences(lines)
-    for line, language in zip(lines, languages, strict=True):
-        heading = ATX_HEADING.match(line) if language is None else None
-        if heading and len(heading.group("marks")) >= 2:
+    # The first heading below the title at the document's top level, as document_headings reads it.
+    for _, heading in document_headings(lines):
+        if len(heading.group("marks")) >= 2:
             if CONTENTS_HEADING.fullmatch(heading.group("text")):
                 return []
             break
@@ -2262,8 +2192,12 @@ def blanked(text: str, start: int, end: int) -> str:
 def without_subagent_prompts(line: str) -> str:
     """The line with any prompt it hands a subagent blanked, keeping every other column in place."""
     if DELEGATION.search(line):
-        for match in SUBAGENT_PROMPT.finditer(line):
-            line = blanked(line, match.start(1), match.end(1))
+        spans = {span.start: span.end for span in code_spans(line)}
+        for lead in SUBAGENT_PROMPT_LEAD.finditer(line):
+            if (end := spans.get(lead.end())) is None and (quoted := QUOTED_PROMPT.match(line, lead.end())) is not None:
+                end = quoted.end()
+            if end is not None:
+                line = blanked(line, lead.end(), end)
     return line
 
 
@@ -2653,7 +2587,7 @@ def first_word_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]]
     blanks and any `$ ` or `> ` prompt."""
     commands = session_commands(fence, lines)
     if commands is None:
-        commands = [(index, PROMPT.sub("", fence.content(lines[index]), count=1)) for index in fence.body()]
+        commands = [(index, LINE_PROMPT.sub("", fence.content(lines[index]), count=1)) for index in fence.body()]
     return commands
 
 

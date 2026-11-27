@@ -619,6 +619,35 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())
 
+    def test_a_console_session_s_commands_are_checked_as_bash_and_its_output_is_not(self) -> None:
+        # The output's apostrophe opens a quote Bash would never close, so only a reading of the session's commands,
+        # as audit-skill reads them, deploys it; a command a `> ` continuation prompt carries on is joined to it.
+        session = "```console\n$ echo hi\nit's done\n$ printf '%s\\n' \\\n> first\nfirst\n```"
+        self.make_source_json()
+        self.make_skill("alpha", f"Session fixture\n\n{session}")
+        self.make_config()
+        checked: list[str] = []
+        real = platform_support.run_tool
+
+        def record(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+            checked.extend(
+                Path(argument).read_text(encoding="utf-8")
+                for argument in arguments[1:]
+                if argument.endswith(".sh") and "blocks" in argument
+            )
+            return real(arguments, environment)
+
+        with mock.patch("deployer.platform_support.run_tool", side_effect=record):
+            self.deploy_ok("--all")
+        self.assertTrue(checked)
+        self.assertTrue(all(text.endswith("\necho hi\nprintf '%s\\n' \\\nfirst\n") for text in checked), checked)
+
+    def test_a_console_session_s_command_bash_refuses_blocks_deployment(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Session fixture\n\n```console\n$ if then\nbash: syntax error\n```")
+        self.make_config()
+        self.deploy_fails("--all", pattern="Rendered Bash block syntax validation failed: alpha/SKILL.md block 1")
+
     def test_unclosed_bash_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Fence fixture\n\n```bash\necho open")

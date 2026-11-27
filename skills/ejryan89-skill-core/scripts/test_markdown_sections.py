@@ -36,6 +36,8 @@ from markdown_sections import (
     list_item,
     markdown_section,
     outside_fences,
+    session_commands,
+    top_level_sections,
     prose_code_spans,
     starts_block,
     without_code_spans,
@@ -1376,3 +1378,37 @@ def test_a_block_s_lines_are_kept_as_written_and_its_text_may_leave_a_list_item_
     assert (item.text(), item.text(marker=False)) == ("-   an item wraps", "an item wraps")
     assert (fenced.start, fenced.lines) == (4, ("quoted",))
     assert code.lines == ("    one", "", "    two")
+
+
+def test_top_level_sections_run_from_each_heading_of_a_level_to_the_next_of_it_or_above() -> None:
+    # A heading a list item, a quote, or a fence holds is its container's text, and a deeper one is the section's.
+    document = [
+        "# Title",  # 0
+        "## One",  # 1
+        "- Notes",  # 2
+        "  ## Held by the item",  # 3
+        "> ## Quoted",  # 4
+        "```",  # 5
+        "## Fenced",  # 6
+        "```",  # 7
+        "### Deeper",  # 8
+        "## Two ##",  # 9
+        "text",  # 10
+        "# Above",  # 11
+        "## Three",  # 12
+        "last",  # 13
+    ]
+    sections = [(index, heading.group("text"), end) for index, heading, end in top_level_sections(document, 2)]
+    assert sections == [(1, "One", 9), (9, "Two", 11), (12, "Three", 14)]
+    assert [(index, end) for index, _, end in top_level_sections(document, 1)] == [(0, 11), (11, 14)]
+
+
+def test_session_commands_reads_a_console_fence_s_prompted_commands_without_prompts_or_output() -> None:
+    lines = ["```console", "$ echo hi", "it's done", "(venv) user@host:~$ git status \\", "> --short", "```"]
+    (fence,) = find_fences(lines)
+    assert session_commands(fence, lines) == [(1, "echo hi"), (3, "git status \\"), (4, "--short")]
+    # A console fence with no prompt is no session, and neither is a fence of another label.
+    unprompted = ["```console", "echo hi", "```"]
+    assert session_commands(find_fences(unprompted)[0], unprompted) is None
+    bash = ["```bash", "$ echo hi", "```"]
+    assert session_commands(find_fences(bash)[0], bash) is None

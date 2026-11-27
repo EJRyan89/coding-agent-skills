@@ -1091,6 +1091,17 @@ class InstructionLayeringTests(unittest.TestCase):
         )
         self.assertEqual("", audit._extract_sections(claude_content, ["Not a heading", "Nor this"]))
 
+    def test_a_heading_a_container_holds_or_a_comment_hides_does_not_split_a_section(self) -> None:
+        claude_content = (
+            "# CLAUDE.md\n\n## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\n"
+            "End of the overview.\n\n## Formatting Rules\n\nUse tabs.\n"
+        )
+        self.assertEqual(
+            "## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\nEnd of the overview.",
+            audit._extract_sections(claude_content, ["Overview"]),
+        )
+        self.assertEqual("", audit._extract_sections(claude_content, ["Not a section", "Nor this", "Hidden"]))
+
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"
         manifest = json.loads(audit.read_text(self.root, manifest_path))
@@ -1974,6 +1985,10 @@ class CopilotConfigurationTests(unittest.TestCase):
             ("```\n## Maintaining AI Agent Config\n```\n", False),
             ("### Maintaining AI Agent Config\n", False),
             ("    ## Maintaining AI Agent Config\n", False),
+            # A heading a list item or a quote holds is its container's, and one in a comment GitHub hides is none.
+            ("- Notes\n  ## Maintaining AI Agent Config\n", False),
+            ("> ## Maintaining AI Agent Config\n", False),
+            ("<!--\n## Maintaining AI Agent Config\n-->\n", False),
         ):
             with self.subTest(text=text):
                 claude_md.write_bytes(text.encode("utf-8"))

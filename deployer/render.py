@@ -17,7 +17,7 @@ import json_writer
 import private_folder
 from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
-from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
+from markdown_sections import FENCE_LANGUAGES, Fence, find_fences, session_commands
 from suite_names import is_suite_name
 from text_lines import lines_and_breaks, program_lines, text_lines
 
@@ -448,7 +448,9 @@ class ShellUnit:
 def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
     """The body of each fence among `lines` substituted as shell, in order, each line ending at LF and read as
     CommonMark gives it to the fence's content, without the indentation of the fence and of the list items that hold
-    it, so an indented fence's here-document closes at its delimiter, as it does for a model given the fence."""
+    it, so an indented fence's here-document closes at its delimiter, as it does for a model given the fence. A
+    console fence that holds a prompt is a session, whose body is the commands markdown_sections' session_commands
+    reads, without their prompts, as audit-skill reads them; its output is no Bash, so it is not checked."""
     blocks: list[str] = []
     for fence in find_fences(lines):
         if fence_context(fence) != "shell":
@@ -458,7 +460,13 @@ def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
                 f"ERROR: Unclosed Bash code fence in {logical}",
                 "Close the fence with the characters that open it, then retry.",
             )
-        blocks.append("".join(f"{fence.content(lines[index])}\n" for index in fence.body()))
+        session = session_commands(fence, lines)
+        commands = (
+            [command for _, command in session]
+            if session is not None
+            else [fence.content(lines[index]) for index in fence.body()]
+        )
+        blocks.append("".join(f"{command}\n" for command in commands))
     return blocks
 
 
