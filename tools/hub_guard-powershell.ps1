@@ -20,9 +20,13 @@ using namespace System.Management.Automation.Language
 #       {"kind": "other", "type"}, any other element, which hub_guard.py does not settle;
 #     and a redirection {"kind": "file", "target": element} or {"kind": "merge"}
 #   "statements": the top-level statements, each {"pipelines": [[command index]], "operators": ["&&" | "||"],
-#     "background": bool, "nested": [command index]}, nested naming each command inside the statement's own
-#     expressions and bodies, which runs before or within it; an assignment, an if, or a foreach has no pipelines of
-#     its own; statements is null when one of them is none of these
+#     "stages": [[command index]], "blocks": [[command index]], "background": bool, "nested": [command index]},
+#     nested naming each command inside the statement's own expressions and bodies, which runs before or within it,
+#     and, beside each pipeline, the nested commands inside it, split in two: its stage, those of its arguments'
+#     expressions, which PowerShell runs, left to right, once the pipelines before it have run and before any command
+#     of its own does, and its blocks, those of the script blocks handed to its own commands, which run while it
+#     runs, after an element before them may have moved the location; an assignment, an if, or a foreach has no
+#     pipelines of its own; statements is null when one of them is none of these
 #   "assigned": each variable an assignment or a foreach assigns, anywhere in the tree, {"name", "qualified"}, the
 #     name and whether a drive qualifies it, as env: does, with name null for a target that is no plain variable
 #   "members": each member a property access reaches, {"static": bool, "constant": bool}, whether it is a type's
@@ -91,8 +95,21 @@ function ConvertTo-Command([CommandBaseAst] $Command) {
     }
 }
 
-# The pipelines of a statement and the operators between them, left to right; $null for a statement that is neither
-# a pipeline nor a chain of them.
+# The command a script block is handed to, through a parameter, and a calculated property's hashtable and the list
+# holding it; $null for a block handed to no command.
+function Get-BlockCommand([ScriptBlockExpressionAst] $Block) {
+    $parent = $Block.Parent
+    while ($parent -is [CommandParameterAst] -or $parent -is [CommandExpressionAst] -or
+        $parent -is [PipelineAst] -or $parent -is [HashtableAst] -or $parent -is [ArrayLiteralAst]) {
+        $parent = $parent.Parent
+    }
+    if ($parent -is [CommandAst]) { $parent } else { $null }
+}
+
+# The pipelines of a statement, the operators between them, and, beside each pipeline, the nested commands inside it:
+# its stage, the commands of its arguments' expressions, which run before any command of the pipeline does, and its
+# blocks, the commands of the script blocks handed to its own commands, which run while the pipeline runs, left to
+# right; $null for a statement that is neither a pipeline nor a chain of them.
 function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] $Commands) {
     if ($Statement -is [PipelineChainAst]) {
         $left = Get-Chain $Statement.LhsPipelineChain $Commands
@@ -104,31 +121,50 @@ function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] 
         return [ordered]@{
             pipelines = @($left.pipelines + $right.pipelines)
             operators = @($left.operators + $operator + $right.operators)
+            stages = @($left.stages + $right.stages)
+            blocks = @($left.blocks + $right.blocks)
         }
     }
     if ($Statement -is [AssignmentStatementAst] -or $Statement -is [IfStatementAst] -or
         $Statement -is [ForEachStatementAst]) {
-        return [ordered]@{ pipelines = @(); operators = @() }
+        return [ordered]@{ pipelines = @(); operators = @(); stages = @(); blocks = @() }
     }
     if ($Statement -isnot [PipelineAst]) {
         return $null
     }
-    $indexes = foreach ($element in $Statement.PipelineElements) { $Commands.IndexOf($element) }
-    [ordered]@{ pipelines = @(, @($indexes)); operators = @() }
+    $indexes = @(foreach ($element in $Statement.PipelineElements) { $Commands.IndexOf($element) })
+    # A script block handed to one of the pipeline's own commands, as ForEach-Object's, runs while the pipeline runs,
+    # after an element before it may have moved the location; every other nested command runs before the pipeline.
+    $during = [Collections.Generic.HashSet[int]]::new()
+    foreach ($block in $Statement.FindAll({ param($node) $node -is [ScriptBlockExpressionAst] }, $true)) {
+        if ($indexes -contains $Commands.IndexOf((Get-BlockCommand $block))) {
+            foreach ($node in $block.FindAll({ param($node) $node -is [CommandBaseAst] }, $true)) {
+                [void] $during.Add($Commands.IndexOf($node))
+            }
+        }
+    }
+    $stage = [Collections.Generic.List[int]]::new()
+    $blocks = [Collections.Generic.List[int]]::new()
+    foreach ($node in $Statement.FindAll({ param($node) $node -is [CommandBaseAst] }, $true)) {
+        $index = $Commands.IndexOf($node)
+        if ($indexes -contains $index) { continue }
+        if ($during.Contains($index)) { $blocks.Add($index) } else { $stage.Add($index) }
+    }
+    [ordered]@{
+        pipelines = @(, $indexes)
+        operators = @()
+        stages = @(, @($stage))
+        blocks = @(, @($blocks))
+    }
 }
 
-# The commands inside a statement's own expressions, as the arguments of its commands and an assignment's value
-# hold them, which are not the statement's pipeline elements.
-function Get-Nested([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] $Commands) {
+# The commands inside a statement's expressions and bodies: every command in it but the elements of its own
+# pipelines, which Get-Chain listed. A chain is the statement's own only where it is the statement; one inside an
+# expression, a body, or an assignment's value runs within the statement, so each of its commands is nested.
+function Get-Nested([Ast] $Statement, $Chain, [Collections.Generic.List[CommandBaseAst]] $Commands) {
     $own = [Collections.Generic.HashSet[int]]::new()
-    # An assignment's value and a control statement's bodies are all nested: none is a pipeline of its own.
-    $pipelines = if ($Statement -isnot [PipelineBaseAst]) { @() } else {
-        $Statement.FindAll({ param($node) $node -is [PipelineAst] }, $false)
-    }
-    foreach ($pipeline in $pipelines) {
-        if ($pipeline -eq $Statement -or $pipeline.Parent -is [PipelineChainAst]) {
-            foreach ($element in $pipeline.PipelineElements) { [void] $own.Add($Commands.IndexOf($element)) }
-        }
+    foreach ($pipeline in $Chain.pipelines) {
+        foreach ($index in $pipeline) { [void] $own.Add($index) }
     }
     foreach ($node in $Statement.FindAll({ param($node) $node -is [CommandBaseAst] }, $true)) {
         $index = $Commands.IndexOf($node)
@@ -164,7 +200,7 @@ if ($blocks.Count -eq 0 -and $null -ne $ast.EndBlock) {
             break
         }
         $chain['background'] = $statement -is [PipelineBaseAst] -and [bool] $statement.Background
-        $chain['nested'] = @(Get-Nested $statement $commands)
+        $chain['nested'] = @(Get-Nested $statement $chain $commands)
         $statements.Add($chain)
     }
 }
@@ -192,13 +228,8 @@ $types = foreach ($node in $all) {
 }
 $blocks = foreach ($node in $all) {
     if ($node -is [ScriptBlockExpressionAst]) {
-        # Through a parameter, and a calculated property's hashtable and the list holding it, to the command.
-        $parent = $node.Parent
-        while ($parent -is [CommandParameterAst] -or $parent -is [CommandExpressionAst] -or
-            $parent -is [PipelineAst] -or $parent -is [HashtableAst] -or $parent -is [ArrayLiteralAst]) {
-            $parent = $parent.Parent
-        }
-        if ($parent -is [CommandAst]) { , "$($parent.GetCommandName())" } else { , $null }
+        $command = Get-BlockCommand $node
+        if ($null -ne $command) { , "$($command.GetCommandName())" } else { , $null }
     }
 }
 [ordered]@{

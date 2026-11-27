@@ -75,6 +75,7 @@ import json_writer
 from audit_ai_config import CLAUDE_HOOKS
 from console import failed_kind, run_main
 from git_client import GitClient, GitError
+from link_probe import is_link_or_junction
 from markdown_sections import document_headings, find_fences
 from path_containment import resolved_path
 from path_keys import path_key
@@ -520,12 +521,18 @@ def walk_shape(root: Path) -> Shape:
 
 def hook_counts(root: Path) -> dict[str, Any]:
     """The hook events `.claude/settings.json` declares, each by its name when Claude Code documents it, else as
-    `other`, and the handlers they hold; no matcher, command, or condition. Settings that are a link, cannot be read,
-    are no JSON object, or hold a `hooks` that is no object are counted as unread, never as holding no hooks."""
-    settings = root / ".claude" / "settings.json"
+    `other`, and the handlers they hold; no matcher, command, or condition. Settings reached through a link, the
+    `.claude` folder's or their own, wherever it leads, are counted as unread, as the walk leaves them out of the rule
+    sources, so no link is followed out of the tree; so are settings that cannot be read, are no JSON object, or hold a
+    `hooks` that is no object, never as holding no hooks."""
+    folder = root / ".claude"
+    settings = folder / "settings.json"
     try:
-        if not file_presence.is_occupied(settings):
-            return {}
+        for place in (folder, settings):
+            if not file_presence.is_occupied(place):
+                return {}
+            if is_link_or_junction(place):
+                return {"unread": 1}
         if regular_size(settings) is None:
             return {"unread": 1}
         data = json_reader.read_file(settings)

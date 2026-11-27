@@ -198,7 +198,7 @@ def own_needs(root: Path, name: str) -> set[str]:
     under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash,
     PowerShell, or Python scripts runs a git subcommand that may reach a remote, needs network access. The scripts are
     listed with `file_presence.listed`, so an AppleDouble sidecar macOS writes beside one on a FAT, exFAT, or SMB volume
-    is never read as a script.
+    is never read as a script. Limit: a backticked name of a hooked agent inside a code block is read as naming it.
     """
     import runtime_support
 
@@ -1224,7 +1224,9 @@ def _extensions(text: str) -> set[str]:
 
 
 def script_language_problems(root: Path, standard_commands: set[str]) -> list[str]:
-    """Report where the skill guide or the tool catalogue disagrees with the runner on a skill's script languages."""
+    """Report where the skill guide or the tool catalogue disagrees with the runner on a skill's script languages.
+
+    Limit: the statement is found on its first line, inside a code block too."""
     found = [
         f"deployer/tools.py does not list `{interpreter}`, which runs `{extension}` scripts"
         for extension, interpreter in sorted(SCRIPT_INTERPRETERS.items())
