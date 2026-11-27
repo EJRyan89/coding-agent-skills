@@ -38,7 +38,8 @@ prints at that moment, whatever its numbers, each line read without the blanks a
 `NOTES_INCOMPLETE <what>` line for each that fails, and `CURRENT` only when the section holds every entry and the notes
 hold all four. Each line is read as a line of the section's text, so a Level or counts line inside an HTML comment,
 which GitHub hides, is read as present; and the section runs, as markdown_section reads it, to the next `## ` heading,
-so a `# ` heading does not end it.
+so a `# ` heading does not end it. A held Level line indented by a blank is not read as the section's level, so the
+notes are not held to it.
 
 --counts reads, through ejryan89-skill-core's GitHubClient and the gh that serves this checkout's repository, the
 milestone titled VERSION and every issue on it, through GitHub's REST API, since `gh issue list` searches and answers an

@@ -871,6 +871,28 @@ class CheckTests(FixtureRepository):
             with self.subTest(notes=notes):
                 self.assertEqual((1, lacking, ""), self.check(notes=notes))
 
+    def test_the_notes_are_held_to_the_level_line_the_section_holds_and_to_none_when_it_holds_none(self) -> None:
+        entry = "### A thing is fixed\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none\n"
+        self.commit("Fix a thing (#2)", body=f"## Upgrade note\n\n{entry}", change="thing")
+        base = self.git("rev-parse", "HEAD").strip()
+        published = f"{entry}- Pull request: #2\n"
+        for held_level, notes_level in (
+            # A section written before the summary line, or by hand, holds no Level line, so the notes need none.
+            ("", ""),
+            # Blanks after the held line are not part of it.
+            ("Level: patch.  \n\n", "Level: patch.\n\n"),
+            # The stated limit: a held line indented by a blank is not read as the section's level.
+            (" Level: patch.\n\n", ""),
+        ):
+            with self.subTest(held_level=held_level):
+                self.git("reset", "-q", "--hard", base)
+                section = f"## v0.2.0\n\n{held_level}{published}\n"
+                (self.root / NOTES).write_bytes(f"{INTRO}\n{section}{RELEASED}".encode())
+                self.commit("Release v0.2.0 (#7)", body="## Upgrade note\n\nNone\n")
+                self.git("update-ref", "refs/remotes/origin/main", "main")
+                notes = f"## v0.2.0\n\n{notes_level}{COUNTS_LINE}\n\n{published}"
+                self.assertEqual(0, self.check(notes=notes)[0])
+
     def test_blanks_around_a_line_and_a_byte_order_mark_are_not_read_as_missing(self) -> None:
         # Windows PowerShell 5's Set-Content -Encoding UTF8 writes a byte order mark before the heading.
         self.released_section()
