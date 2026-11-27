@@ -350,6 +350,29 @@ def _write_fixture(folder: Path) -> object:
     return outcome, fixture.exists()
 
 
+def _report(folder: Path) -> object:
+    """A fixture's pull.json and a recorded report whose record names its review, so report reaches the pair's check;
+    the row makes that check refuse, and nothing is copied beside the fixture."""
+    pull = {
+        "repository": "review-document.local/notes",
+        "number": 1,
+        "title": "notes.md",
+        "base_ref": "a",
+        "head_ref": "b",
+    }
+    fixture = folder / "fixture"
+    fixture.mkdir()
+    (fixture / "pull.json").write_text(json_writer.dumps(pull), encoding="utf-8")
+    recorded = folder / "canary" / "review.md"
+    recorded.parent.mkdir()
+    recorded.write_text("# Review\n", encoding="utf-8")
+    named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
+    record = {"repository": pull["repository"], "pull_request": named}
+    recorded.with_suffix(".json").write_text(json_writer.dumps(record), encoding="utf-8")
+    outcome = forward(raised(review_document.DocumentError, lambda: review_document.report(fixture, recorded)), folder)
+    return outcome, sorted(item.name for item in folder.iterdir())
+
+
 def _resolve_recorded(folder: Path) -> object:
     entries: list[dict[str, Any]] = [{"resolved_flags": ["F1"]}]
     services = mock.Mock()
@@ -597,6 +620,12 @@ REFUSALS: tuple[Row, ...] = (
         DUMPS,
         _write_fixture,
         (f"DocumentError: notes.md cannot be held in a fixture: {REASON}", False),
+    ),
+    Row(
+        "review_document.report",
+        "review_document.validate_record_pair",
+        _report,
+        (f"DocumentError: <tmp>/canary/review.md is not a report finalize recorded: {REASON}", ["canary", "fixture"]),
     ),
     Row(
         "review_insights.EXPECTED_ERRORS",
