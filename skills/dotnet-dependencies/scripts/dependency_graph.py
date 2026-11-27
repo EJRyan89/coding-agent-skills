@@ -321,6 +321,17 @@ class Project:
 CONTAINMENT_ALLOWED = {
     "Graph.relative": "display only: a path outside the solution's directory is named absolute rather than refused",
 }
+# The walks whose state is per path, each with why and what bounds it.
+WALK_ALLOWED = {
+    "PathFinder.from_project": (
+        "the chains are the answer, so each path keeps the projects it has passed; the walk enters only projects from "
+        "which a chain can end at the name (reaching_projects), and stops once PATH_LIMIT chains truncate the answer"
+    ),
+    "PathFinder.from_package": (
+        "the chains are the answer, so each path keeps the packages it has passed; the walk enters only packages from "
+        "which a chain can end at the name (reaching_packages), and stops once PATH_LIMIT chains truncate the answer"
+    ),
+}
 
 
 @dataclass

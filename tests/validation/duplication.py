@@ -16,6 +16,7 @@ from pathlib import Path, PurePath
 
 import file_presence
 import whole_number
+from memoized_walk import MemoizedWalk
 from path_containment import posix_within
 from python_checks import PATH_CONTAINMENT, claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
@@ -321,20 +322,24 @@ def _patterns_member(
     )
 
 
-def _bound_text(node: ast.Name, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+# The static text each binding of a name gives, read once a question.
+StaticWalk = MemoizedWalk[ast.expr, str | None]
+
+
+def _bound_text(node: ast.Name, resolver: CallableResolver, walk: StaticWalk) -> str | None:
     """The text a name gives when its scope binds it exactly once, to an expression whose text is static."""
     owner = resolver.scopes[id(node)].owner(node.id)
     values = owner.bindings[node.id] if owner is not None else []
-    if len(values) != 1 or not isinstance(values[0], ast.expr) or id(values[0]) in seen:
+    if len(values) != 1 or not isinstance(values[0], ast.expr):
         return None
-    return _static_text(values[0], resolver, seen | {id(values[0])})
+    return walk(values[0])
 
 
-def _formatted_text(part: ast.FormattedValue, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+def _formatted_text(part: ast.FormattedValue, resolver: CallableResolver, walk: StaticWalk) -> str | None:
     """The text an f-string's placeholder gives: its static value after its conversion and its format specification,
     which may hold placeholders of its own."""
-    value = _static_text(part.value, resolver, seen)
-    spec = _static_text(part.format_spec, resolver, seen) if part.format_spec is not None else ""
+    value = _static_text(part.value, resolver, walk)
+    spec = _static_text(part.format_spec, resolver, walk) if part.format_spec is not None else ""
     if value is None or spec is None:
         return None
     converted = {ord("r"): repr, ord("a"): ascii}.get(part.conversion, str)(value)
@@ -344,11 +349,11 @@ def _formatted_text(part: ast.FormattedValue, resolver: CallableResolver, seen: 
         return None
 
 
-def _static_items(nodes: list[ast.expr], resolver: CallableResolver, seen: frozenset[int]) -> list[str] | None:
+def _static_items(nodes: list[ast.expr], resolver: CallableResolver, walk: StaticWalk) -> list[str] | None:
     """The texts of expressions whose every text is static, or None."""
     items: list[str] = []
     for node in nodes:
-        text = _static_text(node, resolver, seen)
+        text = _static_text(node, resolver, walk)
         if text is None:
             return None
         items.append(text)
@@ -356,32 +361,32 @@ def _static_items(nodes: list[ast.expr], resolver: CallableResolver, seen: froze
 
 
 def _static_mapping(
-    keys: list[ast.expr | None], values: list[ast.expr], resolver: CallableResolver, seen: frozenset[int]
+    keys: list[ast.expr | None], values: list[ast.expr], resolver: CallableResolver, walk: StaticWalk
 ) -> dict[str, str] | None:
     """The texts of keys and their values whose every text is static, or None; a key of None is an unpacking."""
     mapping: dict[str, str] = {}
     for key, value in zip(keys, values, strict=True):
-        name = _static_text(key, resolver, seen) if key is not None else None
-        text = _static_text(value, resolver, seen)
+        name = _static_text(key, resolver, walk) if key is not None else None
+        text = _static_text(value, resolver, walk)
         if name is None or text is None:
             return None
         mapping[name] = text
     return mapping
 
 
-def _interpolated_text(node: ast.BinOp, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+def _interpolated_text(node: ast.BinOp, resolver: CallableResolver, walk: StaticWalk) -> str | None:
     """The text a `%` gives when its template and every value it fills in are static: one value, a literal tuple of
     them, or a literal dictionary of them under literal string keys."""
-    template = _static_text(node.left, resolver, seen)
+    template = _static_text(node.left, resolver, walk)
     right = node.right
     values: str | tuple[str, ...] | dict[str, str] | None
     if isinstance(right, ast.Dict):
-        values = _static_mapping(right.keys, right.values, resolver, seen)
+        values = _static_mapping(right.keys, right.values, resolver, walk)
     elif isinstance(right, ast.Tuple):
-        items = _static_items(right.elts, resolver, seen)
+        items = _static_items(right.elts, resolver, walk)
         values = tuple(items) if items is not None else None
     else:
-        values = _static_text(right, resolver, seen)
+        values = _static_text(right, resolver, walk)
     if template is None or values is None:
         return None
     try:
@@ -390,22 +395,22 @@ def _interpolated_text(node: ast.BinOp, resolver: CallableResolver, seen: frozen
         return None
 
 
-def _called_text(node: ast.Call, resolver: CallableResolver, seen: frozenset[int]) -> str | None:
+def _called_text(node: ast.Call, resolver: CallableResolver, walk: StaticWalk) -> str | None:
     """The text a string method call gives when its receiver and arguments are static: `.format` of static values,
     by position or keyword, and `.join` of a literal tuple or list."""
     if not isinstance(node.func, ast.Attribute) or node.func.attr not in {"format", "join"}:
         return None
-    receiver = _static_text(node.func.value, resolver, seen)
+    receiver = _static_text(node.func.value, resolver, walk)
     if receiver is None:
         return None
     if node.func.attr == "join":
         joined = node.args[0] if len(node.args) == 1 else None
-        items = _static_items(joined.elts, resolver, seen) if isinstance(joined, (ast.Tuple, ast.List)) else None
+        items = _static_items(joined.elts, resolver, walk) if isinstance(joined, (ast.Tuple, ast.List)) else None
         return receiver.join(items) if items is not None else None
-    arguments = _static_items(node.args, resolver, seen)
+    arguments = _static_items(node.args, resolver, walk)
     # An unpacking's keyword is None, a constant with no text.
     names: list[ast.expr | None] = [ast.Constant(keyword.arg) for keyword in node.keywords]
-    keywords = _static_mapping(names, [keyword.value for keyword in node.keywords], resolver, seen)
+    keywords = _static_mapping(names, [keyword.value for keyword in node.keywords], resolver, walk)
     if arguments is None or keywords is None:
         return None
     try:
@@ -414,31 +419,34 @@ def _called_text(node: ast.Call, resolver: CallableResolver, seen: frozenset[int
         return None
 
 
-def _static_text(node: ast.expr, resolver: CallableResolver, seen: frozenset[int] = frozenset()) -> str | None:
+def _static_text(node: ast.expr, resolver: CallableResolver, walk: StaticWalk | None = None) -> str | None:
     """The string an expression gives when it is static, or None: a string literal; a name its scope binds exactly
     once, to an expression whose text is static, through the module's own bindings only; and the `+`, `%`, f-string,
-    `.format`, or `.join` of static texts. Seen holds the bindings already followed, so a name bound to itself ends.
+    `.format`, or `.join` of static texts. Each binding's text is read once for the question, through the walk the
+    question's first call starts, so a name bound to itself, which reaches its binding while reading it, has none.
 
     It does not follow a name its scope binds twice, in branches of an if or a try or by an augmented assignment, or
     binds by a loop, a with, or a parameter with no default; a name imported from another module; an attribute, a
     subscript, or a function's result; `*` repetition, a comprehension joined, or any other string method; a `%` or a
     `.format` given an unpacking; or a bytes pattern. Each such expression has no static text here."""
+    if walk is None:
+        walk = MemoizedWalk(lambda value, walk: _static_text(value, resolver, walk), None)
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
     if isinstance(node, ast.Name):
-        return _bound_text(node, resolver, seen)
+        return _bound_text(node, resolver, walk)
     if isinstance(node, ast.JoinedStr):
-        parts = _static_items(node.values, resolver, seen)
+        parts = _static_items(node.values, resolver, walk)
         return "".join(parts) if parts is not None else None
     if isinstance(node, ast.FormattedValue):
-        return _formatted_text(node, resolver, seen)
+        return _formatted_text(node, resolver, walk)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _static_text(node.left, resolver, seen), _static_text(node.right, resolver, seen)
+        left, right = _static_text(node.left, resolver, walk), _static_text(node.right, resolver, walk)
         return left + right if left is not None and right is not None else None
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        return _interpolated_text(node, resolver, seen)
+        return _interpolated_text(node, resolver, walk)
     if isinstance(node, ast.Call):
-        return _called_text(node, resolver, seen)
+        return _called_text(node, resolver, walk)
     return None
 
 
@@ -1442,6 +1450,39 @@ def _returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.e
             pending.extend(ast.iter_child_nodes(node))
 
 
+# A question _follow asks of a key: the test of each value the key is bound to or holds, and of each value `+=` adds.
+_Followed = tuple[tuple[int, str], Callable[[ast.expr], bool], Callable[[ast.expr], bool]]
+
+
+def _followed_key(question: _Followed) -> tuple[int, str]:
+    """What a question _follow asks is under way as: its key, whatever its tests."""
+    return question[0]
+
+
+@dataclass(frozen=True)
+class _ItemRead:
+    """The test of whether `read` holds for an item of a value, as _each reads it: equal for the same reader and
+    read, so a question asked again of a key under way is the same question, and its walk ends."""
+
+    reader: _ContainmentReader
+    read: Callable[[ast.expr], bool]
+
+    def __call__(self, value: ast.expr) -> bool:
+        return self.reader._each(value, self.read)
+
+
+@dataclass(frozen=True)
+class _MappedRead:
+    """The test of whether a mapping gives `key` a text ending in a separator, as _mapped reads it: equal for the same
+    reader and key."""
+
+    reader: _ContainmentReader
+    key: str
+
+    def __call__(self, value: ast.expr) -> bool:
+        return self.reader._mapped(value, self.key)
+
+
 class _ContainmentReader:
     """Reads the containment tests a module writes, following each name, attribute, and call of a function the module
     defines to every value it is given."""
@@ -1449,8 +1490,10 @@ class _ContainmentReader:
     def __init__(self, tree: ast.Module) -> None:
         self.resolver = CallableResolver(tree)
         self.imported = import_aliases(tree)
-        # The names being followed, by the scope that owns each, so a name bound in a cycle is followed once.
-        self.following: set[tuple[int, str]] = set()
+        # The walk of the question the outermost _follow asks, which reads each key once for each pair of tests, and
+        # the values each key it follows is bound to.
+        self.walk: MemoizedWalk[_Followed, bool] | None = None
+        self.bound: dict[tuple[int, str], list[ast.expr]] = {}
         # Trailing characters a pattern's text may end in after its separator, such as a glob's `*`.
         self.trailing = ""
         # What each name holds beyond its bindings, by its key: a parameter's default, keyed as its function's scope
@@ -1505,7 +1548,9 @@ class _ContainmentReader:
 
     def _follow(self, node: ast.expr, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
         """Whether `read` holds for any value a name, an attribute, or a call of a function the module defines is
-        given, or `added` for any `+=` adds to it; False for one already being followed, so a cycle ends."""
+        given, or `added` for any `+=` adds to it. Each key is read once for each pair of tests in the question the
+        outermost call asks, and gives False when it is reached again, under any tests, while it is read, so a cycle
+        ends, even one whose item tests nest a new test at each turn, as two loops that iterate each other's names."""
         if isinstance(node, ast.Name):
             key, values = self._owner(node)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute):
@@ -1515,17 +1560,22 @@ class _ContainmentReader:
             key, values = (0, f".{node.attr}"), []
         else:
             return False
-        if key in self.following:
-            return False
-        self.following.add(key)
+        self.bound[key] = values
+        if self.walk is not None:
+            return self.walk((key, read, added))
+        self.walk = MemoizedWalk(self._followed, False, under=_followed_key)
         try:
-            return (
-                any(map(read, [*values, *self.held.get(key, [])]))
-                or any(self._each(iterable, read) for iterable in self.looped.get(key, []))
-                or any(map(added, self.added.get(key, [])))
-            )
+            return self.walk((key, read, added))
         finally:
-            self.following.discard(key)
+            self.walk = None
+
+    def _followed(self, question: _Followed, _walk: MemoizedWalk[_Followed, bool]) -> bool:
+        key, read, added = question
+        return (
+            any(map(read, [*self.bound[key], *self.held.get(key, [])]))
+            or any(self._each(iterable, read) for iterable in self.looped.get(key, []))
+            or any(map(added, self.added.get(key, [])))
+        )
 
     def _each(self, iterable: ast.expr, read: Callable[[ast.expr], bool]) -> bool:
         """Whether `read` holds for an item of what a loop iterates: a literal tuple, list, or set, a comprehension's
@@ -1537,10 +1587,7 @@ class _ContainmentReader:
             return read(iterable.elt)
         if isinstance(iterable, ast.Call) and self.name(iterable.func) in COLLECTIONS:
             return any(self._each(argument, read) for argument in iterable.args[:1])
-
-        def each(held: ast.expr) -> bool:
-            return self._each(held, read)
-
+        each = _ItemRead(self, read)
         return self._follow(iterable, each, each)
 
     def _walk_start(self, node: ast.AST) -> ast.expr | None:
@@ -1633,11 +1680,7 @@ class _ContainmentReader:
             return bool(values) and self.ends(values[-1])
         if isinstance(mapping, ast.Call) and self.name(mapping.func) == "dict":
             return any(keyword.arg == key and self.ends(keyword.value) for keyword in mapping.keywords)
-
-        def held(value: ast.expr) -> bool:
-            return self._mapped(value, key)
-
-        return self._follow(mapping, held, _never)
+        return self._follow(mapping, _MappedRead(self, key), _never)
 
     def _built_by_call(self, call: ast.Call) -> bool:
         function = self.name(call.func)

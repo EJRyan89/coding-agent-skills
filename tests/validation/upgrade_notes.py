@@ -18,6 +18,7 @@ import json_reader
 import python_reader
 from git_client import GitError, output_line
 from implementation_profile import CONTRACT_FILES_HEADING, PROFILE
+from memoized_walk import MemoizedWalk
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from skill_menu import name_list
 from text_lines import LINE_BREAK
@@ -166,6 +167,11 @@ class UnresolvedValue(ValueError):
     """The part of a contract value the check cannot follow to a literal, as its source text."""
 
 
+# What each binding a contract value is followed through resolves to, once a question, by its file, its scope's id, and
+# its name; None for one reached again while it is resolved.
+BindingWalk = MemoizedWalk[tuple[str, int, str], ast.expr | None]
+
+
 class ContractValues:
     """A snapshot's Python contract values, each read as the literal it holds, wherever it is defined.
 
@@ -196,6 +202,8 @@ class ContractValues:
         self._defaults: dict[str, set[int]] = {}
         # Each file's names updated in place, by the id of the scope that owns the name, with the update's text.
         self._updates: dict[str, dict[tuple[int, str], str]] = {}
+        # The one value each binding a question resolves is bound to, by its file, its scope's id, and its name.
+        self._bound: dict[tuple[str, int, str], ast.expr | str | None] = {}
 
     def _resolver(self, path: str) -> CallableResolver | None:
         """The bindings of a Python file of the snapshot, or None when it holds no such file or the file does not
@@ -234,7 +242,7 @@ class ContractValues:
         """The text of the literal an expression of a contract file holds, or, when the check cannot follow it to one,
         the expression's own text, with the refusal recorded."""
         try:
-            return self._checked(self._resolve(path, node, frozenset()), ast.unparse(node))
+            return self._checked(self._resolve(path, node, MemoizedWalk(self._bound_value, None)), ast.unparse(node))
         except UnresolvedValue as error:
             self._refuse(path, f"{what}, `{ast.unparse(node)}`,", error)
             return ast.unparse(node)
@@ -250,7 +258,9 @@ class ContractValues:
             if not scope.bindings.get(name):
                 continue
             try:
-                binding = self._binding(path, scope.bindings[name], id(scope), name, frozenset())
+                binding = self._binding(
+                    path, scope.bindings[name], id(scope), name, MemoizedWalk(self._bound_value, None)
+                )
                 sources[name] = self._checked(binding, name)
             except UnresolvedValue as error:
                 self._refuse(path, f"`{name}`", error)
@@ -277,7 +287,7 @@ class ContractValues:
             raise UnresolvedValue(shown) from None
         return ast.unparse(value)
 
-    def _resolve(self, path: str, node: ast.expr, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+    def _resolve(self, path: str, node: ast.expr, walk: BindingWalk) -> ast.expr:
         """A copy of an expression of the file with each name and attribute in it replaced by the value it holds."""
         resolver = self._resolver(path)
         if resolver is None:
@@ -287,19 +297,19 @@ class ContractValues:
             owner = scope.owner(node.id) if scope is not None else None
             if owner is None:
                 raise UnresolvedValue(node.id)
-            return self._binding(path, owner.bindings.get(node.id, []), id(owner), node.id, seen)
+            return self._binding(path, owner.bindings.get(node.id, []), id(owner), node.id, walk)
         if isinstance(node, ast.Attribute):
             dotted = resolver.name(node)
             if not dotted or dotted.startswith(LOCAL_BINDING):
                 raise UnresolvedValue(ast.unparse(node))
-            return self._qualified(path, dotted, ast.unparse(node), seen)
-        return self._rebuilt(path, node, seen)
+            return self._qualified(path, dotted, ast.unparse(node), walk)
+        return self._rebuilt(path, node, walk)
 
-    def _rebuilt(self, path: str, node: ast.expr, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+    def _rebuilt(self, path: str, node: ast.expr, walk: BindingWalk) -> ast.expr:
         """A literal's node, as ast.literal_eval reads one, built again from its parts once each is resolved."""
 
         def each(part: ast.expr) -> ast.expr:
-            return self._resolve(path, part, seen)
+            return self._resolve(path, part, walk)
 
         if isinstance(node, ast.Constant):
             return node
@@ -324,24 +334,34 @@ class ContractValues:
         values: list[ast.expr | str | None],
         scope: int,
         name: str,
-        seen: frozenset[tuple[str, int, str]],
+        walk: BindingWalk,
     ) -> ast.expr:
         """The value of the one binding a scope of the file, by its id, holds for a name: an expression, or the
-        module-level value an import binds the name to."""
+        module-level value an import binds the name to, resolved once for the question by its walk; a binding reached
+        again while it is resolved leads back to itself, and is refused."""
         key = (path, scope, name)
-        if len(values) != 1 or key in seen:
+        if len(values) != 1:
             raise UnresolvedValue(name)
+        self._bound[key] = values[0]
+        resolved = walk(key)
+        if resolved is None:
+            raise UnresolvedValue(name)
+        return resolved
+
+    def _bound_value(self, key: tuple[str, int, str], walk: BindingWalk) -> ast.expr | None:
+        """What a binding resolves to, read once for the question by its walk."""
+        path, scope, name = key
         update = self._updates.get(path, {}).get((scope, name))
         if update is not None:
             raise UnresolvedValue(update)
-        value = values[0]
+        value = self._bound[key]
         if isinstance(value, ast.expr) and id(value) not in self._defaults.get(path, set()):
-            return self._resolve(path, value, seen | {key})
+            return self._resolve(path, value, walk)
         if isinstance(value, str) and not value.startswith(LOCAL_BINDING):
-            return self._qualified(path, value, value, seen | {key})
+            return self._qualified(path, value, value, walk)
         raise UnresolvedValue(name)
 
-    def _qualified(self, path: str, dotted: str, shown: str, seen: frozenset[tuple[str, int, str]]) -> ast.expr:
+    def _qualified(self, path: str, dotted: str, shown: str, walk: BindingWalk) -> ast.expr:
         """The value of a dotted name an import reaches: the name its last part is, bound at the top level of the
         module the rest names, found as the importing file finds it."""
         module, _, name = dotted.rpartition(".")
@@ -350,7 +370,7 @@ class ContractValues:
         if found is None or resolver is None:
             raise UnresolvedValue(shown)
         module_scope = resolver.scopes[id(resolver.tree)]
-        return self._binding(found, module_scope.bindings.get(name, []), id(module_scope), name, seen)
+        return self._binding(found, module_scope.bindings.get(name, []), id(module_scope), name, walk)
 
     def _module_file(self, module: str) -> str | None:
         """The file an absolute import of a module finds, on the sys.path every contract file shares."""
