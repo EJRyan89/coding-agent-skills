@@ -28,6 +28,7 @@ from shell_targets import (
     markdown_shell_targets,
     powershell_targets,
     script_analyzer_check,
+    shell_presence_problems,
     shell_script_targets,
     shell_token_problems,
     unclosed_fence_problems,
@@ -663,6 +664,108 @@ class ShellTargetsFixtures(unittest.TestCase):
                 return shell_targets.shell_suppression_problems(root, [path])
 
             assert_time_in_proportion(scan, root / "small.sh", root / "large.sh", 8**1.5)
+
+
+# update.sh's three tests as they stood before the presence function, each a FAILED line after a `[ ! -f ]` test.
+PRESENCE_REFUSED = """\
+#!/usr/bin/env bash
+if [ ! -f "$PRIVATE_FOLDER" ]; then
+  echo "FAILED no ejryan89-skill-core private_folder.py deployed beside update.sh: $PRIVATE_FOLDER"
+  exit 1
+fi
+if test ! -d "$CLONE"; then
+  printf 'FAILED %s\\n' "no clone"
+  exit 1
+elif [[ ! -e "$CLONE/deploy.py" ]]; then
+  { echo "FAILED no deploy.py in $CLONE"; exit 1; }
+fi
+if [ -s "$LOG" ]; then
+  :
+else
+  echo FAILED
+fi
+[ -f "$A" ] || { echo "FAILED no $A"; exit 1; }
+! [ -L "$B" ] && echo "FAILED no link $B"
+f() {
+  [ ! -e "$C" ] && echo "FAILED no $C"
+}
+"""
+# The same places read through a presence function, and tests whose False reaches no FAILED line.
+PRESENCE_PASSED = """\
+#!/usr/bin/env bash
+file_presence() {
+  [ -f "$1" ] && return 0
+  if [ -e "$1" ]; then
+    echo "is not a file"
+    return 2
+  fi
+  return 1
+}
+if ! REASON=$(file_presence "$A"); then
+  echo "FAILED $A $REASON"
+fi
+if [ ! -f "$B" ]; then
+  echo "B_MISSING"
+fi
+if [ -f "$C" ]; then
+  echo "FAILED found $C"
+fi
+[ ! -f "$D" ] || echo "FAILED found $D"
+if [ ! -f "$E" -a -d "$F" ]; then
+  echo "FAILED compound"
+fi
+if [ ! -r "$G" ]; then
+  echo "FAILED cannot read $G"
+fi
+echo "CHECKOUT_FAILED"
+"""
+
+
+class ShellPresenceFixtures(unittest.TestCase):
+    def problems(self, files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            return shell_presence_problems(root, sorted(path for path in root.rglob("*") if path.is_file()))
+
+    def test_a_presence_test_whose_false_reaches_a_failed_line_is_refused(self) -> None:
+        script = "skills/alpha/scripts/update.sh"
+        found = self.problems({script: PRESENCE_REFUSED})
+        self.assertEqual(
+            [
+                f"{script}:{line} reads a {operator} test's False"
+                for line, operator in ((2, "-f"), (6, "-d"), (9, "-e"), (12, "-s"), (17, "-f"), (18, "-L"), (20, "-e"))
+            ],
+            [problem.split(" as missing")[0] for problem in found],
+        )
+        self.assertTrue(all("name what is there through one presence function" in problem for problem in found))
+
+    def test_a_presence_function_and_a_test_reaching_no_failed_line_pass(self) -> None:
+        self.assertEqual([], self.problems({"skills/alpha/scripts/update.sh": PRESENCE_PASSED}))
+
+    def test_only_a_skill_s_shipped_scripts_are_read(self) -> None:
+        self.assertEqual(
+            [".claude/skills/local/scripts/run.sh:2", "skills/alpha/scripts/run.bash:2"],
+            [
+                problem.split(" ")[0]
+                for problem in self.problems(
+                    {
+                        "skills/alpha/scripts/run.bash": PRESENCE_REFUSED,
+                        ".claude/skills/local/scripts/run.sh": PRESENCE_REFUSED,
+                        "skills/alpha/scripts/test_run.sh": PRESENCE_REFUSED,
+                        "tools/run.sh": PRESENCE_REFUSED,
+                        "skills/alpha/SKILL.md": f"```bash\n{PRESENCE_REFUSED}```\n",
+                    }
+                )
+                if problem.split(" ")[0].endswith(":2")
+            ],
+        )
+
+    def test_a_script_validation_cannot_read_is_named(self) -> None:
+        self.assertEqual(
+            ["skills/alpha/scripts/run.sh holds Bash validation cannot read"],
+            [problem.split(" (")[0] for problem in self.problems({"skills/alpha/scripts/run.sh": "if then\n"})],
+        )
 
 
 class ProgramEndingFixtures(unittest.TestCase):

@@ -123,6 +123,19 @@ def lzma_word_document() -> bytes:
     return bytes(content)
 
 
+def lzma_refusal() -> str:
+    """The refusal of lzma_word_document's main part, with the reason the LZMA decoder gives for its properties."""
+    with zipfile.ZipFile(io.BytesIO(lzma_word_document())) as package:
+        try:
+            package.read(documents.MAIN_PART)
+        except lzma.LZMAError as error:
+            return f"{documents.MAIN_PART} cannot be read ({error})"
+    raise AssertionError("the LZMA part was read")
+
+
+LZMA_REFUSAL = lzma_refusal()
+
+
 def lines(content: bytes) -> list[str]:
     return extract("docx", content).decode("utf-8").splitlines()
 
@@ -493,7 +506,8 @@ class RefusalTests(unittest.TestCase):
         self.assertRefused(word_document(document=huge), "over 16 MiB")
 
     def test_damaged_unusual_or_foreign_packages_are_refused(self) -> None:
-        self.assertRefused(b"PK\x03\x04 not really", "not a readable zip package")
+        # The zip reader's own reason follows the refusal.
+        self.assertRefused(b"PK\x03\x04 not really", "not a readable zip package (File is not a zip file)")
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as package:
             package.writestr("other.xml", "<x/>")
@@ -509,10 +523,10 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_member_whose_lzma_properties_no_filter_accepts_is_refused(self) -> None:
         content = lzma_word_document()
-        with zipfile.ZipFile(io.BytesIO(content)) as package, self.assertRaises(lzma.LZMAError):
+        with zipfile.ZipFile(io.BytesIO(content)) as package, self.assertRaises(lzma.LZMAError) as raised:
             package.read(documents.MAIN_PART)
 
-        self.assertRefused(content, "word/document.xml cannot be read")
+        self.assertRefused(content, f"word/document.xml cannot be read ({raised.exception})")
 
     def test_a_level_written_in_superscript_digits_is_no_level(self) -> None:
         # str.isdigit passes a superscript digit, which int refuses.
@@ -1177,7 +1191,7 @@ class SnapshotRouteTests(unittest.TestCase):
 
         self.assertEqual(
             {
-                "docs/lzma.docx": "word/document.xml cannot be read",
+                "docs/lzma.docx": LZMA_REFUSAL,
                 "docs/design.docx": "its text could not be read (ValueError)",
             },
             refused,
@@ -1190,9 +1204,7 @@ class SnapshotRouteTests(unittest.TestCase):
         def read(_path: str, _blob: str) -> bytes:
             return lzma_word_document()
 
-        self.assertEqual(
-            ("", "word/document.xml cannot be read"), review_snapshot._extracted_base("docx", "a.docx", "1" * 7, read)
-        )
+        self.assertEqual(("", LZMA_REFUSAL), review_snapshot._extracted_base("docx", "a.docx", "1" * 7, read))
         with mock.patch.object(documents, "extract_docx", side_effect=KeyError("quoted text")):
             self.assertEqual(
                 ("", "its text could not be read (KeyError)"),

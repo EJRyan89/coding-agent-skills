@@ -98,6 +98,10 @@ or removed fails validation until its pattern follows it.
   `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`,
   `tests/malformed_input/test_faults_unreadable.py::test_each_command_refuses_a_file_it_reads_that_it_cannot_read`,
+  `tests/validation/shell_targets.py::ShellTargetsPolicies::test_no_shell_presence_test_reads_another_kind_as_missing`,
+  which refuses a test of a file's presence or kind in a skill's Bash script whose False reaches a FAILED line, where
+  update-coding-agent-skills' update script names what is there through its own presence function, which its exit
+  suite runs with a folder, a link to nothing, and a link loop in deploy.py's place,
   `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`,
   `tests/malformed_input/test_faults_missing.py::test_each_command_refuses_a_missing_file_it_reads`,
   `tests/malformed_input/test_faults_stat.py::test_each_command_refuses_a_file_whose_stat_fails`, and
@@ -138,9 +142,11 @@ or removed fails validation until its pattern follows it.
   answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match"; in a shipped
   `.sh`, `rg -n '\$\(git |git .*\| *tr ' skills --glob '*.sh'`, a git answer taken through a command substitution or a
   pipeline whose status no branch reads, which a script without `set -e` reads as an empty answer, and a
-  `rev-parse --verify --quiet` whose exit 1 is not told from any other failure.
+  `rev-parse --verify --quiet` whose exit 1 is not told from any other failure; in a shipped `.sh`,
+  `rg -n '(\[\[?|test) +! +-[a-zA-Z] ' skills --glob '*.sh'` before a FAILED line, a folder, a link to nothing, or a
+  path a stat cannot examine named as missing.
 - **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2218, #2236,
-  #2245, #2727, #2301
+  #2245, #2727, #2301, #3185
 
 ### Evidence that was never produced is never a pass
 
@@ -239,7 +245,11 @@ or removed fails validation until its pattern follows it.
   `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_powershell_s_failure_not_the_source_s`,
   `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_bash_syntax_check_that_fails_printing_nothing_is_bash_s_failure_not_the_source_s`,
   `tests/deployer/test_check.py::CodexSandboxProbeTests::test_a_failed_or_silent_probe_names_no_mode_and_says_why_on_one_line_or_by_its_exit_code`,
-  `skills/ejryan89-skill-core/scripts/test_pdf_tool.py::PdfPolicyTests::test_a_probe_that_fails_is_named_by_its_status_before_its_output_is_decoded_or_read_as_a_banner`
+  `skills/ejryan89-skill-core/scripts/test_pdf_tool.py::PdfPolicyTests::test_a_probe_that_fails_is_named_by_its_status_before_its_output_is_decoded_or_read_as_a_banner`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_every_failure_names_the_reason_it_gave`, which
+  refuses a formatted string that names a command's exit status without its output or the reason line of it, but as
+  the fallback for a command that printed nothing, and a handler of an OSError that answers with a message of its own
+  dropping the error's text, unless the module states why in REASON_ALLOWED
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -261,7 +271,7 @@ or removed fails validation until its pattern follows it.
   `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`,
   outside the modules the resolve policy reads, such as a test suite's helper.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
-  #2766, #2794, #2805, #2824, #2754
+  #2766, #2794, #2805, #2824, #2754, #3186
 
 ### A refusal ends with the step to take
 

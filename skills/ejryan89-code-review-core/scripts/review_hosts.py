@@ -26,7 +26,7 @@ import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import COPILOT_LABEL, COPILOT_PROGRAM_INSTALL, ShellScriptsOnly, find_only_program
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
 from path_containment import resolved_path, strictly_resolved_path, within
@@ -738,9 +738,11 @@ def _copilot_prompt(
 def _require_copilot_result(result: ProcessResult, staging_path: Path, diagnostic_path: Path) -> None:
     """Copilot exited cleanly and left a JSON object in the staging file."""
     if result.returncode != 0:
-        raise RuntimeContractError(
-            f"GitHub Copilot CLI failed with exit code {result.returncode}; see {diagnostic_path}"
-        )
+        # Copilot's own reason is its stderr, on one bounded line; the diagnostic file holds both streams whole.
+        said = reason_line(result.stderr)
+        exited = f"GitHub Copilot CLI failed with exit code {result.returncode}"
+        stated = f"{exited}: {said}" if said else f"{exited} and printed nothing on stderr"
+        raise RuntimeContractError(f"{stated}; see {diagnostic_path}")
     file_presence.require(
         staging_path,
         RuntimeContractError,

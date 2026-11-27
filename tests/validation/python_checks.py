@@ -23,10 +23,10 @@ import tokenize
 import tomllib
 import unittest
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeGuard
 
 import file_presence
 import python_reader
@@ -2430,6 +2430,266 @@ def presence_problems(root: Path, files: list[Path]) -> list[str]:
             for node, scope, refusal in _presence_answers(tree, aliases)
         ]
         problems += sanctioned_problems(name, tree, PRESENCE_ALLOWANCE, found)
+    return problems
+
+
+# A failure is reported as itself. A formatted string that names the exit status a command ended with, a `returncode`
+# read on any receiver or through a name its function binds to one, names the reason the command gave in the same
+# message too: its output, a `stdout`, `stderr`, or `output` read, `flat_text` or `flat_text.reason_line` of it, a
+# name its function binds to one of those, or the result itself handed to a call, in the formatted string or in a
+# string concatenated to it. A status named alone is read as the fallback for a command that printed nothing where the
+# formatted string is a later value of an `or` after a value that reads the output, as
+# `reason_line(result.stderr) or f"git exited {result.returncode}"` is, the branch of an `if` or a conditional
+# expression its test takes when the output is empty, a message kept in a name the function joins to the output in
+# another formatted string, as `stated` in f"{stated}: {reason}", or one that says the command printed nothing. An
+# `except` clause that takes a failed read's OSError, as `_swallows` reads that family, and answers with a message of
+# its own, a string of more than one word anywhere in its body, without reading the error it binds, other than as a
+# `raise ... from` cause, which the line a failure prints leaves out, drops the error's reason; one that takes a
+# decode's UnicodeError alone says the text is not UTF-8, which is its reason. Any such site states why in a
+# module-level REASON_ALLOWED = {scope: reason}, its reason naming where the command's output does reach the reader.
+#
+# Stated limits: a status read through an attribute or a name bound outside the message's own function, or through a
+# getattr of a constant name; output read through a name bound in another function, as a helper's parameter; a reason
+# held in a name the message's function binds only after a branch, which reads as bound; a message kept in a name the
+# function joins to the output in any one formatted string, though another may return it alone; and a handler that
+# hands its message to a function that reads the error from sys.exc_info().
+REASON_ALLOWANCE = "REASON_ALLOWED"
+EXIT_STATUS = "returncode"
+# What a command printed, as a finished run holds it: subprocess's and bounded_process's results, git_client's
+# GitResult, and a CalledProcessError.
+OUTPUT_FIELDS = frozenset({"stdout", "stderr", "output"})
+# The readers that make a command's output one bounded line of reason, flat_text's.
+REASON_READERS = frozenset({"reason_line", "flat_text"})
+# What a message says of a command whose status is all it gave.
+PRINTED_NOTHING = "printed nothing"
+
+
+def _own_nodes(body: Sequence[ast.AST]) -> Iterator[ast.AST]:
+    """Each node of a block or expressions, outside a function or class it defines: a lambda's body is its own."""
+    pending: list[ast.AST] = list(body)
+    while pending:
+        node = pending.pop()
+        yield node
+        pending.extend(
+            child
+            for child in ast.iter_child_nodes(node)
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        )
+
+
+def _is_status(node: ast.AST) -> TypeGuard[ast.Attribute]:
+    return isinstance(node, ast.Attribute) and node.attr == EXIT_STATUS
+
+
+def _is_output(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr in OUTPUT_FIELDS
+    if isinstance(node, ast.Call):
+        callee = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        return callee in REASON_READERS
+    return False
+
+
+def _outside_messages(node: ast.AST) -> Iterator[ast.AST]:
+    """Each node of an expression outside the formatted strings it holds."""
+    pending: list[ast.AST] = [node]
+    while pending:
+        found = pending.pop()
+        if isinstance(found, ast.JoinedStr):
+            continue
+        yield found
+        pending.extend(ast.iter_child_nodes(found))
+
+
+class _FunctionReads:
+    """What one function, or a module's top level, reads a command's exit status and output through: the names it
+    binds, by an assignment, an annotated assignment, or an assignment expression, a tuple's or a list's names to the
+    whole value, to a value that reads an exit status outside a message, or that reads output, itself or through another
+    such name, each found once for the function, and its formatted strings."""
+
+    def __init__(self, scope: ast.AST) -> None:
+        self.values: dict[str, list[ast.expr]] = {}
+        self.messages: list[ast.JoinedStr] = []
+        for node in _own_nodes(getattr(scope, "body", [])):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    for name in _names(target):
+                        self.values.setdefault(name.id, []).append(node.value)
+            elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and isinstance(node.target, ast.Name) and node.value:
+                self.values.setdefault(node.target.id, []).append(node.value)
+            elif isinstance(node, ast.JoinedStr):
+                self.messages.append(node)
+        self.status_names = self._closure(self.reads_status)
+        self.output_names = self._closure(self.reads_output)
+
+    def _closure(self, reads: Callable[[ast.AST, Set[str]], bool]) -> frozenset[str]:
+        names: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for name, values in self.values.items():
+                if name not in names and any(reads(value, names) for value in values):
+                    names.add(name)
+                    changed = True
+        return frozenset(names)
+
+    @staticmethod
+    def reads_status(node: ast.AST, names: Set[str]) -> bool:
+        """Whether an expression reads an exit status outside the messages it holds, itself or through `names`."""
+        return any(
+            _is_status(found) or (isinstance(found, ast.Name) and found.id in names)
+            for found in _outside_messages(node)
+        )
+
+    @staticmethod
+    def reads_output(node: ast.AST, names: Set[str]) -> bool:
+        """Whether an expression reads a command's output, itself or through `names`."""
+        return any(_is_output(found) or (isinstance(found, ast.Name) and found.id in names) for found in ast.walk(node))
+
+    def receivers(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> set[str]:
+        """The results whose exit status an expression reads, by their spelling, through the names it reads too."""
+        found: set[str] = set()
+        for part in ast.walk(node):
+            if _is_status(part):
+                found.add(ast.dump(part.value))
+            elif isinstance(part, ast.Name) and part.id in self.status_names and part.id not in seen:
+                for value in self.values[part.id]:
+                    found |= self.receivers(value, seen | {part.id})
+        return found
+
+    def status(self, node: ast.AST) -> bool:
+        return self.reads_status(node, self.status_names) or any(_is_status(found) for found in ast.walk(node))
+
+    def output(self, node: ast.AST, receivers: Set[str] = frozenset()) -> bool:
+        """Whether an expression reads a command's output, or one of `receivers`, the results whose status a message
+        names, other than through that status."""
+        statuses = {id(found.value) for found in ast.walk(node) if _is_status(found)}
+        return self.reads_output(node, self.output_names) or any(
+            ast.dump(found) in receivers and id(found) not in statuses
+            for found in ast.walk(node)
+            if isinstance(found, ast.expr)
+        )
+
+
+def _negated(test: ast.expr) -> ast.expr | None:
+    return test.operand if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) else None
+
+
+def _fallback(child: ast.AST, parent: ast.AST, reads: _FunctionReads) -> bool:
+    """Whether a message under `parent` names a status alone only where its command printed nothing: a later value of an
+    `or` after its output, or the branch of an `if` or a conditional expression taken when the output is empty."""
+    if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.Or) and child in parent.values:
+        return any(reads.output(value) for value in parent.values[: parent.values.index(child)])
+    if isinstance(parent, ast.IfExp | ast.If):
+        negated = _negated(parent.test)
+        if child in parent.body if isinstance(parent.body, list) else child is parent.body:
+            return negated is not None and reads.output(negated)
+        return negated is None and reads.output(parent.test)
+    return False
+
+
+def _status_message(formatted: ast.JoinedStr, reads: _FunctionReads, parents: Mapping[int, ast.AST]) -> bool:
+    """Whether a formatted string names an exit status without the reason its command gave: see REASON_ALLOWANCE."""
+    statuses = [
+        part.value for part in formatted.values if isinstance(part, ast.FormattedValue) and reads.status(part.value)
+    ]
+    if not statuses:
+        return False
+    receivers = {receiver for status in statuses for receiver in reads.receivers(status)}
+    message: ast.AST = formatted
+    while isinstance(parent := parents.get(id(message)), ast.BinOp) and isinstance(parent.op, ast.Add):
+        message = parent
+    if reads.output(message, receivers) or any(
+        isinstance(part, ast.Constant) and isinstance(part.value, str) and PRINTED_NOTHING in part.value
+        for part in ast.walk(message)
+    ):
+        return False
+    child: ast.AST = message
+    while (parent := parents.get(id(child))) is not None and not isinstance(
+        parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
+    ):
+        if _fallback(child, parent, reads):
+            return False
+        # A message kept in a name, read where it is joined to the output or the result, as `stated` before
+        # f"{stated}: {reason}", is named with its reason there.
+        if isinstance(parent, ast.Assign) and child is parent.value:
+            names = {name.id for target in parent.targets for name in _names(target)}
+            return not any(
+                reads.output(joined, receivers)
+                for joined in reads.messages
+                if any(isinstance(found, ast.Name) and found.id in names for found in ast.walk(joined))
+            )
+        child = parent
+    return True
+
+
+def _reasonless_handler(handler: ast.ExceptHandler) -> bool:
+    """Whether a handler answers with a message of its own, a string of more than one word, without reading the error it
+    binds other than as a `raise ... from` cause."""
+    causes = {
+        id(node.cause) for node in _own_nodes(handler.body) if isinstance(node, ast.Raise) and node.cause is not None
+    }
+    if handler.name and any(
+        isinstance(node, ast.Name) and node.id == handler.name and id(node) not in causes
+        for node in _own_nodes(handler.body)
+    ):
+        return False
+    return any(
+        isinstance(node, ast.JoinedStr)
+        or (isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value.split()) > 1)
+        for node in _own_nodes(handler.body)
+    )
+
+
+def _reasonless_failures(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[ast.AST, str, str]]:
+    """Each message that names an exit status alone, and each handler of a failed read that drops the error's reason,
+    with its scope and its refusal."""
+    parents: dict[int, ast.AST] = {}
+    owners: dict[int, ast.AST] = {}
+    pending: list[tuple[ast.AST, ast.AST]] = [(tree, tree)]
+    while pending:
+        node, owner = pending.pop()
+        owners[id(node)] = owner
+        inner = node if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else owner
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+            pending.append((child, inner))
+    tuples = _module_tuples(tree)
+    reads: dict[int, _FunctionReads] = {}
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(node, ast.JoinedStr):
+            owner = owners[id(node)]
+            if id(owner) not in reads:
+                reads[id(owner)] = _FunctionReads(owner)
+            if _status_message(node, reads[id(owner)], parents):
+                yield (
+                    node,
+                    scope,
+                    "names a command's exit status without the reason it gave; name its output through "
+                    "flat_text.reason_line, or name the status alone only where it printed nothing",
+                )
+        if isinstance(node, (ast.Try, ast.TryStar)):
+            for handler in node.handlers:
+                if _swallows(handler.type, aliases, tuples) and _reasonless_handler(handler):
+                    yield (
+                        handler,
+                        scope,
+                        "answers an OSError with a message of its own that drops the error's reason; name the error's "
+                        "text in it",
+                    )
+
+
+def reason_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each message that names a command's exit status without the reason it gave, and each handler of a failed read
+    that answers with a message dropping the error's reason, that no REASON_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (getattr(node, "lineno", 0), scope, f"{refusal}, or state why in {REASON_ALLOWANCE}")
+            for node, scope, refusal in _reasonless_failures(tree, aliases)
+        ]
+        problems += sanctioned_problems(name, tree, REASON_ALLOWANCE, found)
     return problems
 
 
@@ -7275,6 +7535,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_file_presence_is_the_one_reader_of_absence(self) -> None:
         self.assertEqual([], presence_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_failure_names_the_reason_it_gave(self) -> None:
+        self.assertEqual([], reason_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_claim_policies_read_every_module_their_rules_speak_of(self) -> None:
         modules = formatted_modules(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))

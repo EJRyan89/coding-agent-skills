@@ -919,7 +919,7 @@ class DocumentExtractionTests(AdversarialFixture):
             ("docs/entity.docx", "word/document.xml declares a document type or an entity"),
             ("docs/escape.docx", "a member's path leaves the package"),
             ("docs/expanding.docx", "word/document.xml is over 4,096 bytes"),
-            ("docs/broken.docx", "it is not a readable zip package"),
+            ("docs/broken.docx", "it is not a readable zip package (File is not a zip file)"),
         ):
             self.assertIn(f'the text of document "{path}" could not be extracted ({reason})', notes)
         self.assertNotIn(planted, self.prompts(ready))

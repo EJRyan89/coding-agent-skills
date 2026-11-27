@@ -77,6 +77,10 @@ from text_lines import program_lines
 from tools.unraisable_record import RECORD_VARIABLE, SITE_MODULE
 
 COMMANDS_ALLOWED = {"run_suite": "starts pytest as the runner does, through suite_discovery.pytest_command"}
+REASON_ALLOWED = {
+    "run_suite": "the failure names pytest's exit status, and the Outcome carries pytest's whole output beside it, "
+    "which outcome_lines prints indented below the FAILED line"
+}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECORDER = Path(__file__).resolve().with_name("unraisable_record.py")
 # The settings the run needs in its own environment, which every process it starts inherits.

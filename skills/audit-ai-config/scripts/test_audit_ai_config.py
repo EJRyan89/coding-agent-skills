@@ -5775,7 +5775,8 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     (
                         "ERROR",
                         ".agents/skills/demo/agents/openai.yaml",
-                        "Could not read agents/openai.yaml, so the skill's invocation policy was not checked",
+                        "Could not read agents/openai.yaml (it is not UTF-8 text), so the skill's invocation policy "
+                        "was not checked",
                     )
                 ],
             ),
@@ -7038,15 +7039,18 @@ class UnexaminedPathTests(unittest.TestCase):
 
     def test_an_invocation_policy_that_is_a_folder_or_cannot_be_examined_is_a_problem_never_no_policy(self) -> None:
         policy = self.root / ".agents/skills/demo/agents/openai.yaml"
-        problem = "Could not read agents/openai.yaml, so the skill's invocation policy was not checked"
+        # Each problem names the reason the read gave, never a bare "could not read".
+        problem = "Could not read agents/openai.yaml ({}), so the skill's invocation policy was not checked"
         policy.mkdir(parents=True)
-        self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+        self.assertEqual((True, problem.format("not a file")), audit._codex_implicit_invocation(self.root, policy))
         policy.rmdir()
         _write_fixture(
             self.root, {".agents/skills/demo/agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}
         )
         with self.denied(policy):
-            self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+            self.assertEqual(
+                (True, problem.format("Access is denied")), audit._codex_implicit_invocation(self.root, policy)
+            )
 
     def test_a_manifest_that_is_a_folder_or_cannot_be_examined_is_there_to_the_scope_check(self) -> None:
         manifest = self.root / MANIFEST_PATH

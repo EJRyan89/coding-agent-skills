@@ -83,7 +83,7 @@ from dotnet_format_targets import (
     Failed as TargetsFailed,
 )
 from executable_locator import find_program, located_command
-from flat_text import fact_line, flat_text
+from flat_text import fact_line, flat_text, reason_line
 from path_containment import relative_within
 from seconds_option import positive_seconds
 
@@ -279,9 +279,13 @@ def run_failure(formatter: str, mode: str, root: Path, result: Completed) -> str
         return f"{formatter} reported changes it did not itemize; see the log"
     if result.returncode == 0:
         return None
+    exited = f"{formatter} exited with code {result.returncode}"
     if formatter != SDK_FORMATTER and ANALYZER_LOAD_FAILURE in result.output:
-        return f"{formatter} exited with code {result.returncode}: {ANALYZER_LOAD_REASON}; see the log"
-    return f"{formatter} exited with code {result.returncode}; see the log"
+        # The crash the output names is the reason, given with its remedy.
+        return f"{exited}: {ANALYZER_LOAD_REASON}; see the log"
+    # The end of what it printed, on one bounded line, where a failed run states its error; the log holds the rest.
+    said = reason_line(result.output.decode("utf-8", errors="replace"), end=True)
+    return f"{exited}: {said}; see the log" if said else f"{exited} and printed nothing"
 
 
 def run_batches(

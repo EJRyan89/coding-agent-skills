@@ -3273,7 +3273,26 @@ class RunPieceTests(unittest.TestCase):
         self.assertEqual(("kept", "kept"), (environment["PATH"], environment["CLAUDE_CODE_SUBAGENT_EFFORT"]))
 
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
-        self.assertIn("has no frontmatter line", skill_evals_runs.set_reviewer_model(self.root, "haiku") or "")
+        self.assertEqual(
+            f"{runtime_canary.forward(self.root / skill_evals_runs.REVIEWER_AGENT)} cannot be read: "
+            "No such file or directory",
+            skill_evals_runs.set_reviewer_model(self.root, "haiku"),
+        )
+
+    def test_a_reviewer_agent_that_cannot_be_read_is_named_with_its_reason_never_as_no_frontmatter(self) -> None:
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        agent.mkdir(parents=True)
+        # A folder in the agent's place: the read's own reason, as the platform words it, follows.
+        self.assertIn(
+            f"{runtime_canary.forward(agent)} cannot be read: ",
+            skill_evals_runs.set_reviewer_model(self.root, "haiku") or "",
+        )
+        agent.rmdir()
+        agent.write_bytes(b"---\nname: x\nmodel: inherit\n---\n\xff\n")
+        self.assertEqual(
+            f"{runtime_canary.forward(agent)} is not UTF-8 text",
+            skill_evals_runs.set_reviewer_model(self.root, "haiku"),
+        )
 
     def test_the_agent_prompt_breaks_only_where_markdown_breaks_a_line(self) -> None:
         fake_deploy(self.root, self.root)
@@ -3464,8 +3483,15 @@ class RunPieceTests(unittest.TestCase):
             skill_evals_runs.run_failure("haiku", completed(0, bare, ""), 60, "review-prs", missing),
         )
         self.assertEqual(
-            f"{missing}; Claude Code exited with code 3",
+            f"{missing}; Claude Code exited with code 3 and printed nothing on stderr",
             skill_evals_runs.run_failure("haiku", completed(3, "", ""), 60, "review-prs", missing),
+        )
+        # The reason Claude Code gave on stderr follows its exit code, on one line.
+        self.assertEqual(
+            f"{missing}; Claude Code exited with code 3: Error: the model is not available",
+            skill_evals_runs.run_failure(
+                "haiku", completed(3, "", "Error: the model\nis not available\n"), 60, "review-prs", missing
+            ),
         )
         unstarted = completed(-1, "", "", error="cannot run C:/bin/claude.exe: The system cannot find the file")
         self.assertEqual(
@@ -3481,7 +3507,11 @@ class RunPieceTests(unittest.TestCase):
         denied = json.dumps({"type": "result", "permission_denials": denials})
         missing = f"the run recorded no review version 1; its latest record cannot be read: {home}/x.json"
         cases = [
-            (completed(1, denied, ""), "the run recorded no review; Claude Code exited with code 1; denied 2 commands"),
+            # What Claude Code said on stderr may name the machine's paths, so the results file records its exit code.
+            (
+                completed(1, denied, f"Error: cannot write {home}/x.json"),
+                "the run recorded no review; Claude Code exited with code 1; denied 2 commands",
+            ),
             (
                 completed(-1, "", "", error=f"cannot run {home}/claude.exe: gone"),
                 "the run recorded no review; Claude Code could not start",

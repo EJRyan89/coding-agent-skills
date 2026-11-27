@@ -63,6 +63,7 @@ from python_checks import (
     output_split_problems,
     python_suppression_problems,
     ratchet_problems,
+    reason_problems,
     ruff_format_check,
     ruff_lint_check,
     strict_area_problems,
@@ -1808,6 +1809,48 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "a discarded GitHubClient.run": _form(
         discarded_result_problems,
         "from github_client import GitHubClient\n\n\ndef f():\n    GitHubClient().run(['pr', 'list'])\n",
+        refused=False,
+    ),
+    # "a formatted string that names the exit status a command ended with ... names the reason the command gave too".
+    "an exit status named alone": _form(
+        reason_problems, "def f(result):\n    raise RuntimeError(f'git exited {result.returncode}')\n"
+    ),
+    "an exit status named through a name bound to it": _form(
+        reason_problems, "def f(result):\n    code = result.returncode\n    return f'git exited {code}'\n"
+    ),
+    "an exit status named with the reason_line of its output": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n"
+        "    return f'git exited {result.returncode}: {reason_line(result.stderr)}'\n",
+        refused=False,
+    ),
+    "an exit status named after the output it falls back from": _form(
+        reason_problems,
+        "from flat_text import reason_line\n\n\ndef f(result):\n"
+        "    return reason_line(result.stderr) or f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    "an exit status named where the output is empty": _form(
+        reason_problems,
+        "def f(result):\n    if not result.output:\n        return f'git exited {result.returncode}'\n",
+        refused=False,
+    ),
+    # "an `except` clause ... that takes the read's OSError ... and answers with a message of its own".
+    "a failed read answered with a message of its own": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError:\n"
+        "        return f'cannot read {path}'\n",
+    ),
+    "a failed read answered with its error's text": _form(
+        reason_problems,
+        "def f(path):\n    try:\n        return path.read_text()\n    except OSError as exc:\n"
+        "        return f'cannot read {path}: {exc.strerror or exc}'\n",
+        refused=False,
+    ),
+    "a failed decode answered with a message of its own": _form(
+        reason_problems,
+        "def f(data):\n    try:\n        return data.decode()\n    except UnicodeDecodeError:\n"
+        "        return 'it is not UTF-8 text'\n",
         refused=False,
     ),
     # "gh's limit option, `--limit` or `-L`", alone, after =, or with digits attached.
@@ -5523,6 +5566,82 @@ def sanctioned(client):
 
 GH_LIMIT_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+REASON_SOURCE = """\
+from flat_text import flat_text, reason_line
+
+
+def statuses(completed, reasons, problems):
+    reason = f"exited with code {completed.returncode} before running a script"
+    reasons.append(f"Claude Code exited with code {completed.returncode}")
+    raise RuntimeError(f"FAILED gh exited {completed.returncode}")
+    code = completed.returncode
+    problems.append(f"exit {code}")
+    said = reason_line(completed.stderr)
+    problems.append(f"exited {completed.returncode}: {said}")
+    problems.append(f"exited {completed.returncode}: {flat_text(completed.output)}")
+    problems.append(said or f"exited {completed.returncode}")
+    problems.append(f"exited {completed.returncode} and printed nothing")
+    if not completed.stdout.strip():
+        problems.append(f"exited {completed.returncode}")
+    stated = f"exited {completed.returncode}"
+    problems.append(f"{stated}: {said}" if said else stated)
+    problems.append(f"exited {completed.returncode}: " + completed.stderr)
+    problems.append(f"{describe(completed)} ({completed.returncode})")
+
+
+def reads(path, problems):
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return f"could not read {path}"
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("the file could not be read") from error
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        problems.append(f"could not read {path}: {error.strerror or error}")
+    except UnicodeDecodeError:
+        problems.append(f"{path} is not UTF-8 text")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def sanctioned(completed):
+    return f"NOT_PASSED {completed.returncode}"
+
+
+REASON_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_reason_policy_refuses_an_exit_status_or_a_failed_read_named_without_its_reason() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(reason_problems, "REASON_ALLOWED", REASON_SOURCE, "tools/owner.py")
+    status = (
+        "names a command's exit status without the reason it gave; name its output through flat_text.reason_line, "
+        "or name the status alone only where it printed nothing, or state why in REASON_ALLOWED"
+    )
+    handler = (
+        "answers an OSError with a message of its own that drops the error's reason; name the error's text in it, or "
+        "state why in REASON_ALLOWED"
+    )
+    owner = "tools/owner.py"
+    expected = [
+        *(f"{alpha}:{line} {status}" for line in (5, 6, 7, 9)),
+        *(f"{alpha}:{line} {handler}" for line in (26, 30)),
+        f"{alpha}: REASON_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: REASON_ALLOWED must map each function, class, or assignment to its reason",
+        *(f"{owner}:{line} {status}" for line in (5, 6, 7, 9)),
+        *(f"{owner}:{line} {handler}" for line in (26, 30)),
+        f"{owner}: REASON_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+    ]
+    assert sorted(found) == sorted(expected)
 
 
 def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:

@@ -3613,7 +3613,7 @@ class CopilotHostTests(PipelineFixture):
         self.assertEqual(0, self.run_host()[0])
         diagnostic = self.run_directory / "copilot-diagnostic-1.jsonl"
         self.assertEqual(
-            (1, f"FAILED fixture-copilot: GitHub Copilot CLI failed with exit code 1; see {diagnostic}\n", ""),
+            (1, f"FAILED fixture-copilot: GitHub Copilot CLI failed with exit code 1: boom; see {diagnostic}\n", ""),
             self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
         self.assertFalse(self.result.exists())

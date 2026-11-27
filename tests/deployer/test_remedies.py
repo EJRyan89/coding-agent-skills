@@ -380,7 +380,8 @@ class ConfigurationRemedyTests(RemedyTestCase):
             result = self.deploy_fails("--all", pattern="cannot be canonicalized")
         self.assert_refusal(
             result.output,
-            f"ERROR: REPOS_ROOT cannot be canonicalized: {forward(self.repos)}",
+            # The reason the operating system gave follows the path.
+            f"ERROR: REPOS_ROOT cannot be canonicalized: {forward(self.repos)}: Permission denied",
             f"Run '{DEPLOY_COMMAND} configure' to change it.",
         )
 
@@ -941,7 +942,7 @@ class LockRemedyTests(RemedyTestCase):
             )
         self.assert_refusal(
             result.output,
-            failed,
+            f"{failed}; its record could not be removed either: synthetic remove failure",
             f"Remove {forward(self.lock_dir)} after confirming no deployment is running.",
             SEE_LOCK,
         )

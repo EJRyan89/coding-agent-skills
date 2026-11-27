@@ -464,9 +464,20 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
         _change("review", ProcessResult(3, "out\n", "err\n")),
         (
             RuntimeContractError,
-            "GitHub Copilot CLI failed with exit code 3; see {diagnostic}",
+            # Copilot's stderr is its reason, on one line.
+            "GitHub Copilot CLI failed with exit code 3: err; see {diagnostic}",
             2,
             "out\n\nSTDERR:\nerr\n",
+        ),
+    ),
+    (
+        "a review run that fails printing nothing on stderr",
+        _change("review", ProcessResult(3, "out\n", "")),
+        (
+            RuntimeContractError,
+            "GitHub Copilot CLI failed with exit code 3 and printed nothing on stderr; see {diagnostic}",
+            2,
+            "out\n",
         ),
     ),
     (

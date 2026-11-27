@@ -26,6 +26,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import frontmatter
 import json_writer
 import whole_number
+from flat_text import reason_line
 from git_client import NO_HOOKS, GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
@@ -482,10 +483,15 @@ def set_reviewer_model(home: Path, model: str) -> str | None:
     path = home / REVIEWER_AGENT
     try:
         lines = LINE_BREAK.split(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return f"{runtime_canary.forward(path)} cannot be read: {exc.strerror or exc}"
+    except UnicodeDecodeError:
+        return f"{runtime_canary.forward(path)} is not UTF-8 text"
+    try:
         end = lines.index("---", 1)
         head = [line for line in lines[1:end] if not line.startswith("effort:")]
         at = head.index("model: inherit")
-    except (OSError, ValueError):
+    except ValueError:
         return f"{runtime_canary.forward(path)} has no frontmatter line `model: inherit` to set"
     head[at : at + 1] = [f"model: {MODELS[model]}", f"effort: {REVIEWER_EFFORT[model]}"]
     path.write_text("\n".join([lines[0], *head, *lines[end:]]), encoding="utf-8")
@@ -659,7 +665,13 @@ def run_failure(
         elif completed.timed_out:
             reasons.append(f"timed out after {timeout:g} seconds")
         elif completed.returncode != 0:
-            reasons.append(f"Claude Code exited with code {completed.returncode}")
+            # The results file records a fixed phrase, since what Claude Code said on stderr may name the machine's
+            # paths; the printed reason names it, on one bounded line.
+            said = reason_line(completed.stderr)
+            exited = f"Claude Code exited with code {completed.returncode}"
+            reasons.append(
+                exited if recorded else f"{exited}: {said}" if said else f"{exited} and printed nothing on stderr"
+            )
         return "; ".join([*reasons, *problems])
     if not reviewers:
         return "no reviewer subagent ran, so the record is not the model's"

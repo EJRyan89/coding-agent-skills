@@ -1340,7 +1340,17 @@ class RunTests(RuntimeCanaryTestCase):
     def test_a_run_without_any_script_is_a_never_ran_failure_with_its_cause(self) -> None:
         cases: tuple[tuple[Completed, list[str], str], ...] = (
             (Completed(0, "", ""), [], "never ran a script from the skill"),
-            (Completed(3, "", ""), [], "exited with code 3 before running a script from the skill"),
+            (
+                Completed(3, "", ""),
+                [],
+                "exited with code 3 before running a script from the skill and printed nothing on stderr",
+            ),
+            # The reason the runtime gave on stderr, on one line, follows its exit code.
+            (
+                Completed(3, "{}\n", "Error: the model\nis not available\n"),
+                [],
+                "exited with code 3 before running a script from the skill: Error: the model is not available",
+            ),
             (
                 Completed(1, "", "", timed_out=True),
                 [],
