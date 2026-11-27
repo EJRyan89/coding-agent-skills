@@ -93,8 +93,11 @@ def test_any_other_reference_is_refused(value: str) -> None:
 SUITE = """
 import unittest
 import unittest as ut
+import builtins
 from unittest import IsolatedAsyncioTestCase
 from unittest import TestCase as Base
+from unittest import case
+from unittest.async_case import IsolatedAsyncioTestCase as AsyncCase
 
 
 def test_function():
@@ -170,6 +173,41 @@ class TestBased(TestPlain):
         pass
 
 
+class Modular(case.TestCase):
+    def test_modular(self):
+        pass
+
+
+class AsyncModular(AsyncCase):
+    async def test_async_modular(self):
+        pass
+
+
+class TestBuiltinObject(builtins.object):
+    def test_builtin_object(self):
+        pass
+
+
+class TestGrandchild(TestBased):
+    def test_grandchild(self):
+        pass
+
+
+class TestAttribute:
+    label = "a class attribute"
+
+    def test_label(self):
+        pass
+
+
+class TestInitBased(TestPlain):
+    def __init__(self):
+        pass
+
+    def test_guard(self):
+        pass
+
+
 class Helper:
     def test_guard(self):
         pass
@@ -232,6 +270,11 @@ class TestOffBase(OffBase):
         pass
 
 
+class CaseThenOff(unittest.TestCase, OffBase):
+    def test_guard(self):
+        pass
+
+
 class TestAnnotatedOff:
     __test__: bool = False
 
@@ -258,10 +301,16 @@ DECIDED: list[tuple[str, str | None]] = [
     ("Inherited.test_inherited", None),
     ("Mixed.test_mixed", None),
     ("TestCaseInit.test_guard", None),
+    ("Modular.test_modular", None),
+    ("AsyncModular.test_async_modular", None),
     # A class whose name starts with `Test` and whose lineage, the suite's own classes, defines no __init__ or __new__.
     ("TestPlain.test_plain", None),
     ("TestObject.test_object", None),
     ("TestBased.test_based", None),
+    ("TestBuiltinObject.test_builtin_object", None),
+    ("TestGrandchild.test_grandchild", None),
+    # A class attribute of another name switches nothing off.
+    ("TestAttribute.test_label", None),
     ("Catalogue", NO_TEST),
     ("test_nested", NO_TEST),
     ("test_function.test_nested", NO_TEST),
@@ -279,14 +328,23 @@ DECIDED: list[tuple[str, str | None]] = [
     ("TestInit.test_guard", UNCOLLECTED),
     ("TestNew.test_guard", UNCOLLECTED),
     ("TestInherits.test_guard", UNCOLLECTED),
+    ("TestInitBased.test_guard", UNCOLLECTED),
     ("TestOff.test_guard", UNCOLLECTED),
     ("CaseOff.test_guard", UNCOLLECTED),
     ("TestOffBase.test_guard", UNCOLLECTED),
     ("TestAnnotatedOff.test_guard", UNCOLLECTED),
+    # A TestCase whose later base sets __test__: every base is read, not only those before the TestCase.
+    ("CaseThenOff.test_guard", UNCOLLECTED),
 ]
 # The tests pytest collects from SUITE that refusal refuses as NO_TEST, which a reference cannot name: one bound by
 # assignment, and a method a class inherits, since the method is read in the class's own body alone.
-STRICTER = ["test_assigned", "Mixed.test_method", "TestBased.test_plain"]
+STRICTER = [
+    "test_assigned",
+    "Mixed.test_method",
+    "TestBased.test_plain",
+    "TestGrandchild.test_based",
+    "TestGrandchild.test_plain",
+]
 
 # The classes whose collection the suite alone cannot settle, which refusal refuses as UNSETTLED though pytest may
 # collect them: a base imported from another module, a base the suite defines only later, a metaclass, and a decorator.
@@ -338,6 +396,24 @@ class TestOnElsewhere(TestElsewhere):
 class TestOnMeta(TestMeta):
     def test_guard(self):
         pass
+
+
+import support
+
+
+class TestOnAttribute(support.SupportCase):
+    def test_guard(self):
+        pass
+
+
+class CaseThenElsewhere(unittest.TestCase, SupportCase):
+    def test_guard(self):
+        pass
+
+
+class TestSelf(TestSelf):
+    def test_guard(self):
+        pass
 """
 UNSETTLED = [
     "Elsewhere.test_guard",
@@ -348,6 +424,11 @@ UNSETTLED = [
     # A class whose base is the suite's own, but whose base's lineage the suite does not settle.
     "TestOnElsewhere.test_guard",
     "TestOnMeta.test_guard",
+    # A base named by an attribute of an imported module, a TestCase with a later base the suite does not settle, and a
+    # class named as its own base, which ends the walk rather than looping.
+    "TestOnAttribute.test_guard",
+    "CaseThenElsewhere.test_guard",
+    "TestSelf.test_guard",
 ]
 
 
@@ -368,5 +449,11 @@ def test_a_test_bound_by_assignment_or_inherited_is_refused(name: str) -> None:
 
 def test_each_refusal_names_its_cause() -> None:
     assert catalogue_tests.NO_TEST == "defines no test of that name"
-    assert "a class pytest does not collect" in catalogue_tests.UNCOLLECTED
-    assert "a base imported from another module" in catalogue_tests.UNSETTLED
+    assert catalogue_tests.UNCOLLECTED == (
+        "defines it in a class pytest does not collect, which is no unittest TestCase and either has a name not "
+        "starting with `Test` or a lineage that defines __init__ or __new__, or binds __test__"
+    )
+    assert catalogue_tests.UNSETTLED == (
+        "defines it in a class whose collection the suite alone does not settle, through a base imported from another "
+        "module or defined later in the suite, a metaclass or another class keyword, or a decorator"
+    )
