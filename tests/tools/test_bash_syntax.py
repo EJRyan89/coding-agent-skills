@@ -824,6 +824,11 @@ def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_
         ('days_old"$sfx"\n', {"days_old"}, set()),
         ("bash -c $'days_old\\n'\n", {"days_old"}, set()),
         ('echo "${x:-a days_old $(d)}"\n', {"days_old", "d"}, set()),
+        # A ${ }'s substitutions are cut where each stands, a process substitution before a command substitution
+        # included, so the comment in the first is never kept.
+        ("echo ${x:<(b # c\n):$(a)}\n", {"a", "b"}, {"c"}),
+        # A substitution the word lists twice, as a subscript's process substitution is, is cut once and read twice.
+        ("echo ${a[<(b)]:-$(a)}\n", {"a", "b"}, set()),
     ],
 )
 def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
@@ -848,6 +853,22 @@ def test_a_quoted_copy_of_a_substitution_cut_in_its_place_leaves_the_same_names(
     found = bash_syntax.uncommented_text(text)
     cut_in_place = "echo '$(d # x\n)'\"$( )\" d"
     assert sorted(re.findall(r"[\w-]+", found)) == sorted(re.findall(r"[\w-]+", cut_in_place))
+
+
+def test_uncommented_text_refuses_nesting_past_the_recursion_limit() -> None:
+    with pytest.raises(bash_syntax.NotRead, match=r"^it nests deeper than the reader follows$"):
+        bash_syntax.uncommented_text("echo " + "$(" * DEPTH + "x" + ")" * DEPTH)
+
+
+def test_a_substitution_listed_twice_is_cut_once_and_read_each_time() -> None:
+    # The skip when a substitution's form and body are no longer in the word: the second listing of `<(b)` finds the
+    # word already cut there, so the word keeps one cut and each listing's body is read, in the order written.
+    text = "echo ${a[<(b)]:-$(a)}\n"
+    bash_agreement.assert_reader_agrees([text])
+    word = bash_syntax.Lexer(text).run()[1]
+    assert isinstance(word, bash_syntax.Word)
+    assert [str(body) for body in word.substitutions].count("b") == 2
+    assert bash_syntax.uncommented_text(text) == "echo ${a[<( )]:-$( )} b b a \n"
 
 
 @pytest.mark.parametrize("text", ["echo 'unclosed\n", 'echo "$(f\n', "cat <(echo\n"])

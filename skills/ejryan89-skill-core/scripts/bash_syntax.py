@@ -403,18 +403,27 @@ class Source(str):
     each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
     `lines[len(self)]` the line its end stands on, and, for a substitution's text, the `form` that opened it: `$(`,
     `` ` ``, `<(`, or `>(`, and whether it is a `$( )` or process substitution's body holding a case pattern whose `)`
-    no `(` opened, `bare_case`, which Bash 3.2 reads otherwise. It compares and hashes as the plain text it holds."""
+    no `(` opened, `bare_case`, which Bash 3.2 reads otherwise, and where its form starts in the text the lexer read,
+    `offset`, -1 for text no form opened, so a reader can list a word's substitutions in the order they are written. It
+    compares and hashes as the plain text it holds."""
 
     lines: tuple[int, ...]
     form: str
     bare_case: bool
+    offset: int
 
-    def __new__(cls, text: str, lines: Sequence[int], form: str = "") -> Source:
+    def __new__(cls, text: str, lines: Sequence[int], form: str = "", offset: int = -1) -> Source:
         source = super().__new__(cls, text)
         source.lines = tuple(lines)
         source.form = form
         source.bare_case = False
+        source.offset = offset
         return source
+
+
+def written_at(text: str) -> int:
+    """Where a substitution's form starts in the text the lexer read, as its Source keeps it; -1 for any other text."""
+    return text.offset if isinstance(text, Source) else -1
 
 
 def line_numbers(text: str) -> tuple[int, ...]:
@@ -1170,7 +1179,7 @@ class Lexer:
         finally:
             self.holds_bare_case = self.holds_bare_case or inner.holds_bare_case
         self.index = inner.index + 1
-        source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
+        source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form, start - len(form))
         source.bare_case = inner.bare_case
         return source
 
@@ -1313,7 +1322,8 @@ class Lexer:
             self.refuse(TRANSLATED_REASON)
         if double_quoted_word(content, quoted):
             processes: list[str] = [text for text in found if isinstance(text, Source) and text.form in ("<(", ">(")]
-            found = self.double_quoted_expansions(start, ansi_c) + processes
+            # Listed in the order they are written, a process substitution before a command substitution included.
+            found = sorted(self.double_quoted_expansions(start, ansi_c) + processes, key=written_at)
         substitutions.extend(found)
         if not nested:
             # ${NAME:=word} and ${NAME=word} assign, and so does each such expansion nested in the word.
@@ -1407,6 +1417,10 @@ class Lexer:
             self.refuse(f"{what} is not read ({error})")
         self.holds_bare_case = self.holds_bare_case or lexer.holds_bare_case
         self.refusals.extend(lexer.refusals)
+        # Each was read from the slice that starts at start, so its form starts that much further into this text.
+        for text in found:
+            if isinstance(text, Source) and text.offset >= 0:
+                text.offset += start
         return found
 
     def ansi_c_quoted(self, start: int) -> str:
@@ -1423,6 +1437,7 @@ class Lexer:
 
     def backquoted(self) -> Source:
         """The command a backquote pair runs, with the backslashes that escape a backquote, `$`, or `\\` removed."""
+        opened = self.index
         index = self.index + 1
         body: list[str] = []
         numbers: list[int] = []
@@ -1434,7 +1449,7 @@ class Lexer:
                 index += 2
             elif character == "`":
                 self.index = index + 1
-                return Source("".join(body), [*numbers, self.lines[index]], "`")
+                return Source("".join(body), [*numbers, self.lines[index]], "`", opened)
             else:
                 body.append(character)
                 numbers.append(self.lines[index])
@@ -1933,8 +1948,13 @@ def uncommented_text(text: str) -> str:
     and body stands earlier in the word, as a single-quoted copy before its double-quoted substitution, the copy is
     cut instead, which leaves the word the same text in another order, the copy's text being the substitution's.
     Raises BashSyntaxError where the words cannot be read, as an unclosed quote."""
-    tokens = Lexer(text, lines=source_lines(text)).run()
-    return " ".join(_uncommented_token(token) for token in tokens)
+    try:
+        tokens = Lexer(text, lines=source_lines(text)).run()
+        return " ".join(_uncommented_token(token) for token in tokens)
+    except RecursionError:
+        # The lexer and this reading follow nesting by recursion, so nesting deeper than Python's limit is text the
+        # reader cannot read, as parse refuses it.
+        raise NotRead("it nests deeper than the reader follows") from None
 
 
 # What closes a substitution, by the form that opened it.
