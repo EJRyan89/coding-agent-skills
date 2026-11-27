@@ -29,7 +29,8 @@ from bounded_process import Finished
 from fixture_template import remove_tree
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 
-from deployer import platform_support
+# The one Git Bash lookup. This folder's type check runs mypy from the folder, where the deployer is no package.
+from deployer import platform_support  # type: ignore[import-not-found]  # checked from this folder: no deployer
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 # The literals the script's lines are pinned against, independent of the constants that build them. The interpreter is
@@ -81,7 +82,7 @@ class Run:
 
 def bash() -> str:
     """The Bash the printed commands are for: Git Bash on Windows, as validation requires."""
-    found = platform_support.find_bash()
+    found: str | None = platform_support.find_bash()
     if found is None:
         raise AssertionError(f"{platform_support.BASH_MISSING} Bash reruns the printed commands")
     return found
