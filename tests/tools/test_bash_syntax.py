@@ -827,8 +827,10 @@ def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_
         # A ${ }'s substitutions are cut where each stands, a process substitution before a command substitution
         # included, so the comment in the first is never kept.
         ("echo ${x:<(b # c\n):$(a)}\n", {"a", "b"}, {"c"}),
-        # A substitution the word lists twice, as a subscript's process substitution is, is cut once and read twice.
+        # A substitution the word lists twice, as a subscript's process substitution is, is cut once and read twice,
+        # and its second listing never cuts a copy written later, past a substitution whose comment it would keep.
         ("echo ${a[<(b)]:-$(a)}\n", {"a", "b"}, set()),
+        ("echo ${a[<(b)]:-$(a # c\n)}<(b)\n", {"a", "b"}, {"c"}),
     ],
 )
 def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
@@ -853,6 +855,31 @@ def test_a_quoted_copy_of_a_substitution_cut_in_its_place_leaves_the_same_names(
     found = bash_syntax.uncommented_text(text)
     cut_in_place = "echo '$(d # x\n)'\"$( )\" d"
     assert sorted(re.findall(r"[\w-]+", found)) == sorted(re.findall(r"[\w-]+", cut_in_place))
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        ("echo ${x:<(p):`q`}\n", [("p", "<(", 9), ("q", "`", 14)]),
+        ("echo ${x:`q`:<(p)}\n", [("q", "`", 9), ("p", "<(", 13)]),
+    ],
+)
+def test_a_braced_expansion_lists_a_backquote_among_its_substitutions_where_it_is_written(
+    text: str, listed: list[tuple[str, str, int]]
+) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    word = bash_syntax.Lexer(text).run()[1]
+    assert isinstance(word, bash_syntax.Word)
+    found = [(str(body), body.form, body.offset) for body in word.substitutions if isinstance(body, bash_syntax.Source)]
+    assert found == listed
+
+
+def test_a_documented_limit_a_backquoted_body_bash_removes_an_escape_from_stays_in_the_word() -> None:
+    # The body Bash runs, `printf %s $HOME # c`, is not written in the word, whose `\$` Bash removes, so no cut finds
+    # it and the word keeps it, its comment included; the body is still read, without the comment.
+    text = "echo `printf %s \\$HOME # c`\n"
+    bash_agreement.assert_reader_agrees([text])
+    assert bash_syntax.uncommented_text(text) == "echo `printf %s \\$HOME # c` printf %s $HOME \n"
 
 
 def test_uncommented_text_refuses_nesting_past_the_recursion_limit() -> None:

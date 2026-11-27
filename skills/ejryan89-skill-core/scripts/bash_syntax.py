@@ -1974,11 +1974,13 @@ def _uncommented_token(token: Token) -> str:
         return f"{name}{opened} {uncommented_text(elements.removesuffix(')'))} )"
     # Each substitution is cut out by its form and body, written so, at or after where the one before it ended.
     written, cursor = token.raw, 0
+    cut: set[int] = set()
     for body in token.substitutions:
         form = body.form if isinstance(body, Source) else ""
         closer = SUBSTITUTION_CLOSERS.get(form)
-        if closer is None:
+        if closer is None or written_at(body) in cut:
             continue
+        cut.add(written_at(body))
         start = written.find(f"{form}{body}{closer}", cursor)
         if start < 0:
             continue
