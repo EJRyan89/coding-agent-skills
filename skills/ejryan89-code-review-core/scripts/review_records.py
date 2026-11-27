@@ -9,7 +9,7 @@ import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, NamedTuple, NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -418,6 +418,33 @@ class ReviewRecord(TypedDict):
     comment_dispositions: NotRequired[list[CommentDisposition]]
     artifacts: NotRequired[Artifacts | None]
     ledger: NotRequired[list[LedgerEntry]]
+
+
+class ReviewIdentity(NamedTuple):
+    """Which review a record holds: its repository, in the one form a repository identity is compared in, its pull
+    request number, the head commit it read, the base branch's tip when it ran, and its version. A later version, as a
+    re-review is, is another review even at the same head and base, so a reader that groups, compares, or relays
+    reviews keys them by this, never by the head alone. `base_sha` is that tip, not the merge base the reviewer diffed
+    the head against: two reviews with equal heads and bases read one diff, but two reviews of one head on different
+    tips, as after main moved, may have read one diff too, so the base alone never says that two diffs differ."""
+
+    repository: str
+    number: int
+    head_sha: str
+    base_sha: str
+    version: int
+
+
+def review_identity(record: ReviewRecord) -> ReviewIdentity:
+    """The identity of a validated record's review: its repository, pull request number, head, base, and version."""
+    pull = record["pull_request"]
+    return ReviewIdentity(
+        validate_repository_identity(record["repository"]),
+        pull["number"],
+        pull["head_sha"],
+        pull["base_sha"],
+        record["review"]["version"],
+    )
 
 
 class RecordError(ValueError):

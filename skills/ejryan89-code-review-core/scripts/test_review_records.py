@@ -22,6 +22,7 @@ from review_records import (
     AdapterResult,
     RecordError,
     RecordFieldError,
+    ReviewIdentity,
     ReviewRecord,
     build_record,
     calculate_verdict,
@@ -29,6 +30,7 @@ from review_records import (
     read_title,
     record_artifacts,
     render_markdown,
+    review_identity,
     sha256_text,
     valid_analyzer,
     validate_adapter_result,
@@ -596,6 +598,21 @@ class RecordTests(unittest.TestCase):
             validate_adapter_result(
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
+
+    def test_a_review_is_identified_by_its_pull_request_head_base_and_version(self) -> None:
+        request = valid_request("Example/One")
+        record = build_record(request, valid_adapter_result("Example/One"), version=1, policy={})
+        identity = review_identity(record)
+        # Pinned against literals, the repository in the one form a repository identity is compared in.
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "a" * 40, 1), identity)
+        # A re-review of the same head on the same base is another review.
+        again = copy.deepcopy(record)
+        again["review"]["version"] = 2
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "a" * 40, 2), review_identity(again))
+        # The same head on another base tip, reviewed at a new version, names that tip.
+        retargeted = copy.deepcopy(again)
+        retargeted["pull_request"]["base_sha"] = "c" * 40
+        self.assertEqual(ReviewIdentity("example/one", 12, "b" * 40, "c" * 40, 2), review_identity(retargeted))
 
     def test_verdict_policy_is_centralized(self) -> None:
         ledger: Any = [{"severity": "SHOULD_FIX", "state": "open"}] * 2

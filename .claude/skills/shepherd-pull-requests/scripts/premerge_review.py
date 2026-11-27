@@ -20,9 +20,12 @@ Its lines, printed after the PR lines:
                                        its Markdown report, none for a legacy review whose report is gone; carried
                                        from the reviewed head when the head moved and its changes compare as that
                                        review read them
-    REVIEW_DUE #<number> <branch> head <commit> first|since <commit>
+    REVIEW_DUE #<number> <branch> head <commit> first|since <commit> v<version>|legacy
                                        a pull request no record covers: first when it has no review, else the head
-                                       the latest record reviewed, which is the head itself when only its base moved
+                                       the latest record reviewed, which is the head itself when only its base moved,
+                                       and that record's version, or legacy for a migrated legacy review. The head and
+                                       the review it follows name the review due, the next version, so a head
+                                       retargeted to another base and reviewed there follows another review
     REVIEW_ARGUMENTS <arguments>       after the REVIEW_DUE lines: the review-prs arguments that review every one of
                                        them in one run, --pull for a first review and --re-review --scope auto after
     REVIEW_UNREAD [#<number>] <reason> the configuration, or one pull request's records, could not be read
@@ -156,7 +159,8 @@ def review_lines(
             lines.append(f"REVIEW_DUE {named} first")
             first.append(pull.number)
         elif pull.number not in covered:
-            lines.append(f"REVIEW_DUE {named} since {outcome.head[:7]}")
+            follows = "legacy" if outcome.version is None else f"v{outcome.version}"
+            lines.append(f"REVIEW_DUE {named} since {outcome.head[:7]} {follows}")
             again.append(pull.number)
         else:
             version = "legacy" if outcome.version is None else f"v{outcome.version}"

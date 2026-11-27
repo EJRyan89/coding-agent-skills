@@ -423,6 +423,33 @@ class CollectTests(TrackerPipelineFixture):
         self.assertTrue(items["example/one#3"]["draft"])
         self.assertEqual("ghost", items["example/two#5"]["author"], "a deleted account is GitHub's ghost user")
 
+    def test_a_retargeted_head_reviewed_at_a_new_version_is_collected_as_the_new_review(self) -> None:
+        # Pinned before the collection read the review through review_identity: the re-review of the same head on
+        # the base GitHub retargeted it to is the review the row holds, its version and base, not the first's.
+        retargeted = "e" * 40
+        commit_record(
+            self.archive, "example/one", 2, archived_record(OLD_HEAD, base=REVIEWED_BASE), expected_latest_version=None
+        )
+        commit_record(
+            self.archive,
+            "example/one",
+            2,
+            archived_record(OLD_HEAD, base=retargeted, version=2),
+            expected_latest_version=1,
+        )
+        self.serve_default_pages()
+        code, out, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err), out)
+        collected = {item["number"]: item for item in json.loads(self.input.read_text(encoding="utf-8"))}
+        self.assertEqual(
+            (OLD_HEAD, retargeted, 2),
+            (
+                collected[2]["reviewed_head_sha"],
+                collected[2]["reviewed_base_sha"],
+                collected[2]["reviewed_version"],
+            ),
+        )
+
     def test_collect_writes_its_input_under_a_new_temporary_directory_by_default(self) -> None:
         self.serve_default_pages()
         temporary = self.root / "tmp"
