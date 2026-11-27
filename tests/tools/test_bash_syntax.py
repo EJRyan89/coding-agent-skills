@@ -803,7 +803,7 @@ def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_
     [
         ("run_thing # days_old\n", {"run_thing"}, {"days_old"}),
         ("# days_old\rrun_thing\n", set(), {"days_old", "run_thing"}),
-        # A quoted `#` and one inside a word start no comment; a word's quotes are not kept.
+        # A quoted `#` and one inside a word start no comment.
         ("echo '# kept' x#y\n", {"#", "kept", "x#y"}, set()),
         # A comment inside a command or process substitution, in backquotes, in double quotes, or inside a ${ }, is
         # one Bash reads in the subshell, and so is one among an array assignment's elements.
@@ -818,15 +818,32 @@ def test_a_documented_limit_a_function_s_span_around_a_here_document_or_a_split_
         ("bash <<'EOF'\n# days_old\nrun_thing\nEOF\n", {"run_thing"}, {"days_old"}),
         ("cat <<EOF\ndays_old # in the body\nEOF\n", {"days_old"}, {"body"}),
         ("cat <<EOF\nit's days_old\nEOF\n", {"it's", "days_old"}, set()),
+        # A word is kept as written: a parameter keeps its `$` and braces, so it never joins the text beside it into
+        # another name, an ANSI-C string keeps its text, and a ${ }'s text outside its substitutions stays.
+        ('log="$TMP/${days}_old.log"\n', {"log"}, {"days_old"}),
+        ('days_old"$sfx"\n', {"days_old"}, set()),
+        ("bash -c $'days_old\\n'\n", {"days_old"}, set()),
+        ('echo "${x:-a days_old $(d)}"\n', {"days_old", "d"}, set()),
     ],
 )
 def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
     text: str, kept: set[str], dropped: set[str]
 ) -> None:
+    # A name counts as a reader of the text counts one: a whole word, as review-repository's untested route reads it.
     bash_agreement.assert_reader_agrees([text])
-    words = set(bash_syntax.uncommented_text(text).split())
-    assert kept <= words
-    assert not dropped & words
+    found = bash_syntax.uncommented_text(text)
+
+    def names(word: str) -> bool:
+        return re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", found) is not None
+
+    assert [word for word in sorted(kept) if not names(word)] == []
+    assert [word for word in sorted(dropped) if names(word)] == []
+
+
+@pytest.mark.parametrize("text", ["echo 'unclosed\n", 'echo "$(f\n', "cat <(echo\n"])
+def test_uncommented_text_raises_on_text_the_grammar_cannot_read(text: str) -> None:
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.uncommented_text(text)
 
 
 class Refused(Exception):

@@ -787,7 +787,7 @@ class PresenceReadTests(unittest.TestCase):
         code = self.module._code_text("tests/test_x.sh", "run_thing # days_old\necho '# kept'\n").split()
         self.assertIn("run_thing", code)
         self.assertNotIn("days_old", code)
-        self.assertIn("kept", code)
+        self.assertIn("kept'", code)
 
     def test_a_bash_test_the_grammar_refuses_raises_rather_than_naming_anything(self) -> None:
         with self.assertRaises(ValueError):

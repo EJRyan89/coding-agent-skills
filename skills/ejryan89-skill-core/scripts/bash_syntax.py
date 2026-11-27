@@ -1924,17 +1924,19 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
 
 def uncommented_text(text: str) -> str:
     """Everything Bash reads in text but its comments, joined by spaces, for a reader that searches what a script names
-    outside one: each operator, and each word's text without its quotes, with the body of every command or process
-    substitution it holds read the same way, as the subshell Bash runs it in reads it, and an array assignment's
-    elements read so too. A here-document's body that is Bash the grammar reads, as a script handed to a shell is, is
-    read the same way, and any other body is data, kept whole. Raises BashSyntaxError where the words cannot be read,
-    as an unclosed quote."""
+    outside one: each operator, and each word as written, quotes, a parameter's `$` and braces, and an ANSI-C string's
+    text included, with the body of every command or process substitution it holds cut out where it stands and read
+    the same way, as the subshell Bash runs it in reads it, and an array assignment's elements read so too. A
+    here-document's body that is Bash the grammar reads, as a script handed to a shell is, is read the same way, and
+    any other body is data, kept whole. A limit: a backquoted body holding an escape Bash removes is not written in the
+    word as Bash reads it, so the word keeps it, a comment in it included. Raises BashSyntaxError where the words
+    cannot be read, as an unclosed quote."""
     tokens = Lexer(text, lines=source_lines(text)).run()
     return " ".join(_uncommented_token(token) for token in tokens)
 
 
-# A word's dynamic parts that name a substitution's form alone, whose body the word's substitutions hold.
-SUBSTITUTION_FORMS = frozenset({"$(", "`", "<(", ">("})
+# What closes a substitution, by the form that opened it.
+SUBSTITUTION_CLOSERS = {"$(": ")", "`": "`", "<(": ")", ">(": ")"}
 
 
 def _uncommented_token(token: Token) -> str:
@@ -1948,17 +1950,19 @@ def _uncommented_token(token: Token) -> str:
     if token.array:
         name, opened, elements = token.raw.partition("(")
         return f"{name}{opened} {uncommented_text(elements.removesuffix(')'))} )"
-    pieces: list[str] = []
-    for part in token.parts:
-        if part.kind != "dynamic" or part.text in SUBSTITUTION_FORMS:
-            pieces.append(part.text)
+    # Each substitution is cut out by its form and body, written so, at or after where the one before it ended.
+    written, cursor = token.raw, 0
+    for body in token.substitutions:
+        form = body.form if isinstance(body, Source) else ""
+        closer = SUBSTITUTION_CLOSERS.get(form)
+        if closer is None:
             continue
-        # A braced expansion's text holds each substitution inside it, which is read below.
-        braced = part.text
-        for body in token.substitutions:
-            braced = braced.replace(body, " ")
-        pieces.append(braced)
-    return " ".join(["".join(pieces), *(uncommented_text(body) for body in token.substitutions)])
+        start = written.find(f"{form}{body}{closer}", cursor)
+        if start < 0:
+            continue
+        written = f"{written[:start]}{form} {closer}{written[start + len(form) + len(body) + len(closer) :]}"
+        cursor = start + len(form) + 1 + len(closer)
+    return " ".join([written, *(uncommented_text(body) for body in token.substitutions)])
 
 
 def simple_commands(text: str) -> list[Simple]:
