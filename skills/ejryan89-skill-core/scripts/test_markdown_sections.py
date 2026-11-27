@@ -1416,6 +1416,21 @@ def test_session_commands_reads_a_console_fence_s_prompted_commands_without_prom
     assert session_commands(find_fences(bash)[0], bash, awaits_more) is None
 
 
+def test_top_level_sections_are_none_where_no_heading_of_the_level_stands() -> None:
+    assert top_level_sections(["hello"], 2) == []
+    assert top_level_sections(["# T", "", "text"], 2) == []
+    assert top_level_sections(["- item", "  ## Held", "> ## Quoted"], 2) == []
+
+
+def test_markdown_section_ends_only_at_a_heading_the_document_holds_itself() -> None:
+    # A `## ` line a list item or a blockquote holds is its container's text, as top_level_sections reads it, so the
+    # section runs past it to the document's own next heading.
+    text = "## One\nfirst\n- item\n  ## Held\n> ## Quoted\nlast\n## Two\nsecond"
+    assert markdown_section(text, "## One") == "first\n- item\n  ## Held\n> ## Quoted\nlast"
+    assert markdown_section("- item\n## One\nfirst", "## One") == "first"
+    assert markdown_section("> ## One\nfirst", "## One") is None
+
+
 @pytest.mark.parametrize(
     ("body", "commands"),
     [
@@ -1427,6 +1442,13 @@ def test_session_commands_reads_a_console_fence_s_prompted_commands_without_prom
         (["$ ls |", "  grep x", "x.txt"], [(1, "ls |\n  grep x")]),
         # Lines that never finish the command are output, and the command is read as written.
         (["$ if then", "bash: syntax error", "$ echo next"], [(1, "if then"), (3, "echo next")]),
+        # A held line that ends in a backslash continues the command into the next line, as any command line does.
+        (
+            ["$ make &&", "  make install \\", "  && rm -rf build", "done"],
+            [(1, "make &&\n  make install \\"), (3, "  && rm -rf build")],
+        ),
+        # A here-document's operator whose delimiter a backslash ends the text on is read, its body never closed.
+        (['$ echo "a', 'b" | cat <<EOF\\', "x", "EOF"], [(1, 'echo "a')]),
     ],
 )
 def test_session_commands_read_a_command_bash_has_not_finished_on_through_the_lines_that_finish_it(

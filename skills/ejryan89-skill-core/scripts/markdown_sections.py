@@ -285,7 +285,7 @@ def top_level_sections(lines: list[str], level: int) -> list[tuple[int, re.Match
     markdown_section ends a section at the next `## `. A heading of another level is the section's text, and so is a
     heading-shaped line a code block, a list item, or a blockquote holds, as GitHub renders it."""
     starts = [(index, heading) for index, heading in document_headings(lines) if len(heading.group("marks")) == level]
-    ends = [index for index, _ in starts[1:]] + [len(lines)]
+    ends = [index for index, _ in starts[1:]] + [len(lines)] if starts else []
     return [(index, heading, end) for (index, heading), end in zip(starts, ends, strict=True)]
 
 
@@ -899,7 +899,9 @@ def markdown_section(text: str, heading: str) -> str | None:
     """The lines under the first exact heading, ignoring its trailing spaces and tabs, up to the next `## ` heading.
 
     A line inside a fenced code block is the block's text, as GitHub renders it, so it is neither the heading nor the
-    section's end: a section whose body holds a fenced `## ` line runs past it. Its lines end where CommonMark ends
+    section's end: a section whose body holds a fenced `## ` line runs past it. A line a list item or a blockquote
+    holds never starts with `## `, its marker or its indentation coming first, so it is neither either, as
+    top_level_sections reads it. Its lines end where CommonMark ends
     one, at CR, LF, or CRLF, and each becomes LF; body whitespace and comments are otherwise preserved. None means
     the heading is absent.
     """
@@ -962,8 +964,10 @@ def session_commands(
     right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
     A command Bash has not finished, as `awaits_more` (bash_syntax's) tells, runs on through the unprompted lines
     that finish it, a here-document's body, a quoted string's next line, or the command after a `|` that ends a line,
-    each joined to its last line at a line break; lines that never finish it, up to the next prompt or the fence's
-    end, are output, and the command is read as written. Any other line is output.
+    each joined to its last line at a line break, and a held line ending in a backslash continues it into the next;
+    lines that never finish it, up to the next prompt or the fence's end, are output, and the command is read as
+    written. A held line that starts like a prompt, as a here-document's `$ text` body line, starts a new command
+    instead, a limit only running the session would settle. Any other line is output.
 
     SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
     root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
@@ -1013,7 +1017,7 @@ def prompted_commands(
             if not awaits_more("\n".join([*(line for _, line in commands[start:]), *held])):
                 last, typed = commands[-1]
                 commands[-1] = (last, "\n".join([typed, *held]))
-                held = []
+                continued, held = continues(held[-1]), []
             continue
         elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
             command = CONTINUATION_PROMPT.sub("", text, count=1)

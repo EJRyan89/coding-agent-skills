@@ -3601,6 +3601,22 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict[str, Any]]] = {
         {"CLAUDE.md": UNDECODABLE, ".github/copilot-instructions.md": MARKED},
         {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
+    # A CLAUDE.md with no level-two heading of its own projects no section, as one whose only `## ` lines a list
+    # item or a blockquote holds does, and neither stops the audit.
+    "copilot_from_claude_without_a_section": (
+        {
+            "CLAUDE.md": "# CLAUDE.md\n\nText.\n",
+            ".github/copilot-instructions.md": COPILOT_HEADER + "Text.\n",
+        },
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_from_claude_whose_headings_containers_hold": (
+        {
+            "CLAUDE.md": "# CLAUDE.md\n\n- Notes\n  ## Overview\n\n> ## Formatting Rules\n",
+            ".github/copilot-instructions.md": COPILOT_HEADER + "Text.\n",
+        },
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
     "copilot_sections_absent_from_claude": (
         {
             "CLAUDE.md": "# CLAUDE.md\n\n## Other\n\nText.\n",
@@ -3860,6 +3876,22 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     "copilot_with_undecodable_claude": [],
     "copilot_without_banner_beside_undecodable_claude": [
         ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
+    ],
+    "copilot_from_claude_without_a_section": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared",
+        ),
+    ],
+    "copilot_from_claude_whose_headings_containers_hold": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared",
+        ),
     ],
     "copilot_sections_absent_from_claude": [
         (

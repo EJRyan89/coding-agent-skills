@@ -854,7 +854,9 @@ class Lexer:
                 body.append(compared)
                 # The line of each character the body keeps, and of the LF that ends it, which joins it to the next.
                 numbers += places[len(line) - len(compared) :]
-            document.body = Source("\n".join(body), numbers if body else [self.lines[self.index]])
+            # A delimiter a backslash ends the text on leaves the index past the text's end, which has the last line.
+            end = self.lines[min(self.index, len(self.text))]
+            document.body = Source("\n".join(body), numbers if body else [end])
             if not document.quoted:
                 substitutions, assigns, parts, unclosed, holds = expansions(document.body, self.bash_3_2)
                 document.unclosed, document.bare_case = unclosed is not None, bool(unclosed and unclosed.bare_case)

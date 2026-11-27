@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from functools import partial
@@ -5876,3 +5877,14 @@ def test_a_stated_code_no_script_exits_with_is_a_mismatch_unless_the_caller_says
     lines = ["---", "name: alpha", "---", "It exits 3."]
     assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set()) == ["EXIT_MISMATCH SKILL.md 4 3"]
     assert skill_inventory.stated_codes(Path("SKILL.md"), lines, set(), True) == ["EXIT_UNREAD SKILL.md 4 3"]
+
+
+def test_the_scan_s_fence_readers_read_a_session_s_unfinished_command_on_through_the_lines_that_finish_it() -> None:
+    # fence_reads and first_word_commands read a console session through session_commands, given the Bash grammar's
+    # awaits_more, so a quoted path a command carries onto an unprompted line is the command's, never output's.
+    lines = ["```console", '$ grep -c x "docs/a.md', 'docs/b.md"', "2", "```"]
+    (fence,) = skill_inventory.find_fences(lines)
+    assert skill_inventory.first_word_commands(fence, lines) == [(1, 'grep -c x "docs/a.md\ndocs/b.md"')]
+    reads = skill_inventory.fence_reads(lines, 0)
+    assert reads[1] == Counter({"docs/a.md": 1, "docs/b.md": 1})
+    assert reads[2] == Counter()
