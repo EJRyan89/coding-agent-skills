@@ -17,6 +17,7 @@ import json_writer
 import private_folder
 from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
+from bash_syntax import awaits_more
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences, session_commands
 from suite_names import is_suite_name
 from text_lines import lines_and_breaks, program_lines, text_lines
@@ -460,7 +461,7 @@ def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
                 f"ERROR: Unclosed Bash code fence in {logical}",
                 "Close the fence with the characters that open it, then retry.",
             )
-        session = session_commands(fence, lines)
+        session = session_commands(fence, lines, awaits_more)
         commands = (
             [command for _, command in session]
             if session is not None

@@ -642,6 +642,20 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertTrue(checked)
         self.assertTrue(all(text.endswith("\necho hi\nprintf '%s\\n' \\\nfirst\n") for text in checked), checked)
 
+    def test_a_console_session_s_command_bash_finishes_on_unprompted_lines_deploys(self) -> None:
+        # A here-document's body, a quoted string's next line, and a command after a pipe carry no prompt, and each
+        # is part of the command Bash has not finished, never output read apart from it.
+        sessions = [
+            "```console\n$ cat <<EOF > notes.txt\nhello\nEOF\n```",
+            '```console\n$ git commit -m "one\ntwo"\n[main 1a2b3c4] one\n```',
+            "```console\n$ cat <<-EOF\n\thello\n\tEOF\n```",
+            "```console\n$ git log --oneline |\n  head -n 1\n1a2b3c4 one\n```",
+        ]
+        self.make_source_json()
+        self.make_skill("alpha", "Session fixture\n\n" + "\n\n".join(sessions))
+        self.make_config()
+        self.deploy_ok("--all")
+
     def test_a_console_session_s_command_bash_refuses_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Session fixture\n\n```console\n$ if then\nbash: syntax error\n```")

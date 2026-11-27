@@ -26,6 +26,8 @@ PATH_CHARACTER = r"[\w%+@~&./\\-]"
 # around, each stating where its path starts and ends.
 RELATIVE_PATH = rf"{PATH_START}{PATH_CHARACTER}*"
 # A path written bare in prose that holds a `/` and ends at a file's extension, read whole: it starts only where no
-# PATH_CHARACTER stands before it, so a path is never read from inside another, after its `%` or `\\`, and
-# `docs%20x/guide.md` and `a\\b/c.md` are each one path. A `#` ends it, so a fragment is never part of the path.
-PROSE_PATH = rf"(?<!{PATH_CHARACTER}){PATH_START}{PATH_CHARACTER}*/{PATH_CHARACTER}*\.\w+"
+# word character, `%`, `.`, `-`, `/`, or `\` stands before it, any of which would put the start inside a path, so
+# `docs%20x/guide.md` and `a\b/c.md` are each one path; it may start after `@`, as Claude Code's file mention
+# `@docs/guide.md` names `docs/guide.md`, and after `+`, `~`, or `&`. A `#` ends it, so a fragment is never part of the
+# path.
+PROSE_PATH = rf"(?<![\w%./\\-]){PATH_START}{PATH_CHARACTER}*/{PATH_CHARACTER}*\.\w+"

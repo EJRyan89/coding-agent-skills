@@ -2147,14 +2147,26 @@ DEFAULT_COPILOT_SECTIONS: list[str] = [
 COPILOT_BANNER = "> AUTO-GENERATED from CLAUDE.md. Do not edit directly — update CLAUDE.md instead."
 
 
+# How the repository's generator starts a CLAUDE.md section it projects into Copilot's instructions: the line starts
+# with this, and the rest of the line, stripped, names the section.
+GENERATOR_SECTION_PREFIX = "## "
+
+
 def _extract_sections(content: str, section_names: list[str]) -> str:
-    """Extract named H2 sections from Markdown content, as markdown_sections' top_level_sections reads each: a
-    heading-shaped line inside a code block, a list item, a blockquote, or a comment GitHub hides is the text around it,
-    never a heading, and a section runs to the next H1 or H2 heading."""
+    """Extract named H2 sections from Markdown content as the repository's generator projected them, so the parity
+    check compares like with like: a section starts at a line the generator reads as a heading, `## ` and a name at
+    the line's start, named by the rest of the line stripped, and runs to the next such line. A level-two heading the
+    generator does not read so, indented or with a tab after its marks, is the section's text, as is a `# ` heading.
+    Its headings are those markdown_sections' top_level_sections reads, so a heading-shaped line inside a code block,
+    a list item, a blockquote, or a comment GitHub hides is the text around it, never a heading."""
     lines = text_lines(content)
     sections: dict[str, list[str]] = {}
-    for index, heading, end in top_level_sections(heading_lines(lines), 2):
-        sections.setdefault(heading.group("text"), []).extend(lines[index:end])
+    current: list[str] | None = None
+    for index, _, end in top_level_sections(heading_lines(lines), 2):
+        if lines[index].startswith(GENERATOR_SECTION_PREFIX):
+            current = sections.setdefault(lines[index][len(GENERATOR_SECTION_PREFIX) :].strip(), [])
+        if current is not None:
+            current.extend(lines[index:end])
     parts: list[str] = []
     for name in section_names:
         if name in sections:

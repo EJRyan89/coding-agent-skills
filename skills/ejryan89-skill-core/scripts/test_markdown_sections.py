@@ -14,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from bash_syntax import awaits_more
 from markdown_sections import (
     ATX_HEADING,
     EXECUTABLE_FENCES,
@@ -1380,8 +1381,9 @@ def test_a_block_s_lines_are_kept_as_written_and_its_text_may_leave_a_list_item_
     assert code.lines == ("    one", "", "    two")
 
 
-def test_top_level_sections_run_from_each_heading_of_a_level_to_the_next_of_it_or_above() -> None:
-    # A heading a list item, a quote, or a fence holds is its container's text, and a deeper one is the section's.
+def test_top_level_sections_run_from_each_heading_of_a_level_to_the_next_of_that_level() -> None:
+    # A heading a list item, a quote, or a fence holds is its container's text, and one of another level, deeper or
+    # higher, is the section's, as markdown_section ends a section only at the next `## `.
     document = [
         "# Title",  # 0
         "## One",  # 1
@@ -1399,16 +1401,36 @@ def test_top_level_sections_run_from_each_heading_of_a_level_to_the_next_of_it_o
         "last",  # 13
     ]
     sections = [(index, heading.group("text"), end) for index, heading, end in top_level_sections(document, 2)]
-    assert sections == [(1, "One", 9), (9, "Two", 11), (12, "Three", 14)]
+    assert sections == [(1, "One", 9), (9, "Two", 12), (12, "Three", 14)]
     assert [(index, end) for index, _, end in top_level_sections(document, 1)] == [(0, 11), (11, 14)]
 
 
 def test_session_commands_reads_a_console_fence_s_prompted_commands_without_prompts_or_output() -> None:
     lines = ["```console", "$ echo hi", "it's done", "(venv) user@host:~$ git status \\", "> --short", "```"]
     (fence,) = find_fences(lines)
-    assert session_commands(fence, lines) == [(1, "echo hi"), (3, "git status \\"), (4, "--short")]
+    assert session_commands(fence, lines, awaits_more) == [(1, "echo hi"), (3, "git status \\"), (4, "--short")]
     # A console fence with no prompt is no session, and neither is a fence of another label.
     unprompted = ["```console", "echo hi", "```"]
-    assert session_commands(find_fences(unprompted)[0], unprompted) is None
+    assert session_commands(find_fences(unprompted)[0], unprompted, awaits_more) is None
     bash = ["```bash", "$ echo hi", "```"]
-    assert session_commands(find_fences(bash)[0], bash) is None
+    assert session_commands(find_fences(bash)[0], bash, awaits_more) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "commands"),
+    [
+        # Bash reads the lines after a command it has not finished as more of it, with no prompt before them: a
+        # here-document's body, a quoted string's next line, and a command after a pipe that ends a line.
+        (["$ cat <<EOF > notes.txt", "hello", "EOF", "done"], [(1, "cat <<EOF > notes.txt\nhello\nEOF")]),
+        (["$ cat <<-EOF", "\thello", "\tEOF"], [(1, "cat <<-EOF\n\thello\n\tEOF")]),
+        (['$ git commit -m "one', 'two"', "[main 1a2b3c4] one"], [(1, 'git commit -m "one\ntwo"')]),
+        (["$ ls |", "  grep x", "x.txt"], [(1, "ls |\n  grep x")]),
+        # Lines that never finish the command are output, and the command is read as written.
+        (["$ if then", "bash: syntax error", "$ echo next"], [(1, "if then"), (3, "echo next")]),
+    ],
+)
+def test_session_commands_read_a_command_bash_has_not_finished_on_through_the_lines_that_finish_it(
+    body: list[str], commands: list[tuple[int, str]]
+) -> None:
+    lines = ["```console", *body, "```"]
+    assert session_commands(find_fences(lines)[0], lines, awaits_more) == commands

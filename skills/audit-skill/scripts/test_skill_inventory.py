@@ -5145,6 +5145,9 @@ def test_the_grant_checks_read_a_console_session_s_prompted_commands_without_the
         ("```powershell\necho a \\\ngit status\n```\n", [(6, "git status")]),
         # A fence that ends on a continued line keeps that line as its own command, its backslash stripped.
         ("```bash\necho a\ngit status \\\n```\n", [(6, "git status")]),
+        # A console session's command Bash has not finished runs on through the unprompted lines that finish it: a
+        # quoted string's next line is part of it, never output.
+        ('```console\n$ git commit -m "one\ntwo"\n[main 1a2b3c4] one\n```\n', [(5, 'git commit -m "one two"')]),
     ],
 )
 def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
@@ -5154,6 +5157,19 @@ def test_the_grant_checks_join_a_line_a_backslash_continues_as_bash_does(
     ungranted = [line for line in grant_lines(tmp_path, allowed, fence) if line.startswith("UNGRANTED ")]
     assert ungranted == [
         f"UNGRANTED {tool} {line} {command}" for line, command in expected for tool in ("Bash", "PowerShell")
+    ]
+
+
+def test_the_grant_checks_read_the_command_after_a_pipe_a_session_line_ends_with(tmp_path: Path) -> None:
+    # Bash reads the unprompted line after a `|` that ends a session's line as the pipe's next command, never output,
+    # and Claude Code checks each side of the pipe as a command of its own.
+    fence = "```console\n$ git log --oneline |\n  head -n 1\n1a2b3c4 one\n```\n"
+    allowed = ["Bash(echo *)", "PowerShell(echo *)"]
+    assert [line for line in grant_lines(tmp_path, allowed, fence) if line.startswith("UNGRANTED ")] == [
+        "UNGRANTED Bash 5 git log --oneline",
+        "UNGRANTED Bash 5 head -n 1",
+        "UNGRANTED PowerShell 5 git log --oneline",
+        "UNGRANTED PowerShell 5 head -n 1",
     ]
 
 

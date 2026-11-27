@@ -1215,7 +1215,7 @@ def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
         label = fence.language.casefold()
         if label not in SHELL_FENCES | POWERSHELL_FENCES:
             continue
-        lines = session_commands(fence, body)
+        lines = session_commands(fence, body, bash_syntax.awaits_more)
         if lines is None:
             lines = [(index, fence.content(body[index])) for index in fence.body()]
         for index, text in continued_commands(lines) if label in BACKSLASH_FENCES else lines:
@@ -1764,7 +1764,7 @@ def fence_reads(lines: list[str], start: int) -> dict[int, Counter[str]]:
                 for line, path in found:
                     reads[body[line - 1]][path] += 1
                 continue
-            session = prompted_commands(fence, lines, BASH_PROMPT)
+            session = prompted_commands(fence, lines, BASH_PROMPT, bash_syntax.awaits_more)
         any_case = label in ANY_CASE_FENCES
         for index, command in first_word_commands(fence, lines) if session is None else session:
             reads[index] = command_line_paths(command, any_case=any_case)
@@ -2585,7 +2585,7 @@ def first_word_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]]
     """The command lines of a fence read by its first word, by index, each as CommonMark gives it to the fence's
     content without its prompt: a session's, as session_commands reads them, and otherwise every body line, after its
     blanks and any `$ ` or `> ` prompt."""
-    commands = session_commands(fence, lines)
+    commands = session_commands(fence, lines, bash_syntax.awaits_more)
     if commands is None:
         commands = [(index, LINE_PROMPT.sub("", fence.content(lines[index]), count=1)) for index in fence.body()]
     return commands

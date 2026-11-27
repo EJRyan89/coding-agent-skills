@@ -1852,6 +1852,19 @@ COMPOUND_READERS: dict[str, Callable[[Parser], Command]] = {
 }
 
 
+def awaits_more(text: str) -> bool:
+    """Whether Bash, given text as the lines typed so far, waits for another line before it runs them: a quote, a
+    substitution, a here-document, or a compound command left open, or a `|`, `&&`, or `||` that ends the text. A
+    limit: text Bash would refuse whatever followed, as `if then`, reads as waiting too, since only the lines after it
+    tell the two apart."""
+    try:
+        tokens = Lexer(text, lines=source_lines(text)).run()
+        parse(text)
+    except BashSyntaxError:
+        return True
+    return any(isinstance(token, HereDocument) and not token.closed for token in tokens)
+
+
 def source_lines(text: str) -> Sequence[int] | None:
     """The script line of each character of text when it is a Source, else None, for its own."""
     return text.lines if isinstance(text, Source) else None

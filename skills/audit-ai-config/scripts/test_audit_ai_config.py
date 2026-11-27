@@ -1103,11 +1103,21 @@ class InstructionLayeringTests(unittest.TestCase):
         )
         self.assertEqual("", audit._extract_sections(claude_content, ["Not a section", "Nor this", "Hidden"]))
 
-    def test_a_section_ends_at_the_next_first_level_heading_as_at_the_next_second_level_one(self) -> None:
-        # A `# ` heading after a `## ` section ends it, as CommonMark reads a section, so the text under the `# `
-        # heading is never projected as the section's, and a projection that held it no longer matches.
-        claude_content = "# CLAUDE.md\n\n## Overview\n\nUse tabs.\n\n# Appendix\n\nNot the overview.\n"
-        self.assertEqual("## Overview\n\nUse tabs.", audit._extract_sections(claude_content, ["Overview"]))
+    def test_a_projected_section_starts_and_ends_only_where_the_generator_reads_one(self) -> None:
+        # The generator reads each line that `^## (.+)$` matches as a section's heading, its name the rest stripped, so
+        # a `# ` heading stays inside the section before it, and so does a level-two heading written indented or with
+        # a tab after its marks, while a closing run of marks is part of the name. The projection is compared with the
+        # generator's, so reading any of these otherwise would report a parity error regenerating cannot clear.
+        claude_content = (
+            "# CLAUDE.md\n\n## Overview\n\nUse tabs.\n\n# Appendix\n\nStill the overview.\n\n  ## Indented\n\n"
+            "##\tTabbed\n\n## Closed ##\n\nText.\n"
+        )
+        self.assertEqual(
+            "## Overview\n\nUse tabs.\n\n# Appendix\n\nStill the overview.\n\n  ## Indented\n\n##\tTabbed",
+            audit._extract_sections(claude_content, ["Overview"]),
+        )
+        self.assertEqual("## Closed ##\n\nText.", audit._extract_sections(claude_content, ["Closed ##"]))
+        self.assertEqual("", audit._extract_sections(claude_content, ["Appendix", "Indented", "Tabbed", "Closed"]))
 
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"

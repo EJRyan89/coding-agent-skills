@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import bisect
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
 from text_lines import LINE_BREAK
@@ -281,19 +281,12 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
 
 def top_level_sections(lines: list[str], level: int) -> list[tuple[int, re.Match[str], int]]:
     """Each heading of `level` that document_headings gives, as its line's index, its ATX_HEADING match, and the index
-    of the line its section ends before: the next such heading of that level or a higher one, or the document's end.
-    A deeper heading is the section's text, and so is a heading-shaped line a code block, a list item, or a blockquote
-    holds, as GitHub renders it."""
-    headings = document_headings(lines)
-    sections: list[tuple[int, re.Match[str], int]] = []
-    for position, (index, heading) in enumerate(headings):
-        if len(heading.group("marks")) != level:
-            continue
-        end = next(
-            (later for later, after in headings[position + 1 :] if len(after.group("marks")) <= level), len(lines)
-        )
-        sections.append((index, heading, end))
-    return sections
+    of the line its section ends before: the next such heading of the same level, or the document's end, as
+    markdown_section ends a section at the next `## `. A heading of another level is the section's text, and so is a
+    heading-shaped line a code block, a list item, or a blockquote holds, as GitHub renders it."""
+    starts = [(index, heading) for index, heading in document_headings(lines) if len(heading.group("marks")) == level]
+    ends = [index for index, _ in starts[1:]] + [len(lines)]
+    return [(index, heading, end) for (index, heading), end in zip(starts, ends, strict=True)]
 
 
 def contained_lines(lines: list[str]) -> set[int]:
@@ -957,7 +950,9 @@ def continues(command: str) -> bool:
     return CONTINUED_LINE.search(command) is not None and not command.lstrip().startswith("#")
 
 
-def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | None:
+def session_commands(
+    fence: Fence, lines: list[str], awaits_more: Callable[[str], bool]
+) -> list[tuple[int, str]] | None:
     r"""The body lines a SESSION_FENCES fence runs, by index, each as CommonMark gives it to the fence's content
     without its prompt, or None for a fence of another label or one with no line SESSION_PROMPT starts, which is no
     session: no prompt tells a command from output there, and a fence labelled so may hold commands alone, which a
@@ -965,7 +960,10 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
     continues, as continues reads it, with or without the `> ` prompt Bash shows there, as Pygments' console lexer
     reads it, though Pygments also continues a comment's line, as `$ # note \`, which Bash does not; and a `> ` line
     right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
-    Any other line is output.
+    A command Bash has not finished, as `awaits_more` (bash_syntax's) tells, runs on through the unprompted lines
+    that finish it, a here-document's body, a quoted string's next line, or the command after a `|` that ends a line,
+    each joined to its last line at a line break; lines that never finish it, up to the next prompt or the fence's
+    end, are output, and the command is read as written. Any other line is output.
 
     SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
     root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
@@ -983,21 +981,39 @@ def session_commands(fence: Fence, lines: list[str]) -> list[tuple[int, str]] | 
     would settle them."""
     if fence.language.casefold() not in SESSION_FENCES:
         return None
-    return prompted_commands(fence, lines, SESSION_PROMPT)
+    return prompted_commands(fence, lines, SESSION_PROMPT, awaits_more)
 
 
-def prompted_commands(fence: Fence, lines: list[str], prompt_pattern: re.Pattern[str]) -> list[tuple[int, str]] | None:
+def prompted_commands(
+    fence: Fence, lines: list[str], prompt_pattern: re.Pattern[str], awaits_more: Callable[[str], bool]
+) -> list[tuple[int, str]] | None:
     """The body lines a fence runs as a session, by index, each as CommonMark gives it to the fence's content without
-    its prompt, where `prompt_pattern` reads a command line's prompt, as session_commands reads them, or None for a
-    fence no line of which that prompt starts."""
+    its prompt, where `prompt_pattern` reads a command line's prompt and `awaits_more` whether a command's lines so
+    far are unfinished, as session_commands reads them, or None for a fence no line of which that prompt starts."""
     contents = [(index, fence.content(lines[index])) for index in fence.body()]
     if not any(prompt_pattern.match(text) for _, text in contents):
         return None
     commands: list[tuple[int, str]] = []
     prompted = continued = False
+    # Where the command being read starts among `commands`, and the unprompted lines read since it stopped, held until
+    # they finish it.
+    start, held = 0, []
     for index, text in contents:
         if (prompt := prompt_pattern.match(text)) is not None:
             command = text[prompt.end() :]
+            start, held = len(commands), []
+        elif held or (
+            prompted
+            and not continued
+            and not CONTINUATION_PROMPT.match(text)
+            and awaits_more("\n".join(line for _, line in commands[start:]))
+        ):
+            held.append(text)
+            if not awaits_more("\n".join([*(line for _, line in commands[start:]), *held])):
+                last, typed = commands[-1]
+                commands[-1] = (last, "\n".join([typed, *held]))
+                held = []
+            continue
         elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
             command = CONTINUATION_PROMPT.sub("", text, count=1)
         else:
