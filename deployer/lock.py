@@ -285,12 +285,6 @@ def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
     )
 
 
-def _is_record(place: Path) -> bool:
-    """Whether a folder that is no link or junction, the only kind of record the lock makes, is at `place`, judged from
-    one stat of the place itself, whose OSError is raised."""
-    return link_probe.is_plain_directory(place, place.stat(follow_symlinks=False))
-
-
 def _of_its_kind(place: Path, part: str, kind: str, *, folder: bool) -> bool:
     """Whether the kind of item the lock makes at `place` is there: a folder for the record, a regular file for the lock
     file. False when nothing is there; a refusal naming the lock's `part` and the `kind` it makes when anything else is,
@@ -401,7 +395,9 @@ def _moved_record(aside: Path) -> Judged | None:
     """Which record was moved aside, read as the judgment reads it, or None when that cannot be told or it is not the
     kind of record the lock makes, such as a link to the folder judged, which reads through as that folder."""
     try:
-        if not _is_record(aside):
+        # The only kind of record the lock makes is a folder that is no link or junction; anything else, or a place
+        # whose stat fails, is not the record judged.
+        if not link_probe.is_plain_directory(aside):
             return None
         if file_presence.is_present(aside / "info.json"):
             info = _read_info(aside)
