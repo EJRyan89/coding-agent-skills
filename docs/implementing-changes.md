@@ -403,7 +403,7 @@ a branch that merged `origin/main` in by what it holds. A file the branch delete
 judged like any other, so it is named when it equals the file as it stood before any commit in that span changed or
 deleted it, the newest such commit with it: a file brought back as it stood at its deletion names the deletion, and
 one equal to an earlier version names the change that replaced that version. A deliberate revert is declared on a
-line of the body of its own, optionally as a list item and outside an HTML comment, as
+line of the body of its own, optionally as a list item, outside an HTML comment and a code block, as
 ``Reverts `<path>` to its state before <commit>``, with seven or more hexadecimal digits of the commit the check
 names. The check reads the body from `--pr-body <file>` locally, otherwise the branch's commit messages, and the pull
 request in continuous integration.
