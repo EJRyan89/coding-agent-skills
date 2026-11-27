@@ -158,6 +158,7 @@ class LanguageReaderFixtures(LanguageReaderCase):
             "a span behind nested groups": "import re\nP = re.compile(r'`((?:[^`]+))`')\n",
             "a span behind a group, then a lookahead": "import re\nP = re.compile(r'`(?:(?!`).)+`')\n",
             "a lookaround holding a class": "import re\nP = re.compile(r'`(?=[a-z])[^`]+`')\n",
+            "a lookaround holding a group": "import re\nP = re.compile(r'`(?!(?:--))[^`]+`')\n",
             "a lookaround past its bound": "import re\nP = re.compile(r'`(?!" + "x" * 65 + ")[^`]+`')\n",
             "a conditional group": "import re\nP = re.compile(r'`(?(1)[^`]|x)`')\n",
             "a span opened by a class": "import re\nP = re.compile(r'[`]([^`]+)[`]')\n",

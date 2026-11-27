@@ -26,9 +26,10 @@ match a candidate its agent judges, and its literal model and effort, a word quo
   body starts with literal text, as `` `--[\w-]+ ``, or a literal word quoted by optional backticks, as
   `` `?haiku`? ``, which reads the word, not a span; a span whose class comes behind two lookarounds, nested groups,
   or a group and then a lookahead, as `` `(?!-)(?!\s)[^`]+` ``, `` `((?:[^`]+))` ``, or `` `(?:(?!`).)+` ``, behind a
-  lookaround holding a class or longer than 64 characters, or in a conditional group; a span opened by a class or an
-  escape that holds the backtick, as `` [`]([^`]+)[`] `` or `\x60`; a header's bare `\(\)` before `\s+`, ` *`, a
-  literal space, or no `{`, and `\( *\)`; and a brace count written other than `a.count("{") - b.count("}")`.
+  lookaround holding a class, or holding a group, as `` `(?!(?:--))[^`]+` ``, or longer than 64 characters, or in a
+  conditional group; a span opened by a class or an escape that holds the backtick, as `` [`]([^`]+)[`] `` or
+  `\x60`; a header's bare `\(\)` before `\s+`, ` *`, a literal space, or no `{`, and `\( *\)`; and a brace count
+  written other than `a.count("{") - b.count("}")`.
   A backtick before an unescaped `.`, as `` `(.+?)` ``, which no code here writes, is read as a span.
 """
 
