@@ -30,12 +30,16 @@ READER = "tools/reader.py"
 FAMILY_PATTERNS = {
     "a Bash function header": (BASH_OWNER, r'HEADER = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(\s*\)\s*\{")'),
     "a Bash `function` header": (BASH_OWNER, r'HEADER = re.compile(r"^\s*function\s+(\w+)")'),
+    "a bare Bash function header": (BASH_OWNER, r'HEADER = re.compile(r"^\s*(\w+)\s*\(\)\s*\{")'),
     "a `#` comment test": (BASH_OWNER, r'HEADER = re.compile(r"^\s*#")'),
     "an ATX heading by its marks": (MARKDOWN_OWNER, r'HEADER = re.compile(r" {0,3}(#{1,6})[ \t]+(.*)")'),
     "an ATX heading by its first marks": (MARKDOWN_OWNER, r'HEADER = re.compile(r"## (.*)")'),
     "an f-string's ATX heading": (MARKDOWN_OWNER, r'HEADER = re.compile(rf"^## {NAME}[ \t]*$")'),
     "a single-backtick code span": (MARKDOWN_OWNER, r'HEADER = re.compile(r"`([^`]+)`")'),
     "a code span after a lookahead": (MARKDOWN_OWNER, r'HEADER = re.compile(r"`(?!--)[^`\n]+`")'),
+    "a named group's code span": (MARKDOWN_OWNER, r'HEADER = re.compile(r"`(?P<path>[^`]+)`")'),
+    "a code span of a positive class": (MARKDOWN_OWNER, r'HEADER = re.compile(r"`([A-Z][A-Z0-9]*)`")'),
+    "a code span of an escape's class": (MARKDOWN_OWNER, r'HEADER = re.compile(r"`(\w+)`")'),
     "a fence prompt": (MARKDOWN_OWNER, r'HEADER = re.compile(r"\A[ \t]*\$ ")'),
     "a prose path": (PROSE_PATH_OWNER, r'HEADER = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.\w+")'),
 }
@@ -98,8 +102,8 @@ class LanguageReaderFixtures(LanguageReaderCase):
                 self.assertTrue(problems[0].startswith(f"{READER}:5 spells "), problems)
 
     def test_a_pattern_of_another_language_that_only_looks_alike_passes(self) -> None:
-        # A noqa or type-ignore comment's `#`, an issue reference, a YAML comment after a blank, a C# directive, and an
-        # escaped `#` spell none of the families.
+        # A noqa or type-ignore comment's `#`, an issue reference, a YAML comment after a blank, a C# directive, an
+        # escaped `#`, a class that holds a backtick, and a call's optional parentheses spell none of the families.
         patterns = [
             r"#\s*noqa\b",
             r"#\d+(?:,? (?:and )?#\d+)*",
@@ -107,6 +111,8 @@ class LanguageReaderFixtures(LanguageReaderCase):
             r"[ \t]*#[ \t]*([A-Za-z]+)",
             r"\\*#",
             r"`--[\w-]+",
+            r"[^`\s]+",
+            r"(?:\(\))?",
         ]
         module = "import re\n\n" + "".join(
             f"P{index} = re.compile(r{pattern!r})\n" for index, pattern in enumerate(patterns)
@@ -116,6 +122,37 @@ class LanguageReaderFixtures(LanguageReaderCase):
     def test_a_pattern_held_in_a_name_and_joined_in_later_is_not_read_as_the_module_states(self) -> None:
         module = "import re\n\nSPAN = r'`[^`]+`'\nCUE = re.compile(rf'see {SPAN}')\n"
         self.assertEqual([], self.problems({READER: module}))
+
+    def test_each_stated_limit_passes_as_the_module_states(self) -> None:
+        # Each form the module's docstring names as a limit, which no code in the repository writes, passes.
+        limits = {
+            "a bytes pattern": "import re\nP = re.compile(rb'^\\s*#')\n",
+            "a pattern by keyword": "import re\nP = re.compile(pattern=r'^\\s*#')\n",
+            "a pattern joined by +": "import re\nP = re.compile(r'^\\s*' + '#')\n",
+            "a pattern built by %": "import re\nP = re.compile(r'%s#' % r'^\\s*')\n",
+            "a pattern built by format": "import re\nP = re.compile(r'^\\s*{}'.format('#'))\n",
+            "a star import": "from re import *\nP = compile(r'^\\s*#')\n",
+            "a glob": "import fnmatch\nP = fnmatch.translate('## *')\n",
+            "a verbose pattern": "import re\nP = re.compile(r'\\( \\s* \\)', re.VERBOSE)\n",
+            "function and a space": "import re\nP = re.compile(r'^function (\\w+)')\n",
+            "marks in a group": "import re\nP = re.compile(r'^(#+) (.*)')\n",
+            "marks counted from two": "import re\nP = re.compile(r'#{2,} ')\n",
+            "marks then a blank class": "import re\nP = re.compile(r'^##\\s+(.*)')\n",
+            "a comment test with more after it": "import re\nP = re.compile(r'^\\s*#.*')\n",
+            "a comment test indented by spaces": "import re\nP = re.compile(r'^ *#')\n",
+            "a prompt after blanks": "import re\nP = re.compile(r'^\\s*\\$\\s+')\n",
+            "a multiline prompt": "import re\nP = re.compile(r'(?m)^\\$ ')\n",
+            "a prompt indented by spaces": "import re\nP = re.compile(r'^ *\\$ ')\n",
+            "a path with no lookbehind": "import re\nP = re.compile(r'(?:[\\w.-]+/)+[\\w.-]+\\.\\w+')\n",
+            "a path counted from one": "import re\nP = re.compile(r'(?<![\\w./-])(?:[\\w.-]+/){1,}\\w+')\n",
+            "a path split by a backslash": "import re\nP = re.compile(r'(?<![\\w./-])(?:[\\w.-]+[/\\\\])+\\w+')\n",
+            "a span starting with literal text": "import re\nP = re.compile(r'`--[\\w-]+`')\n",
+            "a literal word in optional backticks": "import re\nP = re.compile(r'\\bon `?(haiku|opus)`?')\n",
+            "a brace count compared": "def opens(line):\n    return line.count('{') > line.count('}')\n",
+        }
+        for label, module in limits.items():
+            with self.subTest(label):
+                self.assertEqual([], self.problems({READER: module}))
 
     def test_a_module_that_does_not_parse_is_named_and_the_others_are_still_read(self) -> None:
         # A file no policy can read is a problem by its name, never one read as holding no pattern, and the policy

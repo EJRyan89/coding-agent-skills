@@ -52,6 +52,14 @@ SHARED_ENTRY = (
 
 
 class BodyEntriesTests(unittest.TestCase):
+    def test_an_entry_s_heading_is_read_as_markdown_reads_it(self) -> None:
+        # changed: an entry was a block starting `### `, named by the text after it, so an indented heading, one with a
+        # tab after its marks, and one with closing marks gave no entry or a name holding the marks.
+        for written in (" ### Named", "###\tNamed", "### Named ###"):
+            with self.subTest(written=written):
+                [entry] = release_notes.notes_entries(f"{written}\n\n- Level: patch\n- Contract: none\n")
+                self.assertEqual(("Named", "patch"), (entry.heading, entry.fields["Level"]))
+
     def test_entries_come_only_from_the_upgrade_note_section_and_not_from_its_comments(self) -> None:
         entries = release_notes.body_entries(BODY)
         self.assertEqual(["A skill is added"], [entry.heading for entry in entries])

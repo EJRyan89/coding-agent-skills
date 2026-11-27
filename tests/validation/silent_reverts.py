@@ -16,6 +16,7 @@ from pathlib import Path
 
 from git_client import GitError, output_line
 from hidden_comments import without_hidden_comments
+from markdown_sections import code_spans
 from text_lines import text_lines
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -30,10 +31,10 @@ from tools.release_notes import CLIENT, RELEASE_BRANCH, SQUASH_TITLE_NUMBER, Rel
 COMMITS_BEFORE_MERGE_BASE = 200
 # A declaration, on a line of its own, optionally a list item, anywhere in the body outside an HTML comment:
 # "Reverts `<path>` to its state before <commit>", the commit by seven or more hexadecimal digits of its name.
-# It is matched at the start of each line of the body where CommonMark ends one.
-DECLARATION = re.compile(
-    r"[ \t]*(?:[-*][ \t]+)?Reverts `(?P<path>[^`]+)` to its state before (?P<commit>[0-9a-fA-F]{7,64})\b"
-)
+# It is matched at the start of each line of the body where CommonMark ends one: what opens it, then the path, the code
+# span markdown_sections' code_spans reads right after it, by whole backtick runs, then what closes it.
+DECLARATION_OPENING = re.compile(r"[ \t]*(?:[-*][ \t]+)?Reverts ")
+DECLARATION_CLOSING = re.compile(r" to its state before (?P<commit>[0-9a-fA-F]{7,64})\b")
 DECLARATION_SHAPE = "Reverts `<path>` to its state before <commit>"
 ABSENT = "0" * 40
 # Paths per git call, well inside the longest command line Windows starts.
@@ -167,7 +168,19 @@ def declarations(text: str) -> set[tuple[str, str]]:
     lower case; a `<!--` that code shows is text, as hidden_comments reads them."""
     # CommonMark ends a line at CR, LF, and CRLF, so a declaration after a lone CR is read on a line of its own.
     lines = text_lines(without_hidden_comments(text))
-    return {(match["path"], match["commit"].lower()) for line in lines if (match := DECLARATION.match(line))}
+    return {declared for line in lines if (declared := declaration(line)) is not None}
+
+
+def declaration(line: str) -> tuple[str, str] | None:
+    """The (path, commit prefix) a line declares a revert of, the commit in lower case, or None for any other line."""
+    opening = DECLARATION_OPENING.match(line)
+    if opening is None:
+        return None
+    path = next((span for span in code_spans(line) if span.start == opening.end()), None)
+    closing = DECLARATION_CLOSING.match(line, path.end) if path is not None else None
+    if path is None or closing is None:
+        return None
+    return path.text, closing["commit"].lower()
 
 
 def is_declared(revert: Revert, declared: set[tuple[str, str]]) -> bool:

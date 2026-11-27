@@ -5714,6 +5714,12 @@ def test_the_shell_file_cue_reads_each_code_span_whole(tmp_path: Path) -> None:
         ("see ``x`` and `y`", ["x", "y"]),
         ("``a`b``", []),
         ("`` `x` ``", []),
+        # A type a delegation line names, read from its code spans by whole backtick runs. changed: a double-backtick
+        # span was missed, and one holding a single-backtick name took that name.
+        ("Start a subagent of type ``reviewer``.", ["reviewer"]),
+        ("Start the ``reviewer`` subagent.", ["reviewer"]),
+        ("Start a subagent with ``run type `reviewer` now``.", []),
+        ("Start a subagent with subagent_type: reviewer.", ["reviewer"]),
     ],
 )
 def test_a_line_s_agents_are_its_code_spans_read_whole(line: str, expected: list[str]) -> None:
@@ -5901,3 +5907,13 @@ def test_the_scan_s_fence_readers_read_a_session_s_unfinished_command_on_through
     reads = skill_inventory.fence_reads(lines, 0)
     assert reads[1] == Counter({"docs/a.md": 1, "docs/b.md": 1})
     assert reads[2] == Counter()
+
+
+def test_a_relayed_setting_is_a_code_span_whose_first_word_is_a_status_word_read_whole() -> None:
+    # changed: a single-backtick reading took `MODEL` from inside the double-backtick span, whose first word is `run`.
+    path = Path("SKILL.md")
+    lines = ["Start the subagent with ``run `MODEL` here``.", "Start the subagent on `MODEL` and ``EFFORT x``."]
+    assert skill_inventory.stated_settings([(path, lines)]) == [
+        ("model", path, 2, "printed MODEL", False),
+        ("effort", path, 2, "printed EFFORT", False),
+    ]

@@ -316,6 +316,11 @@ class SilentRevertDeclarations(unittest.TestCase):
         )
         self.assertEqual({("a b.txt", "abcdef1"), ("c.txt", "1234567890")}, declarations(body))
 
+    def test_a_declared_path_is_the_code_span_after_reverts_read_by_whole_backtick_runs(self) -> None:
+        # changed: a single-backtick reading missed a path a double-backtick span holds.
+        body = "Reverts ``a`b.txt`` to its state before 1234567\nReverts `c.txt`x to its state before 1234567\n"
+        self.assertEqual({("a`b.txt", "1234567")}, declarations(body))
+
     def test_a_declaration_a_comment_holds_across_lines_is_not_read(self) -> None:
         body = (
             "Text.\n"

@@ -1,4 +1,4 @@
-"""The language reader policy: a regular expression that spells a language's structure stands in the module that owns
+r"""The language reader policy: a regular expression that spells a language's structure stands in the module that owns
 the language, and every other reader of that language goes through it.
 
 Bash has one grammar, ejryan89-skill-core's `bash_syntax`; Markdown's blocks, headings, code spans, and a console
@@ -11,12 +11,21 @@ the one non-pattern form of the family, a brace-depth count, `x.count("{") - y.c
 states why beside the code, as a module-level LANGUAGE_READER_ALLOWED = {scope: reason}, keyed by the function or the
 assignment that holds it, and an entry that sanctions nothing is reported.
 
-Its stated limits:
-- It reads only the pattern a call is given. A pattern a module holds as a plain string, joined into a pattern later
-  through a name, as an f-string's `{NAME}`, and a pattern of the owner's used line by line, as
-  `ATX_HEADING.match(line)` on a line no block walk read, are not read.
-- Each family is spelled as the repository writes it, by the forms the fixture suite lists; another spelling of the
-  same structure, as a heading's marks written `#####?` or a span's body written without a negated class, is not read.
+Its stated limits, each a passing row of the fixture suite. The repository writes two of them, and neither reads a
+language's structure for a reader: audit-skill's cue fragments, joined into its cue patterns through names, each
+match a candidate its agent judges, and its literal model and effort, a word quoted by optional backticks.
+- It reads only the text pattern a call is given first, as a literal or an f-string's constant parts. Not read are a
+  pattern a module holds as a plain string and joins into a pattern later through a name, as an f-string's `{NAME}`;
+  one given as bytes or by `pattern=`; one built with `+`, `%`, or `.format`; one reached through `from re import *`;
+  a glob given to `fnmatch`; a `re.VERBOSE` pattern whose blanks split a family's spelling; and a pattern of the
+  owner's used line by line, as `ATX_HEADING.match(line)` on a line no block walk read.
+- Each family is read in the spellings the repository writes, the forms the fixture suite lists. Not read are: a
+  function header's `function` followed by a literal space; heading marks as `#+` inside a group, as `#{2,}`, or
+  followed by `\s`; a comment test with anything after its `#`, or indented by ` *`; a prompt after `\s+`, `(?m)^`,
+  or ` *`; a prose path with no lookbehind, folders counted `{1,}`, or a backslash in its separator; a code span whose
+  body starts with literal text, as `` `--[\w-]+ ``, or a literal word quoted by optional backticks, as
+  `` `?haiku`? ``, which reads the word, not a span; and a brace count written other than
+  `a.count("{") - b.count("}")`.
 """
 
 from __future__ import annotations
@@ -67,11 +76,12 @@ class Family:
 
 
 FAMILIES = (
-    # A Bash function's header: a name's empty parentheses, blanks allowed inside, or the `function` keyword.
+    # A Bash function's header: a name's empty parentheses with blanks allowed inside, or bare ones before the body's
+    # `{`, or the `function` keyword and its blanks.
     Family(
         "a Bash function header",
         BASH_OWNER,
-        re.compile(r"\\\((?:\\s|\[ \\t\])\*\\\)|\bfunction(?:\\s|\[ \\t\])\+"),
+        re.compile(r"\\\((?:\\s|\[ \\t\])\*\\\)|\\\(\\\)(?:\\s\*|\[ \\t\]\*)?\\\{|\bfunction(?:\\s|\[ \\t\])\+"),
     ),
     # A whole pattern that asks whether a line is a `#` comment: an optional anchor, blanks, and `#`, nothing after.
     Family("a `#` comment test", BASH_OWNER, re.compile(r"\A(?:\^|\\A)?(?:\\s\*|\[ \\t\]\*|\[\\t \]\*)?#\Z")),
@@ -81,12 +91,17 @@ FAMILIES = (
         MARKDOWN_OWNER,
         re.compile(r"#\{1,6\}|\A(?:\^|\\A)?(?: \{0,3\})?#+(?:\{\d(?:,\d)?\})?(?: |\[ \\t\]|\[\\t \])"),
     ),
-    # A code span read by single backticks: a backtick, then, after at most one group's `(` and at most one `(?:`,
-    # `(?!`, or `(?=` group, a class of everything but a backtick. No part repeats another, so the search is linear.
+    # A code span read by single backticks: a backtick, then, after at most one whole lookaround or inline-flag group
+    # and at most one group's opening, plain, named, non-capturing, atomic, or flagged, a class of what the span holds:
+    # a bracketed one, positive or negated, an escape's, or `.`. A backtick that opens a class, as `[^`\s]`, is the
+    # class's, not a span's. No part repeats another, so the search is linear.
     Family(
         "a single-backtick code span",
         MARKDOWN_OWNER,
-        re.compile(r"`\(?(?:\(\?[:!=][^)\[]*\)?)?\[\^[^\]]*`"),
+        re.compile(
+            r"(?<!\[)(?<!\[\^)`(?:\(\?(?:<?[!=][^)\[]*|[aiLmsux-]+)\))?(?:\((?:\?(?:P<\w+>|[:>]|[aiLmsux-]+:))?)?"
+            r"(?:\[|\\[wWsSdD]|\.)"
+        ),
     ),
     # A console fence's prompt: at the line's start, after blanks, `$ ` or `> `.
     Family(

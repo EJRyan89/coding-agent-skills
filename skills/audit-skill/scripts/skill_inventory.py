@@ -537,9 +537,11 @@ VALUE_SPAN = r"`(?!--)[^`\n]+`"
 STATUS_SPAN = r"`[A-Z][A-Z0-9_]+[^`\n]*`"
 FLAG_SPAN = r"`--[\w-]+[^`\n]*`"
 INSTRUCTION = rf"(?:^[ \t]*(?:{LIST_MARKER})?[ \t]*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
-# The cue patterns that find a code span by single backticks: each match is a candidate scan prints as a CUE for the
-# agent to judge in its context, never a finding or a fact scan acts on, so they read no Markdown structure for a
-# reader. markdown_sections' code_spans reads every span the audit acts on.
+# The cue patterns that find a code span by single backticks, VALUE_SPAN, STATUS_SPAN, and FLAG_SPAN among the cue
+# table's fragments: each match is a candidate scan prints as a CUE for the agent to judge in its context, never a
+# finding or a fact scan acts on, so they read no Markdown structure for a reader. Every span whose text the audit acts
+# on, a subagent's prompt, type, or relayed setting, or a stated line, is read by markdown_sections' code_spans; a
+# literal model or effort is read as its word, whether a span quotes it or not.
 LANGUAGE_READER_ALLOWED = {
     "PROSE_CUES": "the hand-drafted cue's candidate, which the agent judges in context, never a code span acted on",
     "DECOMPOSED_VALUE": "a decomposed-value cue's candidate, judged by the agent in context, never a span acted on",
@@ -731,9 +733,12 @@ AGENTS_FOLDER = "agents"
 BUILTIN_AGENTS = frozenset({"general-purpose", "Explore", "Plan", "claude", "statusline-setup", "claude-code-guide"})
 # A plugin's agent is named under the plugin, as <plugin>:<agent>.
 AGENT_NAME = r"[A-Za-z][A-Za-z0-9-]*(?::[A-Za-z][A-Za-z0-9-]*)?"
-TYPED_AGENT = re.compile(
-    rf"\btype\s+`({AGENT_NAME})`|`({AGENT_NAME})`\s+(?:type|subagent|agent)s?\b|\bsubagent_type\b\W{{0,4}}({AGENT_NAME})"
-)
+# A type is a code span, as markdown_sections' code_spans reads one by whole backtick runs, whose whole text is an
+# agent's name, after "type" or before "type", "subagent", or "agent"; or the name after subagent_type.
+AGENT_NAME_WHOLE = re.compile(AGENT_NAME)
+TYPE_BEFORE = re.compile(r"\btype\s+$")
+TYPE_AFTER = re.compile(r"\s+(?:type|subagent|agent)s?\b")
+SUBAGENT_TYPE = re.compile(rf"\bsubagent_type\b\W{{0,4}}({AGENT_NAME})")
 GENERAL_PURPOSE = re.compile(r"(?i)(?<![\w-])general-purpose(?![\w-])")
 # A key of a hooks value's line, after any sequence item's dash, and a block scalar's header.
 HOOK_KEY = re.compile(r"^(-\s+)?([A-Za-z][\w-]*)\s*:(?:\s+(.*))?$")
@@ -746,7 +751,6 @@ LITERAL_MODEL = re.compile(r"(?i)\bon\s+(?:the\s+)?`?(haiku|sonnet|opus|fable)`?
 LITERAL_EFFORT = re.compile(
     r"(?i)\bat\s+(?:an?\s+)?`?(minimal|low|medium|high|xhigh|max)`?\s+(?:reasoning\s+)?effort\b"
 )
-STATUS_SPAN_WORD = re.compile(r"`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)(?:\s[^`]*)?`")
 SETTING_WORDS = ("model", "effort")
 SETTING_KEYS = {
     "model": "model",
@@ -3454,10 +3458,23 @@ def defined_agents(folder: Path) -> dict[str, Path]:
 
 
 def line_agents(line: str, defined: set[str]) -> list[str]:
-    """The subagent types a prose line names: a type a delegation line names by TYPED_AGENT, and any code span that is
-    the name of a defined agent."""
-    found = [name for match in TYPED_AGENT.finditer(line) for name in match.groups() if name] if delegates(line) else []
+    """The subagent types a prose line names: a type a delegation line names, as typed_agents reads it, and any code
+    span that is the name of a defined agent."""
+    found = typed_agents(line) if delegates(line) else []
     return found + [span.text.strip() for span in code_spans(line) if span.text.strip() in defined]
+
+
+def typed_agents(line: str) -> list[str]:
+    """The types a line names, in the order it names them: a code span whose whole text is an agent's name, after
+    "type" or before "type", "subagent", or "agent", and the name after subagent_type."""
+    typed = [
+        (span.start, span.text)
+        for span in code_spans(line)
+        if AGENT_NAME_WHOLE.fullmatch(span.text)
+        and (TYPE_BEFORE.search(line[: span.start]) or TYPE_AFTER.match(line, span.end))
+    ]
+    typed += [(match.start(1), match.group(1)) for match in SUBAGENT_TYPE.finditer(line)]
+    return [name for _, name in sorted(typed)]
 
 
 def named_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> dict[str, tuple[Path, int]]:
@@ -3640,7 +3657,8 @@ def stated_settings(markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, P
             for sentence in sentences(lines[index]):
                 if not DELEGATION.search(sentence):
                     continue
-                for word in (match.group(1) for match in STATUS_SPAN_WORD.finditer(sentence)):
+                spans = (SPAN_STATUS.match(span.text) for span in code_spans(sentence))
+                for word in (match.group(1) for match in spans if match is not None):
                     found += [
                         (kind, path, index + 1, f"printed {word}", False)
                         for kind in SETTING_WORDS

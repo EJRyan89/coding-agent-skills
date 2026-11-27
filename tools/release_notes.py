@@ -79,6 +79,7 @@ from git_client import GitClient, GitError, GitResult, output_lines
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from hidden_comments import without_hidden_comments
 from markdown_sections import (
+    ATX_HEADING,
     HEADING,
     LIST_ITEM_BLOCK,
     MARKDOWN_SPACE,
@@ -99,8 +100,9 @@ BODY_HEADING = "## Upgrade note"
 UNRELEASED_HEADING = "## Unreleased"
 RELEASE_BRANCH = "origin/main"
 NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*")
-# The deepest heading that starts an entry, or that, above one, ends the entry before it.
+# The deepest heading that starts an entry, or that, above one, ends the entry before it, and an entry's own marks.
 ENTRY_LEVEL = 3
+ENTRY_MARKS = "#" * ENTRY_LEVEL
 # The blocks whose lines a hard wrap may split, which unwrapped joins back into one line.
 JOINED_BLOCKS = frozenset({PARAGRAPH, LIST_ITEM_BLOCK})
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
@@ -217,13 +219,16 @@ def entry_fields(body: list[str]) -> dict[str, str]:
 
 
 def notes_entries(text: str | None) -> list[NotesEntry]:
-    """The upgrade-notes entries: each ### heading with its field lines, read with wrapped lines joined."""
+    """The upgrade-notes entries: each third-level heading with its field lines, read with wrapped lines joined, the
+    heading's text as markdown_sections' ATX_HEADING reads it past its marks, its blanks, and any closing marks. Each
+    block notes_blocks cuts but the first starts at a heading of the text's own."""
     entries: list[NotesEntry] = []
     for block in notes_blocks(text or ""):
-        if block.startswith("### "):
-            heading, *body = unwrapped(block)
+        heading, *body = unwrapped(block)
+        match = ATX_HEADING.fullmatch(heading)
+        if match is not None and match.group("marks") == ENTRY_MARKS:
             fields = entry_fields(body)
-            entries.append(NotesEntry(heading[4:].strip(MARKDOWN_SPACE), fields, "\n".join([heading, *body])))
+            entries.append(NotesEntry(match.group("text"), fields, "\n".join([heading, *body])))
     return entries
 
 
