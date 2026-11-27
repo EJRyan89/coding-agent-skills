@@ -185,8 +185,8 @@ class NodeCatalogueTests(unittest.TestCase):
             {"elements": [{"kind": "word", "text": "git"}, {"kind": "word", "text": "commit"}]},
         ]
         statements = [
-            {"pipelines": [[0]], "operators": [], "stages": [[]], "nested": []},
-            {"pipelines": [[1]], "operators": [], "stages": [[]], "nested": []},
+            {"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []},
+            {"pipelines": [[1]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []},
         ]
         for nodes, place in ((["ScriptBlockAst", "CommandAst"], hub), (["ScriptBlockAst", "SomeNewAst"], None)):
             with self.subTest(nodes=nodes):
@@ -206,9 +206,13 @@ class NodeCatalogueTests(unittest.TestCase):
         ]
         # Listed as nested, the git call runs before the statement's own Set-Location, where the command started.
         for statements, place, notes in (
-            ([{"pipelines": [[0]], "operators": [], "stages": [[1]], "nested": [1]}], Path("/elsewhere"), []),
-            ([{"pipelines": [[0]], "operators": [], "stages": [[]], "nested": []}], None, [UNLISTED]),
-            ([{"pipelines": [], "operators": [], "stages": [], "nested": []}], None, [UNLISTED]),
+            (
+                [{"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]}],
+                Path("/elsewhere"),
+                [],
+            ),
+            ([{"pipelines": [[0]], "operators": [], "stages": [[]], "blocks": [[]], "nested": []}], None, [UNLISTED]),
+            ([{"pipelines": [], "operators": [], "stages": [], "blocks": [], "nested": []}], None, [UNLISTED]),
             ([], None, [UNLISTED]),
         ):
             with self.subTest(statements=statements):
@@ -228,15 +232,25 @@ class NodeCatalogueTests(unittest.TestCase):
         ]
         malformed: tuple[Any, ...] = (None, [], [[]], [[1], []], [[1, 1]], [[2]], [["1"]], [1], {"0": [1]})
         statements: list[Any] = [
-            {"pipelines": [[0]], "operators": [], "nested": [1], **({} if stages is None else {"stages": stages})}
-            for stages in malformed
+            {
+                "pipelines": [[0]],
+                "operators": [],
+                "nested": [1],
+                **({} if stages is None else {"stages": stages}),
+                **({} if blocks is None else {"blocks": blocks}),
+            }
+            # None of malformed lists the nested command once beside the pipeline, so with the other part empty, as
+            # stages or as blocks, each leaves it unlisted, misplaced, or repeated.
+            for stages, blocks in (*((stages, [[]]) for stages in malformed), *(([[]], blocks) for blocks in malformed))
         ]
+        # A nested command listed in both the stage and the blocks.
+        statements.append({"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[1]], "nested": [1]})
         statements += [
-            {"pipelines": [], "operators": [], "stages": [[1]], "nested": [0, 1]},
-            {"pipelines": [0], "operators": [], "stages": [[1]], "nested": [1]},
-            {"pipelines": [["0"]], "operators": [], "stages": [[1]], "nested": [1]},
-            {"pipelines": [[0]], "operators": None, "stages": [[1]], "nested": [1]},
-            {"pipelines": [[0]], "operators": [], "stages": [[1]], "nested": None},
+            {"pipelines": [], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [0, 1]},
+            {"pipelines": [0], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [["0"]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [[0]], "operators": None, "stages": [[1]], "blocks": [[]], "nested": [1]},
+            {"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": None},
             "statement",
         ]
         for statement in statements:
@@ -245,11 +259,21 @@ class NodeCatalogueTests(unittest.TestCase):
                 self.assertEqual([UNLISTED], reading.notes)
                 [call] = reading.calls
                 self.assertIsNone(call.place.start)
-        listed = {"pipelines": [[0]], "operators": [], "stages": [[1]], "nested": [1]}
-        reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [listed])
-        self.assertEqual([], reading.notes)
-        [call] = reading.calls
-        self.assertEqual(Path("/elsewhere"), call.place.start)
+        # Listed whole: in the stage, the git call runs before the pipeline's Set-Location, where the command started;
+        # in the blocks, while the pipeline runs, after the Set-Location may have moved the location.
+        for stages, blocks, place in (([[1]], [[]], Path("/elsewhere")), ([[]], [[1]], None)):
+            with self.subTest(stages=stages, blocks=blocks):
+                listed: dict[str, Any] = {
+                    "pipelines": [[0]],
+                    "operators": [],
+                    "stages": stages,
+                    "blocks": blocks,
+                    "nested": [1],
+                }
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [listed])
+                self.assertEqual([], reading.notes)
+                [call] = reading.calls
+                self.assertEqual(place, call.place.start)
 
     def test_every_command_of_every_sample_is_one_a_statement_lists(self) -> None:
         # Each command pwsh's reader finds is in a statement's pipelines or its nested commands, so none goes unread,
@@ -267,6 +291,8 @@ class NodeCatalogueTests(unittest.TestCase):
             "Write-Output $({chain}) | Out-String && Write-Output $({chain})",
             "if ({chain}) {{ {chain} }}",
             "ForEach-Object -InputObject 1 {{ {chain} }}",
+            "Get-Date | ForEach-Object -Process {{ }} -End {{ {chain} }} $({chain})",
+            "Get-Date | Select-Object @{{ e = {{ {chain} }} }} | Where-Object {{ $({chain}) }}",
         )
         samples = [
             *(sample for sample in NODE_SAMPLES.values() if sample),
@@ -284,7 +310,9 @@ class NodeCatalogueTests(unittest.TestCase):
                 reader = hub_guard.PowerShellReader(reading, events["commands"])
                 self.assertTrue(reader.reaches_every_command(events["statements"]), events)
                 for statement in events["statements"]:
-                    staged = reader.stages_listed(statement["pipelines"], statement.get("stages"), statement["nested"])
+                    staged = reader.stages_listed(
+                        statement["pipelines"], statement.get("stages"), statement.get("blocks"), statement["nested"]
+                    )
                     self.assertTrue(staged, statement)
         # Every chain form above is one the reader lists statement by statement.
         self.assertGreaterEqual(listed, len(forms))

@@ -4043,7 +4043,8 @@ class PowerShellReader:
     def reaches_every_command(self, statements: list[Any]) -> bool:
         """Whether the statements list every command of the tree, each in a statement's pipelines or its nested
         commands, and each statement is one read_statement reads whole: its pipelines lists of command indexes, its
-        operators a list, and its stages listing its nested commands beside its pipelines (stages_listed)."""
+        operators a list, and its stages and blocks listing its nested commands beside its pipelines
+        (stages_listed)."""
         listed: set[int] = set()
         for statement in statements:
             if not isinstance(statement, dict):
@@ -4056,7 +4057,7 @@ class PowerShellReader:
             own = [index for pipeline in pipelines for index in pipeline]
             if not isinstance(nested, list) or not all(isinstance(index, int) for index in own):
                 return False
-            if not self.stages_listed(pipelines, statement.get("stages"), nested):
+            if not self.stages_listed(pipelines, statement.get("stages"), statement.get("blocks"), nested):
                 return False
             listed.update(own, nested)
         return listed >= set(range(len(self.commands)))
@@ -4160,44 +4161,57 @@ class PowerShellReader:
         operators = statement.get("operators") if isinstance(statement, dict) else None
         nested = statement.get("nested") if isinstance(statement, dict) else None
         stages = statement.get("stages") if isinstance(statement, dict) else None
+        blocks = statement.get("blocks") if isinstance(statement, dict) else None
         if (
             not isinstance(pipelines, list)
             or not isinstance(operators, list)
             or not isinstance(nested, list)
             or not isinstance(stages, list)
-            or not self.stages_listed(pipelines, stages, nested)
+            or not isinstance(blocks, list)
+            or not self.stages_listed(pipelines, stages, blocks, nested)
         ):
             self.reading.notes.append("a PowerShell statement the reader could not list")
             return UNKNOWN
         if not pipelines:
             # An assignment, an if, or a foreach: what it runs is all nested, before the statement ends.
             return self.read_nested(nested, directory)
-        # Each pipeline's nested commands run once the pipelines before it have run, before any command of its own
-        # (stages), so each is read from where its pipeline starts, never from where the statement does.
+        # Each pipeline's nested commands run once the pipelines before it have run (read_stage), so each is read from
+        # where its pipeline starts, never from where the statement does.
         start = directory
-        outcome = self.read_pipeline(pipelines[0], self.read_nested(stages[0], directory))
-        for operator, pipeline, stage in zip(operators, pipelines[1:], stages[1:], strict=False):
+        outcome = self.read_stage(pipelines[0], stages[0], blocks[0], directory)
+        for operator, pipeline, stage, block in zip(operators, pipelines[1:], stages[1:], blocks[1:], strict=False):
             if operator == "&&":
-                after = self.read_pipeline(pipeline, self.read_nested(stage, outcome.ok))
+                after = self.read_stage(pipeline, stage, block, outcome.ok)
                 outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
             else:
-                after = self.read_pipeline(pipeline, self.read_nested(stage, outcome.fail))
+                after = self.read_stage(pipeline, stage, block, outcome.fail)
                 outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
         return self.moved_by(nested, start) if statement.get("background") else outcome.merged()
 
+    def read_stage(self, pipeline: Any, stage: list[Any], blocks: list[Any], directory: Directory) -> Outcome:
+        """One pipeline of a statement, from where it starts, with its nested commands. Its stage, the commands of its
+        arguments' expressions, runs before any command of the pipeline does, as PowerShell evaluates a pipeline's
+        arguments first. Its blocks, the commands of the script blocks handed to its own commands, run while the
+        pipeline runs, so where any command of the pipeline may move the location they are read from where the text
+        does not settle; and where a block may move it, so are the pipeline's own commands, since a block such as
+        ForEach-Object's -Begin runs before a later program in the pipeline starts."""
+        directory = self.read_nested(stage, directory)
+        self.read_nested(blocks, self.moved_by(pipeline if isinstance(pipeline, list) else [], directory))
+        return self.read_pipeline(pipeline, self.moved_by(blocks, directory))
+
     @staticmethod
-    def stages_listed(pipelines: list[Any], stages: Any, nested: list[Any]) -> bool:
-        """Whether a statement's stages stand one beside each of its pipelines and together list its nested commands,
-        each once, so reading each stage reads every nested command."""
-        if not isinstance(stages, list):
+    def stages_listed(pipelines: list[Any], stages: Any, blocks: Any, nested: list[Any]) -> bool:
+        """Whether a statement's stages and blocks stand one of each beside each of its pipelines and together list
+        its nested commands, each once, so reading each pipeline's stage and blocks reads every nested command."""
+        if not isinstance(stages, list) or not isinstance(blocks, list):
             return False
         if not pipelines:
-            return not stages
-        if len(stages) != len(pipelines):
+            return not stages and not blocks
+        if len(stages) != len(pipelines) or len(blocks) != len(pipelines):
             return False
-        if not all(isinstance(stage, list) for stage in stages):
+        if not all(isinstance(part, list) for part in [*stages, *blocks]):
             return False
-        listed = [index for stage in stages for index in stage]
+        listed = [index for part in [*stages, *blocks] for index in part]
         if not all(isinstance(index, int) for index in [*listed, *nested]):
             return False
         return len(listed) == len(set(listed)) and set(listed) == set(nested)

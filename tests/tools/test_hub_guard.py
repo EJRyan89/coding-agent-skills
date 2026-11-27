@@ -4666,6 +4666,70 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo "$(git status && git commit -m x)"', self.tree))
         self.assertIn(WRITES.format("commit"), self.reason)
 
+    def test_a_script_block_a_pipeline_hands_its_commands_runs_after_an_element_before_it_moves(self) -> None:
+        # A script block handed to one of a pipeline's own commands runs while the pipeline runs, so after an element
+        # before it has moved the location, unlike an argument's expression, which runs before the pipeline. The guard
+        # once read the block's commands from where the pipeline started, and the commit ran in the hub.
+        outside = self.root / "not-a-repository"
+        outside.mkdir()
+        neutral = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        hub = self.hub
+        moves = (
+            f"Set-Location -PassThru '{hub}' | ",
+            f"Set-Location '{hub}' | ",
+            f"cd '{hub}' | ",
+            f"sl '{hub}' | ",
+            f"chdir '{hub}' | ",
+            f"pushd '{hub}' | ",
+            f"Push-Location -PassThru '{hub}' | ",
+            f"Write-Output '{hub}' | Set-Location -PassThru | ",
+            f"Set-Location -PassThru '{hub}' | Out-String | ",
+            f"Write-Output 1 && Set-Location -PassThru '{hub}' | ",
+        )
+        blocks = (
+            "ForEach-Object {{ {git} }}",
+            "% {{ {git} }}",
+            "ForEach-Object -Process {{ {git} }}",
+            "ForEach-Object -Process {{ }} -End {{ {git} }}",
+            "Where-Object {{ {git} }}",
+            "? {{ {git} }}",
+            "Sort-Object {{ {git} }}",
+            "Group-Object {{ {git} }}",
+            "Select-Object @{{ e = {{ {git} }} }}",
+            "Select-Object @{{ Name = 'n'; Expression = {{ {git} }} }}",
+        )
+        # The block runs where the text does not settle, as a git call after `Set-Location -PassThru <hub>;` or
+        # `Set-Location <hub> | Out-Null;` does: refused while a hub is in view, and, from a folder outside every
+        # repository with no hub in view, allowed with a note, as the guard's contract allows every such call.
+        for git in ("git commit -m x", "git status && git commit -m x"):
+            for move, block in itertools.product(moves, blocks):
+                command = move + block.format(git=git)
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.powershell(command, self.tree))
+                    self.assertIn(UNPLACED.format("commit"), self.reason)
+                    self.assertIsNone(self.powershell(command, outside, neutral))
+                    self.assertIn(UNPLACED.format("commit"), self.stderr)
+        for command in (
+            f"Set-Location -PassThru '{hub}' | ForEach-Object {{ git commit -m x }}",
+            f"Set-Location '{hub}' | ForEach-Object -Process {{ }} -End {{ git commit -m x }}",
+        ):
+            with self.subTest(command=command, through="pwsh -c"):
+                self.assertEqual("deny", self.bash("pwsh -NoProfile -c " + shlex.quote(command), self.tree))
+        # A block in a pipeline no element of which moves the location runs where the pipeline starts, and a block's
+        # own Set-Location leaves the commands after it, its pipeline's included, where the text does not settle.
+        self.assertIsNone(self.powershell("Write-Output 1 | ForEach-Object { git commit -m x }", self.tree))
+        self.assertEqual("deny", self.powershell("Write-Output 1 | ForEach-Object { git commit -m x }", self.hub))
+        # The mirror, a move out of the hub, leaves the block unplaced while the hub is in view, so it stays refused.
+        command = f"Set-Location -PassThru '{self.tree}' | ForEach-Object {{ git commit -m x }}"
+        self.assertEqual("deny", self.powershell(command, self.hub))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        command = f"Write-Output 1 | ForEach-Object {{ Set-Location '{hub}' }}; git commit -m x"
+        self.assertEqual("deny", self.powershell(command, self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        command = f"ForEach-Object -InputObject 1 -Begin {{ Set-Location '{hub}' }} -Process {{ }} | git commit -m x"
+        self.assertEqual("deny", self.powershell(command, self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+
     def test_a_file_redirection_is_read_in_every_statement_that_can_carry_one(self) -> None:
         readme = self.hub / "README.md"
         for command in (
