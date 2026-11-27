@@ -37,7 +37,10 @@ command holding the body ends or starts; the reader gives the line its text stan
 `simple_commands` lists every simple command Bash may run for a text, each substitution's included, read as the
 subshell Bash runs it in, and `command_words` gives one's words from its program's name, for a reader that judges
 what a script runs; `every_command` lists every command, compound ones and function definitions too, and
-`command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too.
+`command_bodies` gives the lists a compound command runs, the walk the hub guard reads a command by too;
+`uncommented_text` gives everything Bash reads in a text but its comments. A function's
+definition keeps the line Bash defines it on, its `function` word's or its name's, as `declare -F` reports it under
+extdebug, and the line of the last word or operator its body reads, so a reader can tell which lines it holds.
 
 The reader reads text as a non-interactive Bash started with every `set -o` and `shopt` option at its default reads it,
 and decides each option once: OPTIONS_READ, under which Bash reads the same commands whatever its setting;
@@ -69,7 +72,8 @@ ANSI-C string.
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
 which it allows with a note, as "The guard's contract" in docs/parallel-sessions.md states, and git_subcommands
-raises it for its caller to fail.
+raises it for its caller to fail. A caller that names its own refusal reads Bash inside `refusing`, which raises that
+refusal from the grammar's error, so the grammar's error never escapes it.
 
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
@@ -90,6 +94,8 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 - A `for` or `select` loop whose body is a `{ }` group rather than `do ... done`, arithmetic or not, which Bash reads,
   raises NotRead.
 - A function's name holding a tilde, as `~f () { :; }`, which Bash defines, is read as one Bash refuses (None).
+- A function whose body is followed by a here-document, as `f() { cat; } <<EOF`, ends on the line of the here-document's
+  operator, not on its delimiter line, since a here-document's body keeps no line of its own.
 - A case pattern holding a parenthesis, as `case y in ((a)) :;; esac` or `(a|(b))`, which Bash refuses, is read.
 - Bash 3.2 ends a `${ }` at a `}` inside a command substitution it holds, as in `${x:-$(: })}`, and a `$( )` in
   double quotes at a `)` inside a `${ }` it holds, as in `"$(echo ${x+ )})"`, each of which Bash 4 and later read
@@ -140,6 +146,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 # Characters that end an unquoted word.
@@ -375,6 +382,17 @@ class NotRead(BashSyntaxError):
     here-document body's substitution the grammar refuses: never text a reader may take to run nothing."""
 
 
+@contextmanager
+def refusing(refusal: Callable[[BashSyntaxError], Exception]) -> Iterator[None]:
+    """Reads Bash in its block, raising the exception `refusal` builds from a BashSyntaxError the block raises, NotRead
+    included, from that error: the one way a reader that names its own refusal of Bash the grammar refuses reads it,
+    so the grammar's error never escapes the reader."""
+    try:
+        yield
+    except BashSyntaxError as error:
+        raise refusal(error) from error
+
+
 class Source(str):
     """Text the reader takes from a script, a substitution's or a here-document's body, which keeps the script line
     each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
@@ -577,6 +595,10 @@ class FunctionDefinition:
 
     name: str | None
     body: Command
+    # The script line Bash defines the function on, where its `function` word or its name starts, as `declare -F`
+    # reports it under extdebug, and the line of the last word or operator its body, its redirections included, reads.
+    line: int = field(default=0, compare=False)
+    end: int = field(default=0, compare=False)
 
 
 Command = Simple | Subshell | Group | If | Loop | Case | Arithmetic | FunctionDefinition
@@ -1685,7 +1707,7 @@ class Parser:
                     continue
                 if token.text == "(" and len(words) == 1 and not redirects and words[0].assignment is None:
                     # Bash reads a function's name wherever a command's first word stands, but never an assignment.
-                    return self.function_definition(words[0].literal)
+                    return self.function_definition(words[0].literal, words[0].line)
                 break
             if isinstance(token, HereDocument):
                 raise BashSyntaxError("a here-document has no operator")
@@ -1725,12 +1747,25 @@ class Parser:
             found.append(self.redirect())
         return found
 
-    def function_definition(self, name: str | None) -> FunctionDefinition:
+    def function_definition(self, name: str | None, line: int) -> FunctionDefinition:
         self.index += 1
         if not self.at_operator(")"):
             raise BashSyntaxError("a function definition is not closed")
         self.index += 1
-        return FunctionDefinition(name, self.function_body())
+        return self.defined(name, line)
+
+    def defined(self, name: str | None, line: int) -> FunctionDefinition:
+        """The definition of a function Bash defines on `line`, whose body starts at the next token."""
+        body = self.function_body()
+        return FunctionDefinition(name, body, line, self.last_line())
+
+    def last_line(self) -> int:
+        """The line of the last word or operator read; a here-document's body keeps none."""
+        for index in range(self.index - 1, -1, -1):
+            token = self.tokens[index]
+            if isinstance(token, Word | Operator):
+                return token.line
+        return 0
 
     def function_body(self) -> Command:
         self.skip_newlines()
@@ -1742,13 +1777,15 @@ class Parser:
         return self.command()
 
     def function_keyword(self) -> Command:
+        keyword = self.tokens[self.index - 1]
+        line = keyword.line if isinstance(keyword, Word) else 0
         token = self.peek()
         if not isinstance(token, Word):
             raise BashSyntaxError("function names nothing")
         self.index += 1
         if self.at_operator("("):
-            return self.function_definition(token.literal)
-        return FunctionDefinition(token.literal, self.function_body())
+            return self.function_definition(token.literal, line)
+        return self.defined(token.literal, line)
 
     def group(self) -> Command:
         body = self.command_list(frozenset({"}"}))
@@ -1878,6 +1915,17 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
 
 # ---------------------------------------------------------------------------------------------------------------
 # What a script runs
+
+
+def uncommented_text(text: str) -> str:
+    """Text's words and operators, each as written, and its here-documents' bodies, joined by spaces: everything Bash
+    reads in it but its comments, for a reader that searches what a script names outside one. Raises BashSyntaxError
+    where the words cannot be read, as an unclosed quote."""
+    tokens = Lexer(text, lines=source_lines(text)).run()
+    return " ".join(
+        token.raw if isinstance(token, Word) else token.text if isinstance(token, Operator) else token.body
+        for token in tokens
+    )
 
 
 def simple_commands(text: str) -> list[Simple]:

@@ -436,6 +436,26 @@ class ConditionTests(unittest.TestCase):
             "function days_old, added lines 3, hunk @@ -1,4 +1,4 @@, tests of its file tests/test_report.py\n", written
         )
 
+    def test_a_bash_function_spans_the_lines_bash_reads_it_over(self) -> None:
+        # A brace in a quoted string ends nothing, and a header-shaped line in a here-document's body defines nothing.
+        script = "#!/usr/bin/env bash\nf() {\n  echo \"}\" # }\n  git push\n}\ncat <<'EOF'\nk() {\n  text\nEOF\n"
+        after = script.replace("git push", "git push --dry-run").replace("  text", "  other")
+        code, out, written = self.run_condition({"tools/tool.sh": script}, {"tools/tool.sh": after})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED tools/tool.sh:2 function f, added lines 4, "), written)
+
+    def test_a_removed_bash_function_needs_no_test(self) -> None:
+        kept = "#!/usr/bin/env bash\nf() {\n  echo 1\n}\n"
+        before = {"tools/tool.sh": f"{kept}\ng() {{\n  echo 2\n}}\n"}
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, {"tools/tool.sh": kept}))
+
+    def test_a_bash_file_the_grammar_refuses_is_listed_as_unparsed(self) -> None:
+        before = {"tools/broken.sh": "#!/usr/bin/env bash\nf() {\n  echo 1\n}\n"}
+        after = {"tools/broken.sh": "#!/usr/bin/env bash\nf() {\n  echo 'x\n}\n"}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertEqual("UNPARSED tools/broken.sh: BashSyntaxError: a single quote is not closed\n", written)
+
     def test_a_lone_cr_ends_no_line_where_the_diff_numbers_lines(self) -> None:
         # git ends a line at LF alone, so the function starts on line 2 of the hunk git wrote, as Bash reads it too.
         bash = "# note\rmore\nf() {\n  echo changed\n}\n"
@@ -737,6 +757,16 @@ class PresenceReadTests(unittest.TestCase):
         # PowerShell ends a line at a lone CR, so the call after it is code; Bash reads the CR as part of the comment.
         self.assertIn("Invoke-Thing", self.module._code_text("tests/test_x.ps1", "# note\rInvoke-Thing\n").split())
         self.assertNotIn("run_thing", self.module._code_text("tests/test_x.sh", "# note\rrun_thing\n").split())
+
+    def test_a_bash_test_s_comments_are_read_as_bash_reads_them(self) -> None:
+        code = self.module._code_text("tests/test_x.sh", "run_thing # days_old\necho '# kept'\n").split()
+        self.assertIn("run_thing", code)
+        self.assertNotIn("days_old", code)
+        self.assertIn("kept'", code)
+
+    def test_a_bash_test_the_grammar_refuses_raises_rather_than_naming_anything(self) -> None:
+        with self.assertRaises(ValueError):
+            self.module._code_text("tests/test_x.sh", "days_old 'x\n")
 
     def test_suites_keeps_each_suite_file_and_passes_over_a_folder_named_like_one(self) -> None:
         (self.root / "tests" / "deep").mkdir(parents=True)

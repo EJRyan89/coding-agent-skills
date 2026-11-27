@@ -8,8 +8,10 @@ CODE_REVIEW_DIFF_FILE and the file to write in CODE_REVIEW_CONDITION_OUTPUT. It 
 or Bash file at the head, except a suite and anything under tests/fixtures/, which holds review inputs rather than
 this repository's code. Its definitions are Python's module-level functions and classes (those in a module-level
 `if`, `try`, or `with` block included) and each class's methods, read through `ast`, leaving out a class that only
-declares fields or constants, as a dataclass, an enumeration, or an exception does, and each PowerShell `function`
-and Bash `name()` or `function name`, spanning to the brace that closes it. A definition changed when a line the diff
+declares fields or constants, as a dataclass, an enumeration, or an exception does, each PowerShell `function`,
+spanning to the brace that closes it, and each Bash function, read through ejryan89-skill-core's Bash grammar as Bash
+reads it, from the line Bash defines it on to the last line its body reads, so a brace in a string or a comment ends
+nothing and a header-shaped line in a here-document's body defines nothing. A definition changed when a line the diff
 adds sits inside it, or lines it removes sat inside it and held no definition of their own, so a change inside a
 method is the method's, not its class's; a removed definition is gone and needs no test, and a renamed one is the
 new name, changed.
@@ -21,7 +23,8 @@ pull request deletes names nothing. A test names a Python definition only throug
 method by naming its class.
 A string or a comment never counts, so neither a patch target nor a note does, and neither does `run` in
 `subprocess.run`, nor a common name in a test of another module. A Python test `ast` or `tokenize` cannot read names
-nothing, its comments included, and gets an `UNREADABLE <test>: <reason>` line on stdout. A script's `main` also
+nothing, its comments included, and gets an `UNREADABLE <test>: <reason>` line on stdout, as does a Bash test whose
+words the Bash grammar cannot read. A script's `main` also
 counts as named when a test names the script's file name outside a comment, since that test runs it. A test names a
 PowerShell or Bash function when it names the script's file name and, outside a comment, the function as a whole word
 (a PowerShell one ignoring case), since a test calls a shell function from a string.
@@ -30,7 +33,8 @@ It writes each unnamed definition as `UNTESTED <file>:<line> <kind> <name>, adde
 of its file <tests>`, the tests that import its module or name its file, where a reviewer looks for one that reaches
 it through a caller, at most MAX_RELATED_TESTS of them and then `and <n> more`, followed by that hunk, cut at
 MAX_HUNK_CHARACTERS; at most MAX_ENTRIES of them, with an `OMITTED <n>` line for the rest; and `UNPARSED <file>:
-<reason>` for a changed Python file `ast` cannot read.
+<reason>` for a changed Python file `ast` cannot read or a changed Bash file the Bash grammar refuses, as Bash would,
+or reads only up to a command that turns on an option the grammar does not read.
 
 A changed Python definition a test names is still written when its change converts a call site: an added line that
 directly replaces removed lines and calls, through a name the module's imports bind, a callee the replacing lines call
@@ -78,7 +82,7 @@ import re
 import sys
 import tokenize
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,6 +91,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import file_presence
 import json_writer
 import python_reader
+from bash_syntax import FunctionDefinition, every_command, uncommented_text
 from conditions import (
     DIFF_VARIABLE,
     FAILURE_STATUS,
@@ -138,8 +143,8 @@ MAX_RELATED_TESTS = 3
 
 PYTHON_HEADER = re.compile(r"^\s*(?:async\s+def|def|class)\s+[A-Za-z_]")
 POWERSHELL_HEADER = re.compile(r"^\s*function\s+(?:(?:global|script|local|private):)?([A-Za-z_][\w-]*)", re.IGNORECASE)
-BASH_HEADER = re.compile(r"^\s*(?:function\s+([A-Za-z_][\w-]*)(?:\s*\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*(?:\{|$)")
-COMMENT_LINE = re.compile(r"^\s*#")
+# A PowerShell line comment's line, which ejryan89-skill-core has no PowerShell grammar to read.
+POWERSHELL_COMMENT_LINE = re.compile(r"^\s*#")
 # A call: a dotted name, not itself an attribute of something else, followed by its opening parenthesis.
 CALL = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(")
 POWERSHELL_BLOCK_COMMENT = re.compile(r"<#.*?#>", re.DOTALL)
@@ -298,21 +303,22 @@ def python_definitions(path: str, text: str) -> list[Definition]:
     return found
 
 
-def _shell_header(path: str, line: str) -> str | None:
-    if path.endswith(".ps1"):
-        match = POWERSHELL_HEADER.match(line)
-        return match.group(1) if match else None
-    match = BASH_HEADER.match(line)
-    return (match.group(1) or match.group(2)) if match else None
+def _powershell_header(line: str) -> str | None:
+    match = POWERSHELL_HEADER.match(line)
+    return match.group(1) if match else None
 
 
 def shell_definitions(path: str, text: str) -> list[Definition]:
-    """A PowerShell or Bash file's functions, each to the brace that closes it, or to the end of the file."""
+    """A PowerShell or Bash file's functions: a Bash file's as bash_definitions reads them, and a PowerShell file's each
+    to the brace that closes it, or to the end of the file, counting every brace, a limit: ejryan89-skill-core has no
+    PowerShell grammar, so a brace in a string or a comment counts too."""
+    if not path.endswith(".ps1"):
+        return bash_definitions(path, text)
     lines = text.split("\n")
     found: list[Definition] = []
     for index, line in enumerate(lines):
-        name = _shell_header(path, line)
-        if name is None or COMMENT_LINE.match(line):
+        name = _powershell_header(line)
+        if name is None:
             continue
         depth, opened, end = 0, False, len(lines)
         for offset, body in enumerate(lines[index:]):
@@ -326,8 +332,34 @@ def shell_definitions(path: str, text: str) -> list[Definition]:
     return found
 
 
-def _is_header(path: str, line: str) -> bool:
-    return bool(PYTHON_HEADER.match(line)) if path.endswith(".py") else _shell_header(path, line) is not None
+def bash_definitions(path: str, text: str) -> list[Definition]:
+    """A Bash file's functions, as ejryan89-skill-core's Bash grammar reads them, each from the line Bash defines it on
+    to the last line its body reads; a function whose name Bash refuses to define is none. Raises BashSyntaxError, a
+    ValueError, for text the grammar refuses or reads only up to an option it does not read."""
+    lines = text.split("\n")
+    found: list[Definition] = []
+    for command in every_command(text):
+        if isinstance(command, FunctionDefinition) and command.name is not None:
+            header = lines[command.line - 1]
+            column = len(header) - len(header.lstrip())
+            found.append(
+                Definition(path, command.name, "function", command.line, command.line, command.end, command.end, column)
+            )
+    return found
+
+
+def _removes_definition(path: str, lines: Sequence[str]) -> bool:
+    """Whether removed lines held a definition of their own: a Python or PowerShell header on any of them, or a Bash
+    function the grammar reads in them whole. Removed Bash lines the grammar cannot read, as a header without its body,
+    hold none, so the removal is a change to the definition around it, which is listed rather than passed over."""
+    if path.endswith(".py"):
+        return any(PYTHON_HEADER.match(line) for line in lines)
+    if path.endswith(".ps1"):
+        return any(_powershell_header(line) is not None for line in lines)
+    try:
+        return any(isinstance(command, FunctionDefinition) for command in every_command("\n".join(lines)))
+    except ValueError:
+        return False
 
 
 def _indent(lines: Iterable[str]) -> int:
@@ -357,7 +389,7 @@ def changed_definitions(change: FileChange, definitions: list[Definition]) -> di
     for removal in change.removals:
         if not any(text.strip() for text in removal.lines):
             continue
-        if any(_is_header(change.path, text) for text in removal.lines):
+        if _removes_definition(change.path, removal.lines):
             continue  # a definition removed, which needs no test, or one moved, whose new place is an added line
         above, below, indent = removal.before - 1, removal.before, _indent(removal.lines)
         # Inside means between two of its lines, or after its last one and indented as its body is.
@@ -425,7 +457,8 @@ def read_python_test(text: str) -> PythonTest:
 
 def _code_text(path: str, text: str) -> str:
     """A test's text without its comments: a Python test's strings stay, since a test calls a shell function from
-    one. Raises tokenize.TokenError or SyntaxError when `tokenize` cannot read a Python test."""
+    one. Raises tokenize.TokenError or SyntaxError when `tokenize` cannot read a Python test, and BashSyntaxError, a
+    ValueError, when the Bash grammar cannot read a Bash test's words."""
     if path.endswith(".py"):
         # A lone CR ends a line of Python, so tokenize reads it as the parser does only through universal newlines.
         tokens = tokenize.generate_tokens(io.StringIO(text, newline=None).readline)
@@ -433,8 +466,9 @@ def _code_text(path: str, text: str) -> str:
     if path.endswith(".ps1"):
         # PowerShell ends a line at CR, LF, and CRLF, so a call after a lone CR that ends a comment is code.
         text = "\n".join(LINE_BREAK.split(POWERSHELL_BLOCK_COMMENT.sub(" ", text)))
-    # Bash ends a line at LF alone, so a comment runs on through a lone CR.
-    return "\n".join(line for line in text.split("\n") if not COMMENT_LINE.match(line))
+        return "\n".join(line for line in text.split("\n") if not POWERSHELL_COMMENT_LINE.match(line))
+    # Bash ends a comment at LF alone, so it runs on through a lone CR, and a `#` inside a word starts none.
+    return uncommented_text(text)
 
 
 def file_name(script: str) -> re.Pattern[str]:

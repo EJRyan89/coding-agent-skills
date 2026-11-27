@@ -719,6 +719,116 @@ def test_a_function_is_named_only_by_a_word_bash_defines_it_by(text: str, name: 
     assert ["git", "push"] in [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
 
 
+# Functions in each form Bash defines one, with braces in a quoted string and a comment, a header-shaped line in a
+# here-document's body, a nested definition, and redirections continued onto a later line.
+FUNCTION_SPANS_SCRIPT = (
+    "f() {\n"  # 1
+    '  echo "}" # }\n'  # 2
+    "  git push\n"  # 3
+    "}\n"  # 4
+    "cat <<'BODY'\n"  # 5
+    "k() {\n"  # 6: the body's text, which defines nothing
+    "BODY\n"  # 7
+    "function g\n"  # 8
+    "{\n"  # 9
+    "  :\n"  # 10
+    "}\n"  # 11
+    "h ()\n"  # 12
+    "(\n"  # 13
+    "  :\n"  # 14
+    ")\n"  # 15
+    "outer() {\n"  # 16
+    "  inner() { :; }\n"  # 17
+    "}\n"  # 18
+    "redirected() {\n"  # 19
+    "  :\n"  # 20
+    "} \\\n"  # 21
+    "  >/dev/null\n"  # 22
+    "function keyword() { :; }\n"  # 23
+)
+FUNCTION_SPANS = {
+    "f": (1, 4),
+    "g": (8, 11),
+    "outer": (16, 18),
+    "inner": (17, 17),
+    "h": (12, 15),
+    "redirected": (19, 22),
+    "keyword": (23, 23),
+}
+
+
+def test_a_function_spans_from_the_line_bash_defines_it_on_to_the_last_line_its_body_reads(tmp_path: Path) -> None:
+    bash_agreement.assert_reader_agrees([FUNCTION_SPANS_SCRIPT])
+    definitions = [
+        command
+        for command in bash_syntax.every_command(FUNCTION_SPANS_SCRIPT)
+        if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    spans = {definition.name: (definition.line, definition.end) for definition in definitions}
+    assert spans == FUNCTION_SPANS
+    script = tmp_path / "spans.sh"
+    names = " ".join(FUNCTION_SPANS)
+    script.write_bytes(f"{FUNCTION_SPANS_SCRIPT}outer\nshopt -s extdebug\ndeclare -F {names}\n".encode())
+    result = platform_support.run_tool([bash_agreement.find_bash(), platform_support.normalize(script)])
+    assert result.returncode == 0, result.output
+    # The here-document's body, which cat prints, comes first; declare -F prints each name, its line, and the script.
+    defined = {words[0]: int(words[1]) for words in (line.split() for line in result.output.splitlines()[1:])}
+    assert defined == {name: start for name, (start, _) in FUNCTION_SPANS.items()}
+
+
+def test_a_function_followed_by_a_here_document_ends_on_its_operator_s_line_as_the_module_states() -> None:
+    text = "f() { cat; } <<EOF\nbody\nEOF\n"
+    bash_agreement.assert_reader_agrees([text])
+    [definition] = [
+        command for command in bash_syntax.every_command(text) if isinstance(command, bash_syntax.FunctionDefinition)
+    ]
+    assert (definition.line, definition.end) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("text", "kept", "dropped"),
+    [
+        ("run_thing # days_old\n", {"run_thing"}, {"days_old"}),
+        ("# days_old\rrun_thing\n", set(), {"days_old", "run_thing"}),
+        ("echo '# kept' x#y\n", {"'#", "kept'", "x#y"}, set()),
+        ("cat <<EOF\ndays_old # in the body\nEOF\n", {"days_old", "#"}, set()),
+    ],
+)
+def test_uncommented_text_drops_each_comment_bash_reads_and_keeps_everything_else(
+    text: str, kept: set[str], dropped: set[str]
+) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    words = set(bash_syntax.uncommented_text(text).split())
+    assert kept <= words
+    assert not dropped & words
+
+
+class Refused(Exception):
+    """A caller's own refusal of Bash the grammar refuses."""
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("echo 'unclosed", "a single quote is not closed"),
+        # NotRead, the grammar's refusal of text Bash may run, is refused the same way.
+        ("for x in a; { git push; }", "a loop whose body is a `{ }` group is not read"),
+    ],
+)
+def test_refusing_raises_the_caller_s_refusal_from_the_grammar_s_error(text: str, reason: str) -> None:
+    with pytest.raises(Refused) as caught, bash_syntax.refusing(lambda error: Refused(f"refused: {error}")):
+        bash_syntax.every_command(text)
+    assert str(caught.value) == f"refused: {reason}"
+    assert isinstance(caught.value.__cause__, BashSyntaxError)
+
+
+def test_refusing_passes_bash_the_grammar_reads_and_any_other_error_through() -> None:
+    with bash_syntax.refusing(Refused):
+        assert bash_syntax.command_words(bash_syntax.simple_commands("git push")[0]) == ["git", "push"]
+    with pytest.raises(KeyError), bash_syntax.refusing(Refused):
+        raise KeyError("not the grammar's")
+
+
 def test_a_documented_limit_a_function_name_holding_a_tilde_which_bash_defines_is_read_as_refused() -> None:
     text = "~f () { echo defined; }; ~f"
     bash_agreement.assert_reader_agrees([text])
