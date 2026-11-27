@@ -1091,6 +1091,34 @@ class InstructionLayeringTests(unittest.TestCase):
         )
         self.assertEqual("", audit._extract_sections(claude_content, ["Not a heading", "Nor this"]))
 
+    def test_a_heading_a_container_holds_or_a_comment_hides_does_not_split_a_section(self) -> None:
+        claude_content = (
+            "# CLAUDE.md\n\n## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\n"
+            "End of the overview.\n\n## Formatting Rules\n\nUse tabs.\n"
+        )
+        self.assertEqual(
+            "## Overview\n\n- Notes\n  ## Not a section\n\n> ## Nor this\n\n<!--\n## Hidden\n-->\n\n"
+            "End of the overview.",
+            audit._extract_sections(claude_content, ["Overview"]),
+        )
+        self.assertEqual("", audit._extract_sections(claude_content, ["Not a section", "Nor this", "Hidden"]))
+
+    def test_a_projected_section_starts_and_ends_only_where_the_generator_reads_one(self) -> None:
+        # The generator reads each line that `^## (.+)$` matches as a section's heading, its name the rest stripped, so
+        # a `# ` heading stays inside the section before it, and so does a level-two heading written indented or with
+        # a tab after its marks, while a closing run of marks is part of the name. The projection is compared with the
+        # generator's, so reading any of these otherwise would report a parity error regenerating cannot clear.
+        claude_content = (
+            "# CLAUDE.md\n\n## Overview\n\nUse tabs.\n\n# Appendix\n\nStill the overview.\n\n  ## Indented\n\n"
+            "##\tTabbed\n\n## Closed ##\n\nText.\n"
+        )
+        self.assertEqual(
+            "## Overview\n\nUse tabs.\n\n# Appendix\n\nStill the overview.\n\n  ## Indented\n\n##\tTabbed",
+            audit._extract_sections(claude_content, ["Overview"]),
+        )
+        self.assertEqual("## Closed ##\n\nText.", audit._extract_sections(claude_content, ["Closed ##"]))
+        self.assertEqual("", audit._extract_sections(claude_content, ["Appendix", "Indented", "Tabbed", "Closed"]))
+
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"
         manifest = json.loads(audit.read_text(self.root, manifest_path))
@@ -1974,6 +2002,10 @@ class CopilotConfigurationTests(unittest.TestCase):
             ("```\n## Maintaining AI Agent Config\n```\n", False),
             ("### Maintaining AI Agent Config\n", False),
             ("    ## Maintaining AI Agent Config\n", False),
+            # A heading a list item or a quote holds is its container's, and one in a comment GitHub hides is none.
+            ("- Notes\n  ## Maintaining AI Agent Config\n", False),
+            ("> ## Maintaining AI Agent Config\n", False),
+            ("<!--\n## Maintaining AI Agent Config\n-->\n", False),
         ):
             with self.subTest(text=text):
                 claude_md.write_bytes(text.encode("utf-8"))
@@ -3569,6 +3601,22 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict[str, Any]]] = {
         {"CLAUDE.md": UNDECODABLE, ".github/copilot-instructions.md": MARKED},
         {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
+    # A CLAUDE.md with no level-two heading of its own projects no section, as one whose only `## ` lines a list
+    # item or a blockquote holds does, and neither stops the audit.
+    "copilot_from_claude_without_a_section": (
+        {
+            "CLAUDE.md": "# CLAUDE.md\n\nText.\n",
+            ".github/copilot-instructions.md": COPILOT_HEADER + "Text.\n",
+        },
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_from_claude_whose_headings_containers_hold": (
+        {
+            "CLAUDE.md": "# CLAUDE.md\n\n- Notes\n  ## Overview\n\n> ## Formatting Rules\n",
+            ".github/copilot-instructions.md": COPILOT_HEADER + "Text.\n",
+        },
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
     "copilot_sections_absent_from_claude": (
         {
             "CLAUDE.md": "# CLAUDE.md\n\n## Other\n\nText.\n",
@@ -3828,6 +3876,22 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     "copilot_with_undecodable_claude": [],
     "copilot_without_banner_beside_undecodable_claude": [
         ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
+    ],
+    "copilot_from_claude_without_a_section": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared",
+        ),
+    ],
+    "copilot_from_claude_whose_headings_containers_hold": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared",
+        ),
     ],
     "copilot_sections_absent_from_claude": [
         (

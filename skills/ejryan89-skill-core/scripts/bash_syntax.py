@@ -854,7 +854,9 @@ class Lexer:
                 body.append(compared)
                 # The line of each character the body keeps, and of the LF that ends it, which joins it to the next.
                 numbers += places[len(line) - len(compared) :]
-            document.body = Source("\n".join(body), numbers if body else [self.lines[self.index]])
+            # A delimiter a backslash ends the text on leaves the index past the text's end, which has the last line.
+            end = self.lines[min(self.index, len(self.text))]
+            document.body = Source("\n".join(body), numbers if body else [end])
             if not document.quoted:
                 substitutions, assigns, parts, unclosed, holds = expansions(document.body, self.bash_3_2)
                 document.unclosed, document.bare_case = unclosed is not None, bool(unclosed and unclosed.bare_case)
@@ -1850,6 +1852,19 @@ COMPOUND_READERS: dict[str, Callable[[Parser], Command]] = {
     "case": Parser.case_clause,
     "function": Parser.function_keyword,
 }
+
+
+def awaits_more(text: str) -> bool:
+    """Whether Bash, given text as the lines typed so far, waits for another line before it runs them: a quote, a
+    substitution, a here-document, or a compound command left open, or a `|`, `&&`, or `||` that ends the text. A
+    limit: text Bash would refuse whatever followed, as `if then`, reads as waiting too, since only the lines after it
+    tell the two apart."""
+    try:
+        tokens = Lexer(text, lines=source_lines(text)).run()
+        parse(text)
+    except BashSyntaxError:
+        return True
+    return any(isinstance(token, HereDocument) and not token.closed for token in tokens)
 
 
 def source_lines(text: str) -> Sequence[int] | None:

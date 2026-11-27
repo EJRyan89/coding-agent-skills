@@ -82,8 +82,9 @@ from frontmatter import (
     user_only_value,
 )
 from frontmatter import split as split_frontmatter
+from hidden_comments import hidden_spans
 from markdown_literal import markdown_line
-from markdown_sections import ATX_HEADING, code_block_lines, find_fences, without_code_spans
+from markdown_sections import code_block_lines, document_headings, top_level_sections, without_code_spans
 from module_assignments import assigned_names, sole_assignment
 from path_containment import posix_within, resolved_path
 from text_lines import text_lines
@@ -2044,16 +2045,25 @@ def _has_maintaining_section(root: Path) -> bool:
     claude_md = claude_md_text(root)
     if claude_md is None:
         return False
-    # markdown_sections reads the heading and the fences a heading-shaped line inside one belongs to, as CommonMark
-    # reads them. The text comes through read_text(), whose universal newlines already end a lone CR, so this split is
-    # exact.
-    lines = claude_md[1].split("\n")
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    # The text comes through read_text(), whose universal newlines already end a lone CR, so this split is exact.
     return any(
         heading.group("marks") == "##" and MAINTAINING_SECTION.match(heading.group("text")) is not None
-        for index, line in enumerate(lines)
-        if index not in fenced and (heading := ATX_HEADING.fullmatch(line.rstrip("\r"))) is not None
+        for _, heading in document_headings(heading_lines(claude_md[1].split("\n")))
     )
+
+
+def heading_lines(lines: list[str]) -> list[str]:
+    """The lines with each comment GitHub hides, as hidden_comments reads them, blanked in place, line breaks kept, so
+    markdown_sections' document_headings reads a heading-shaped line inside one as no heading, at the line it stands
+    on."""
+    text = "\n".join(lines)
+    spans = hidden_spans(text)
+    if not spans:
+        return lines
+    characters = list(text)
+    for start, end in spans:
+        characters[start:end] = [character if character == "\n" else " " for character in characters[start:end]]
+    return "".join(characters).split("\n")
 
 
 def _has_generator_script(root: Path) -> bool:
@@ -2137,22 +2147,26 @@ DEFAULT_COPILOT_SECTIONS: list[str] = [
 COPILOT_BANNER = "> AUTO-GENERATED from CLAUDE.md. Do not edit directly — update CLAUDE.md instead."
 
 
+# How the repository's generator starts a CLAUDE.md section it projects into Copilot's instructions: the line starts
+# with this, and the rest of the line, stripped, names the section.
+GENERATOR_SECTION_PREFIX = "## "
+
+
 def _extract_sections(content: str, section_names: list[str]) -> str:
-    """Extract named H2 sections from Markdown content. A heading-shaped line inside a fenced code block is the fence's
-    text, as markdown_sections reads it, never a heading."""
+    """Extract named H2 sections from Markdown content as the repository's generator projected them, so the parity
+    check compares like with like: a section starts at a line the generator reads as a heading, `## ` and a name at
+    the line's start, named by the rest of the line stripped, and runs to the next such line. A level-two heading the
+    generator does not read so, indented or with a tab after its marks, is the section's text, as is a `# ` heading.
+    Its headings are those markdown_sections' top_level_sections reads, so a heading-shaped line inside a code block,
+    a list item, a blockquote, or a comment GitHub hides is the text around it, never a heading."""
     lines = text_lines(content)
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     sections: dict[str, list[str]] = {}
-    current: str | None = None
-    for index, line in enumerate(lines):
-        m = None if index in fenced else re.match(r"^## (.+)$", line)
-        if m:
-            current = m.group(1).strip()
-            if current not in sections:
-                sections[current] = []
-            sections[current].append(line)
-        elif current and current in sections:
-            sections[current].append(line)
+    current: list[str] | None = None
+    for index, _, end in top_level_sections(heading_lines(lines), 2):
+        if lines[index].startswith(GENERATOR_SECTION_PREFIX):
+            current = sections.setdefault(lines[index][len(GENERATOR_SECTION_PREFIX) :].strip(), [])
+        if current is not None:
+            current.extend(lines[index:end])
     parts: list[str] = []
     for name in section_names:
         if name in sections:

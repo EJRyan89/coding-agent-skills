@@ -1,14 +1,15 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, the block walker and the readers of the lines its containers hold and of the list
-items that hold each line, the labels of a fence in an executable language, the inline code span reader, the HTML
-comment pattern, and the block rules every reader of Markdown's structure reads as CommonMark does: the whitespace of
-block structure, list markers, and which list item may interrupt a paragraph."""
+reader and the reader of a level's top-level sections, the fenced code block reader, the shell session reader of a
+console fence's commands, the block walker and the readers of the lines its containers hold and of the list items that
+hold each line, the labels of a fence in an executable language, the inline code span reader, the HTML comment pattern,
+and the block rules every reader of Markdown's structure reads as CommonMark does: the whitespace of block structure,
+list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
 import bisect
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
 from text_lines import LINE_BREAK
@@ -66,8 +67,8 @@ QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 # such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences as
 # commands: a Bash fence, and an untagged one that is Bash, through the Bash grammar, and each line's first word of any
 # other shell's, fish's, cmd's, and PowerShell's, after a `$ ` or `> ` prompt; a console fence that holds a prompt is
-# a session, read on the lines audit-skill's session_commands gives, without their prompt, and one with none is read
-# like the others.
+# a session, read on the lines session_commands gives, without their prompt, as audit-skill and the deployer's renderer
+# read it, and one with none is read like the others.
 FENCE_LANGUAGES: dict[str, frozenset[str]] = {
     "shell": frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash"}),
     "fish": frozenset({"fish"}),
@@ -276,6 +277,16 @@ def document_headings(lines: list[str]) -> list[tuple[int, re.Match[str]]]:
     ends the list, is the document's. How list items and blockquotes hold a line, and the limits of that reading, are
     `_walk`'s, the one walk `blocks` and `code_block_lines` read too."""
     return _walk(lines).headings
+
+
+def top_level_sections(lines: list[str], level: int) -> list[tuple[int, re.Match[str], int]]:
+    """Each heading of `level` that document_headings gives, as its line's index, its ATX_HEADING match, and the index
+    of the line its section ends before: the next such heading of the same level, or the document's end, as
+    markdown_section ends a section at the next `## `. A heading of another level is the section's text, and so is a
+    heading-shaped line a code block, a list item, or a blockquote holds, as GitHub renders it."""
+    starts = [(index, heading) for index, heading in document_headings(lines) if len(heading.group("marks")) == level]
+    ends = [index for index, _ in starts[1:]] + [len(lines)] if starts else []
+    return [(index, heading, end) for (index, heading), end in zip(starts, ends, strict=True)]
 
 
 def contained_lines(lines: list[str]) -> set[int]:
@@ -888,7 +899,9 @@ def markdown_section(text: str, heading: str) -> str | None:
     """The lines under the first exact heading, ignoring its trailing spaces and tabs, up to the next `## ` heading.
 
     A line inside a fenced code block is the block's text, as GitHub renders it, so it is neither the heading nor the
-    section's end: a section whose body holds a fenced `## ` line runs past it. Its lines end where CommonMark ends
+    section's end: a section whose body holds a fenced `## ` line runs past it. A line a list item or a blockquote
+    holds never starts with `## `, its marker or its indentation coming first, so it is neither either, as
+    top_level_sections reads it. Its lines end where CommonMark ends
     one, at CR, LF, or CRLF, and each becomes LF; body whitespace and comments are otherwise preserved. None means
     the heading is absent.
     """
@@ -905,3 +918,112 @@ def markdown_section(text: str, heading: str) -> str | None:
         len(lines),
     )
     return "\n".join(lines[start:end])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Shell sessions: a console fence's prompts, commands, and output
+
+# The labels of a fence of a shell session, a command after each prompt and its output on the lines between:
+# console's. Every other shell's fence names a script, every line of which is a command.
+SESSION_FENCES = frozenset({"console"})
+# The prompt a line of a fence read by its first word may start with, after its blanks: `$ ` or `> `.
+LINE_PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
+# A session's prompt, which starts a command line, in the forms Pygments' console lexer reads, then a space: after the
+# blanks and any virtual environment, as `(venv) `, either `$`, `%`, or U+276F alone, or one of those or `#` after a
+# user and host, as `user@host:~$` or `MacBook:~ user$`, a bracketed one, as `[user@host dir]#`, or `sh-5.2`. A
+# bare `# ` starts a comment, as it does in a fence of bare commands, and output, such as a configuration file's,
+# often starts with one.
+# A user and host and the word after them hold no prompt character, so `user@host:~$ ls # list` runs `ls # list`.
+PROMPT_HOST = r"\[[^\]\n]*\]|[\w.-]+[@:][^\s$#%\u276f]+(?:[ \t]+[^\s$#%\u276f]+)?|sh-[\d.]+"
+SESSION_PROMPT = re.compile(rf"\A[ \t]*(?:\([^)\n]*\)[ \t]*)?(?:(?:{PROMPT_HOST})[ \t]*[$#%\u276f]|[$%\u276f]) ")
+# The prompt that makes a Bash fence a session, as SESSION_PROMPT makes a console fence one: `$` alone, then a
+# space, which starts no Bash command. The other forms SESSION_PROMPT reads are not taken there, since a Bash line
+# such as `[ -d build ] # check` starts like a bracketed one.
+BASH_PROMPT = re.compile(r"\A[ \t]*\$ ")
+# The prompt Bash shows on each line that continues a command.
+CONTINUATION_PROMPT = re.compile(r"\A[ \t]*> ")
+# A line a backslash continues, as Bash continues one ending in a backslash no other escapes.
+CONTINUED_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\\Z")
+
+
+def continues(command: str) -> bool:
+    """Whether Bash runs a command's line on into the next: it ends in a backslash no other escapes, as
+    CONTINUED_LINE reads one, and is no comment's line, whose backslash continues nothing."""
+    return CONTINUED_LINE.search(command) is not None and not command.lstrip().startswith("#")
+
+
+def session_commands(
+    fence: Fence, lines: list[str], awaits_more: Callable[[str], bool]
+) -> list[tuple[int, str]] | None:
+    r"""The body lines a SESSION_FENCES fence runs, by index, each as CommonMark gives it to the fence's content
+    without its prompt, or None for a fence of another label or one with no line SESSION_PROMPT starts, which is no
+    session: no prompt tells a command from output there, and a fence labelled so may hold commands alone, which a
+    model runs. A session runs the lines a prompt starts and the lines that continue them: a line after one that
+    continues, as continues reads it, with or without the `> ` prompt Bash shows there, as Pygments' console lexer
+    reads it, though Pygments also continues a comment's line, as `$ # note \`, which Bash does not; and a `> ` line
+    right after one, which Bash prompts for a command that is not yet complete, where Pygments reads it as output.
+    A command Bash has not finished, as `awaits_more` (bash_syntax's) tells, runs on through the unprompted lines
+    that finish it, a here-document's body, a quoted string's next line, or the command after a `|` that ends a line,
+    each joined to its last line at a line break, and a held line ending in a backslash continues it into the next;
+    lines that never finish it, up to the next prompt or the fence's end, are output, and the command is read as
+    written. A held line that starts like a prompt, as a here-document's `$ text` body line, starts a new command
+    instead, a limit only running the session would settle. Any other line is output.
+
+    SESSION_PROMPT reads the prompt forms Pygments reads, with these differences. Pygments takes a bare `# ` as
+    root's prompt: here it starts a comment, so a root session's commands written after one read as comments and its
+    output as commands. Pygments also takes a prompt with no space after it, as in `$HOME/bin/tool`, a word starting
+    with `sh` before one, as in `shellcheck # note`, and a prompt character inside a user and host or the word after
+    them, as in `user@host:~$ ls # list`, whose command it reads as `list`; here the first two are not prompts and the
+    third's command is `ls # list`. Pygments reads a prompt after two virtual environments, as `(venv) (base) $ `,
+    after a bracket and a further word, as `[user@host dir] (main)$ `, or followed by a tab, which here is not one; and
+    here a user and host may start with any word character, `.`, or `-`, so `-x:y$ ` is a prompt, where Pygments takes
+    a word character first. A command line that starts like a bracketed prompt, as `[ -d build ] # check`, makes a
+    fence of bare commands a session and its other lines output. A line of output that starts like a prompt, such as
+    curl's `  % Total` progress header, reads as a command. So does a `> ` line of output right after a command line,
+    as diff prints one, a line after a backslash that ends a quoted string's line or a comment, as in
+    `$ echo a # note \`, and a here-document's body, which Bash also prompts for with `> `; only running the session
+    would settle them."""
+    if fence.language.casefold() not in SESSION_FENCES:
+        return None
+    return prompted_commands(fence, lines, SESSION_PROMPT, awaits_more)
+
+
+def prompted_commands(
+    fence: Fence, lines: list[str], prompt_pattern: re.Pattern[str], awaits_more: Callable[[str], bool]
+) -> list[tuple[int, str]] | None:
+    """The body lines a fence runs as a session, by index, each as CommonMark gives it to the fence's content without
+    its prompt, where `prompt_pattern` reads a command line's prompt and `awaits_more` whether a command's lines so
+    far are unfinished, as session_commands reads them, or None for a fence no line of which that prompt starts."""
+    contents = [(index, fence.content(lines[index])) for index in fence.body()]
+    if not any(prompt_pattern.match(text) for _, text in contents):
+        return None
+    commands: list[tuple[int, str]] = []
+    prompted = continued = False
+    # Where the command being read starts among `commands`, and the unprompted lines read since it stopped, held until
+    # they finish it.
+    start = 0
+    held: list[str] = []
+    for index, text in contents:
+        if (prompt := prompt_pattern.match(text)) is not None:
+            command = text[prompt.end() :]
+            start, held = len(commands), []
+        elif held or (
+            prompted
+            and not continued
+            and not CONTINUATION_PROMPT.match(text)
+            and awaits_more("\n".join(line for _, line in commands[start:]))
+        ):
+            held.append(text)
+            if not awaits_more("\n".join([*(line for _, line in commands[start:]), *held])):
+                last, typed = commands[-1]
+                commands[-1] = (last, "\n".join([typed, *held]))
+                continued, held = continues(held[-1]), []
+            continue
+        elif continued or (prompted and CONTINUATION_PROMPT.match(text)):
+            command = CONTINUATION_PROMPT.sub("", text, count=1)
+        else:
+            prompted = continued = False
+            continue
+        prompted, continued = True, continues(command)
+        commands.append((index, command))
+    return commands
