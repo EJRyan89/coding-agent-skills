@@ -997,7 +997,8 @@ def prompted_commands(
     prompted = continued = False
     # Where the command being read starts among `commands`, and the unprompted lines read since it stopped, held until
     # they finish it.
-    start, held = 0, []
+    start = 0
+    held: list[str] = []
     for index, text in contents:
         if (prompt := prompt_pattern.match(text)) is not None:
             command = text[prompt.end() :]
