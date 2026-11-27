@@ -781,8 +781,25 @@ or removed fails validation until its pattern follows it.
   sources, a key on the path under any cut being a cycle, and still gives at each expression that reaches a key
   already read the Unreadable it places there; and `tests.validation.python_checks:_ClassBases.reached`,
   `tests.validation.python_checks:_InheritedLibraries.bound`, and `tests.validation.markdown_links:_suite_tests`,
-  which read each re-exported name, class, or test class once per question, since each answer is a union
-- **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
+  which read each re-exported name, class, or test class once per question, since each answer is a union; and, for a
+  new walk, `memoized_walk:MemoizedWalk`, which reads each node once per question wherever its answer would come out
+  the same, so every answer is the one a walk per path gives, cycles included, and cuts a cycle by what each node is
+  under way as, as `runtime_support:carried_needs`, the refusal-step policy's
+  printed-text and asserted-line readers, the duplication policies' static-text and containment readers,
+  `tests.validation.validation_support:path_parts`, `tests.validation.validation_support:CallableResolver.aliases`,
+  suite discovery's path keys, and the upgrade-notes check's contract values walk
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_walk_carries_its_visited_set_per_path`,
+  with fixtures in `tests/validation/test_python_checks.py::test_walk_policy_refuses_a_recursion_that_carries_its_visited_set_per_path`
+  and `tests/validation/test_python_checks.py::test_walk_policy_passes_the_same_walk_with_a_memo_or_a_walk_allowed_entry`,
+  `skills/ejryan89-skill-core/scripts/test_memoized_walk.py::test_a_diamond_ladder_reads_each_node_once`,
+  `skills/ejryan89-skill-core/scripts/test_memoized_walk.py::test_every_answer_of_every_small_graph_asked_in_turn_is_the_per_path_one`,
+  `tests/validation/test_duplication.py::test_two_loops_that_iterate_each_other_s_names_end_and_are_read_as_before`,
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_diamond_ladder_of_invoked_skills_reads_each_skill_once`,
+  `tests/validation/test_refusal_steps.py::RefusalStepFixtures::test_a_ladder_of_functions_each_returning_the_next_twice_reads_each_function_once`,
+  `tests/validation/test_refusal_steps.py::LooseRefusalAssertionFixtures::test_a_name_bound_to_a_name_read_twice_is_followed_once_per_binding`,
+  `tests/validation/test_duplication.py::test_a_name_bound_twice_to_the_next_at_each_rung_is_followed_once_per_key`,
+  `tests/validation/test_duplication.py::test_a_name_bound_to_a_sum_of_the_next_twice_reads_each_binding_once`,
+  `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once`,
@@ -820,8 +837,11 @@ or removed fails validation until its pattern follows it.
   is accepted too: its answer is the expanded text, so a constant that uses the one before twice doubles the answer
   itself, and its work is linear in the text it returns. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
-  `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
-- **Examples:** #2859, #2871, #2877, #2882, #2897
+  `resolved_references` does, since remembering only what it has read leaves its answers depending on the route. The
+  per-path walk policy refuses the plain forms, a recursion given `seen | {...}` or a copy of its own parameter, and
+  a set added to before a recursive call and taken out in a `finally`; a walk whose state must be per path, as
+  dotnet-dependencies' path finder keeps the chains it prints, states why and what bounds it in `WALK_ALLOWED`.
+- **Examples:** #2859, #2871, #2877, #2882, #2897, #3178
 
 ### A reader that numbers many positions of one text reads its line starts once
 
