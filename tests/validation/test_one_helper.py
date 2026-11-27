@@ -1463,6 +1463,12 @@ REFUSED_REVIEW_KEYS = {
     "groupby": (
         f"import itertools\n\n\ndef f(records):\n    return itertools.groupby(records, key=lambda record: {HEAD})\n"
     ),
+    "groupby's key by position": (
+        f"import itertools\n\n\ndef f(records):\n    return itertools.groupby(records, lambda record: {HEAD})\n"
+    ),
+    "groupby imported by name": (
+        f"from itertools import groupby\n\n\ndef f(records):\n    return groupby(records, key=lambda record: {HEAD})\n"
+    ),
     "a key bound to a name first": (
         "def f(heads, records):\n    for record in records:\n"
         f'        key = (record["repository"], {HEAD})\n        heads.setdefault(key, []).append(record)\n'
@@ -1546,6 +1552,22 @@ class ReviewIdentityTests(unittest.TestCase):
             "two heads compared": "def f(since_sha, head_sha):\n    return since_sha == head_sha\n",
             # A head held as an attribute, as a dataclass holds one, is not read.
             "an attribute": "def f(seen, reviewed):\n    seen[reviewed.head] = reviewed\n",
+            # A name bound by an annotated assignment, a for or comprehension target, or a match capture is not
+            # followed.
+            "annotated": f"def f(seen, record):\n    head: str = {HEAD}\n    seen[head] = record\n",
+            "a for target": (
+                f"def f(seen, records):\n    for head in [{HEAD} for record in records]:\n        seen[head] = 1\n"
+            ),
+            "a match capture": (
+                f"def f(seen, record):\n    match {HEAD}:\n        case str(head):\n            seen[head] = 1\n"
+            ),
+            # A head counted or deduplicated by Counter or dict.fromkeys, or looked up by list.index, is not a key.
+            "counted": (
+                "import collections\n\n\ndef f(records):\n"
+                f"    return collections.Counter({HEAD} for record in records)\n"
+            ),
+            "deduplicated": f"def f(records):\n    return dict.fromkeys({HEAD} for record in records)\n",
+            "an index": f"def f(heads, record):\n    return heads.index({HEAD})\n",
         }
         for name, text in limits.items():
             with self.subTest(name):

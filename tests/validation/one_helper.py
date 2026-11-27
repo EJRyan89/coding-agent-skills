@@ -157,7 +157,8 @@ disagreements did. In every non-test module ruff formats but the helper, it fail
 record's head, RECORD_HEAD read as `<expression>["pull_request"]["head_sha"]`, alone or beside other fields, read there
 or through a name the scope binds by `=` to an expression holding it: a subscript's index; the first argument of a
 dictionary's setdefault, get, or pop; a dictionary display's or comprehension's key; a set display's or
-comprehension's element; the left side of an `in` or `not in` test; and the key of itertools.groupby. A head read as a
+comprehension's element; the left side of an `in` or `not in` test; and the key of itertools.groupby, given by
+position or by keyword, under any name it is imported by. A head read as a
 value, compared with `==`, or given to a call passes. A module states why a scope keys one itself in a module-level
 REVIEW_IDENTITY_ALLOWED = {scope: reason}; an entry that sanctions nothing, or one with no reason, fails. Its stated
 limits, each one a fixture in tests/validation/test_one_helper.py shows:
@@ -165,8 +166,10 @@ limits, each one a fixture in tests/validation/test_one_helper.py shows:
   read, and neither is a head held as an attribute, as the shepherd's `Reviewed.head` or a reviewed_head answer's
   `["head_sha"]`, which review_identity's own reader built.
 - A name bound by unpacking, as `number, head = ...`, or bound in one scope and used as a key in another, is not
-  followed.
-- A head added to a set by a method, as `seen.add(...)`, is not read as a key.
+  followed, and neither is a name bound by an annotated assignment, a `for` or comprehension target, or a `match`
+  capture.
+- A head added to a set by a method, as `seen.add(...)`, is not read as a key, and neither is a head counted or
+  deduplicated by `collections.Counter(...)` or `dict.fromkeys(...)`, or looked up by `list.index`.
 - A comparison of two heads, as `since_sha == head_sha`, is not read: pr_change's Query decides it as one_comparison
   and same_head, the same head on the same base and on another one, which the fake change detectors in the suites
   call too.
@@ -1106,7 +1109,8 @@ def _holds_head(node: ast.AST, heads: set[str]) -> bool:
 def _keys(node: ast.AST, resolver: CallableResolver) -> list[ast.AST]:
     """The keys a node keys a dictionary or a set by, or groups by: a subscript's index, the first argument of a
     dictionary's setdefault, get, or pop, a dictionary display's or comprehension's keys, a set display's or
-    comprehension's elements, the left side of a membership test, and the body of itertools.groupby's key."""
+    comprehension's elements, the left side of a membership test, and the body of itertools.groupby's key, given by
+    position or by keyword."""
     if isinstance(node, ast.Subscript) and not reads_record_head(node):
         return [node.slice]
     if isinstance(node, ast.Call):
@@ -1114,11 +1118,8 @@ def _keys(node: ast.AST, resolver: CallableResolver) -> list[ast.AST]:
         if isinstance(function, ast.Attribute) and function.attr in LOOKUP_METHODS and node.args:
             return [node.args[0]]
         if resolver.name(function) == GROUPBY:
-            return [
-                keyword.value.body if isinstance(keyword.value, ast.Lambda) else keyword.value
-                for keyword in node.keywords
-                if keyword.arg == "key"
-            ]
+            given = [*node.args[1:2], *(keyword.value for keyword in node.keywords if keyword.arg == "key")]
+            return [key.body if isinstance(key, ast.Lambda) else key for key in given]
     if isinstance(node, ast.Dict):
         return [key for key in node.keys if key is not None]
     if isinstance(node, ast.DictComp):
