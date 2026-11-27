@@ -172,6 +172,11 @@ class CommentBlankingTests(unittest.TestCase):
         text = "## A\n```markdown\n## B\n```\n- item\n  ## C\n## D\n"
         self.assertEqual(["## A", "## D"], pull_request.headings(text))
 
+    def test_a_heading_with_no_text_names_nothing_a_template_keeps(self) -> None:
+        # A heading of marks alone, as `## ` with nothing after, is none the block walk gives, so it names no section
+        # and is neither listed nor missing.
+        self.assertEqual(["## A"], pull_request.headings("## \n## A\n###\t\n"))
+
 
 class BodyCheckTests(unittest.TestCase):
     def test_a_filled_body_has_no_problem_and_names_its_issues(self) -> None:

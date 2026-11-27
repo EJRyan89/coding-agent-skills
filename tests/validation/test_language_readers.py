@@ -117,6 +117,15 @@ class LanguageReaderFixtures(LanguageReaderCase):
         module = "import re\n\nSPAN = r'`[^`]+`'\nCUE = re.compile(rf'see {SPAN}')\n"
         self.assertEqual([], self.problems({READER: module}))
 
+    def test_a_module_that_does_not_parse_is_named_and_the_others_are_still_read(self) -> None:
+        # A file no policy can read is a problem by its name, never one read as holding no pattern, and the policy
+        # goes on to the modules after it.
+        violating = self.module(FAMILY_PATTERNS["a `#` comment test"][1])
+        problems = self.problems({"tools/broken.py": "def broken(:\n", READER: violating})
+        self.assertEqual(2, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tools/broken.py "), problems)
+        self.assertTrue(problems[1].startswith(f"{READER}:4 spells a `#` comment test outside {BASH_OWNER}"), problems)
+
     def test_suites_and_fixtures_are_not_read(self) -> None:
         pattern = self.module(FAMILY_PATTERNS["a `#` comment test"][1])
         files = {"tools/test_reader.py": pattern, "tests/fixtures/tool/reader.py": pattern}

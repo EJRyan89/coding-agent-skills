@@ -219,14 +219,11 @@ def closed_issues(body: str, title: str | None = None, *, repository: str | None
 def headings(text: str) -> list[str]:
     """Each heading of the text's own, outside comments, as its hashes, a space, and its text, as markdown_sections'
     document_headings reads them: a heading-shaped line a code block, a list item, or a blockquote holds is its text,
-    as GitHub renders it. A heading with no text names nothing a template keeps."""
+    as GitHub renders it. A heading with no text, as `## ` alone, is none the walk gives, so it names nothing a
+    template keeps."""
     # Each line is read whole where CommonMark ends one, at CR, LF, and CRLF.
     lines = text_lines(blank_comments(text))
-    return [
-        f"{heading.group('marks')} {heading.group('text')}"
-        for _, heading in document_headings(lines)
-        if heading.group("text")
-    ]
+    return [f"{heading.group('marks')} {heading.group('text')}" for _, heading in document_headings(lines)]
 
 
 def body_problems(body: str, template: str) -> list[str]:
