@@ -52,7 +52,13 @@ from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
-from review_records import build_record, validate_adapter_result, validate_record_pair, write_record_pair
+from review_records import (
+    build_record,
+    sha256_text,
+    validate_adapter_result,
+    validate_record_pair,
+    write_record_pair,
+)
 from review_runtime import validate_adapter_manifest
 from test_review_documents import (
     INSTALL,
@@ -2787,6 +2793,51 @@ class OutputTests(DocumentTestCase):
         self.assertEqual((0, reported), run_main(*arguments))
         self.assertEqual(markdown, (self.output / "report.md").read_bytes())
 
+    def test_a_record_naming_a_repository_no_record_holds_is_refused_and_a_later_run_is_still_reported(self) -> None:
+        # validate_record refuses such a repository with review_config's ConfigurationError, which escaped report and
+        # report_runs, so every run listed after it went unreported.
+        recorded = self.recorded_report()
+        fixture = self.output / "fixture"
+        malformed = "review-document.local/no tes"
+        for path in (fixture / "pull.json", recorded.with_suffix(".json")):
+            value = json.loads(path.read_text(encoding="utf-8"))
+            path.write_text(json.dumps({**value, "repository": malformed}), encoding="utf-8")
+        second = self.root / "second"
+        code, lines = run_main("build", str(self.root / "plan.md"), "--output", str(second))
+        self.assertEqual(0, code, lines)
+        intact = write_finalized(self.root / "canary2" / "review.md", second / "fixture")
+        finalized = f"{recorded} is not a report finalize recorded: "
+
+        code, lines = run_main("report", "--fixture", str(fixture), "--report", str(recorded))
+        self.assertEqual(1, code, lines)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED {finalized}"), lines)
+        self.assertIn(malformed, lines[0])
+
+        options = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
+        options.update(host="claude-code", inline=False, force=False, canary=True)
+        listed = review_batches.new_run_list([], options)
+        listed["runs"] = [
+            {"run": str(self.root / f"run{index}"), "selector": f"one#{index}", "status": "recorded", **paths}
+            for index, paths in enumerate(
+                (
+                    {"fixture": str(fixture), "report": str(recorded)},
+                    {"fixture": str(second / "fixture"), "report": str(intact)},
+                ),
+                start=1,
+            )
+        ]
+        runs = self.root / "runs.json"
+        runs.write_text(json.dumps(listed), encoding="utf-8")
+        code, lines = run_main("report", "--runs", str(runs))
+        self.assertEqual(1, code, lines)
+        self.assertEqual(3, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"UNREPORTED one#1 {self.root / 'run1'} {finalized}"), lines)
+        reported = [f"REPORT {second / 'report.md'}", f"RECORD {intact.with_suffix('.json')}"]
+        self.assertEqual(reported, lines[1:])
+        self.assertEqual(intact.read_bytes(), (second / "report.md").read_bytes())
+        self.assertFalse((self.output / "report.md").exists())
+
     def test_a_report_changed_after_its_pair_is_read_is_refused_and_never_copied(self) -> None:
         recorded = self.recorded_report()
         real = validate_record_pair
@@ -3149,6 +3200,33 @@ class JsonObjectTests(unittest.TestCase):
             with self.subTest(start=content[:4]):
                 self.path.write_bytes(content)
                 self.assertIsNone(review_document.json_object(self.path))
+
+
+class HoldsDigestTests(unittest.TestCase):
+    """holds_digest reads a recorded report's bytes as validate_record_pair reads its Markdown: UTF-8 text, its line
+    endings as Path.read_text gives them."""
+
+    def test_bytes_that_are_not_utf8_hold_no_digest(self) -> None:
+        for content in (b"# Review\xff\n", b"\xef\xbb", "# Review\n".encode("utf-16")):
+            with self.subTest(content=content):
+                self.assertFalse(review_document.holds_digest(content, sha256_text("# Review\n")))
+
+    def test_each_line_ending_is_read_as_read_text_reads_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "review.md"
+            for name, content in (
+                ("CRLF", b"# Review\r\n\r\nBody.\r\n"),
+                ("lone CR", b"# Review\r\rBody.\r"),
+                ("mixed", b"# Review\r\n\rBody.\n"),
+                ("LF", b"# Review\n\nBody.\n"),
+            ):
+                with self.subTest(name):
+                    path.write_bytes(content)
+                    read = path.read_text(encoding="utf-8")
+                    self.assertEqual("# Review\n\nBody.\n", read)
+                    self.assertTrue(review_document.holds_digest(content, sha256_text(read)))
+                    if b"\r" in content:
+                        self.assertFalse(review_document.holds_digest(content, sha256_text(content.decode())))
 
 
 class FixtureRefusalTests(DocumentTestCase):

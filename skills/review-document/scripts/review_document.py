@@ -146,7 +146,7 @@ from link_probe import is_plain_file
 from path_containment import resolved_path, within
 from path_keys import name_key
 from review_batches import load_run_list
-from review_config import LOCAL_OWNER
+from review_config import LOCAL_OWNER, ConfigurationError
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
 from review_io import PersistenceError, working_path
@@ -987,7 +987,7 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     try:
         # The pair as every reader of it reads it: a record of the review schema whose digests the Markdown holds.
         digest = artifact_hashes(validate_record_pair(record, recorded))["markdown_sha256"]
-    except (RecordError, PersistenceError, json_writer.JsonWriteRefused) as exc:
+    except (RecordError, ConfigurationError, PersistenceError, json_writer.JsonWriteRefused) as exc:
         raise DocumentError(f"{finalized}: {exc}") from exc
     target = directory / REPORT_NAME
     content = recorded.read_bytes()
