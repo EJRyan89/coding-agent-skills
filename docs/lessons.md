@@ -647,9 +647,9 @@ or removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_powershell_startup.py::test_the_reader_runs_the_command_pwsh_s_parser_runs_for_every_spelling_of_every_parameter`,
   which runs pwsh's start-up parser in process over every spelling of every start-up parameter, and
   `tests/validation/language_readers.py::LanguageReaderPolicies::test_no_pattern_spells_a_language_s_structure_outside_its_owner`,
-  which refuses a pattern that spells a Bash function header, a `#` comment test, a brace-depth count, an ATX heading, a
+  which refuses a pattern that spells a Bash function header, a comment test, a brace-depth count, an ATX heading, a
   single-backtick code span, a console fence's prompt, or a prose path outside the module that owns its reading,
-  unless `LANGUAGE_READER_ALLOWED` states why
+  unless the module's sanction states why
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a

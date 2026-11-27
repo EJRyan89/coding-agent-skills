@@ -4,7 +4,7 @@ the language, and every other reader of that language goes through it.
 Bash has one grammar, ejryan89-skill-core's `bash_syntax`; Markdown's blocks, headings, code spans, and a console
 fence's prompts have one walk, `markdown_sections`; and the characters of a path written in prose have one class,
 `prose_paths`. A reader that spells one of their structures with a pattern of its own reads the language its own way,
-and misses what the owner reads, as each reader moved onto the owner by #3530 and #3533 did. The policy reads the
+and misses what the owner reads, as each reader since moved onto its owner did. The policy reads the
 pattern text of each `re` call, `re.compile` and the match family, through `ast`, its constant text and an f-string's
 constant parts, resolved through the module's imports, and refuses each family below outside its owner. It also refuses
 the one non-pattern form of the family, a brace-depth count, `x.count("{") - y.count("}")`. A reader that must stay
@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from duplication import DUPLICATION_ROOTS, duplication_omissions
 from python_checks import sanctioned_problems
 from validation_support import (
     REPOSITORY_ROOT,
@@ -45,9 +46,8 @@ SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 BASH_OWNER = f"{SKILL_CORE}/bash_syntax.py"
 MARKDOWN_OWNER = f"{SKILL_CORE}/markdown_sections.py"
 PROSE_PATH_OWNER = f"{SKILL_CORE}/prose_paths.py"
-# The trees of the repository's own Python the policy reads, as the duplication policy reads them; their suites state
-# what they test as literals of their own, and fixtures are other trees.
-READER_ROOTS = ("skills", "deployer", "tools", ".claude/skills", "tests/validation")
+# The trees of the repository's own Python the policy reads are the duplication policy's, DUPLICATION_ROOTS: their
+# suites state what they test as literals of their own, and fixtures are other trees.
 FIXTURES = "tests/fixtures"
 # The `re` functions given a pattern as their first argument.
 PATTERN_CALLS = frozenset(
@@ -147,12 +147,12 @@ def spelled_families(tree: ast.Module) -> Iterator[tuple[int, str, Family]]:
 
 
 def reader_files(root: Path, files: list[Path]) -> list[Path]:
-    """The Python the policy reads: every module under READER_ROOTS but a suite and a fixture."""
+    """The Python the policy reads: every module under DUPLICATION_ROOTS but a suite and a fixture."""
     return sorted(
         path
         for path in files
         if path.suffix == ".py"
-        and under(path.relative_to(root).as_posix(), READER_ROOTS)
+        and under(path.relative_to(root).as_posix(), DUPLICATION_ROOTS)
         and not under(path.relative_to(root).as_posix(), (FIXTURES,))
         and not is_test_script(path)
     )
@@ -183,11 +183,9 @@ def language_reader_problems(root: Path, files: list[Path]) -> list[str]:
 
 def unread_python(root: Path, files: list[Path]) -> list[str]:
     """Each module the policy's rule speaks of that it does not read: the repository's Python outside its roots, but
-    the suites, the fixtures, and the root modules, which state what they test or share nothing a tree imports."""
+    the parts the duplication policy leaves out for the reasons it gives, as the two read the same trees."""
     names = [path.relative_to(root).as_posix() for path in files if path.suffix == ".py" and not is_test_script(path)]
-    reason = "outside the trees the rule names: the suites state what they test as literals of their own"
-    omitted = {"tests": reason, "deploy.py": reason, "conftest.py": reason}
-    return scope_problems("the language reader policy", names, READER_ROOTS, omitted)
+    return scope_problems("the language reader policy", names, DUPLICATION_ROOTS, duplication_omissions())
 
 
 class LanguageReaderPolicies(unittest.TestCase):
