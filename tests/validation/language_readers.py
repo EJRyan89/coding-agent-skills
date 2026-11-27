@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from duplication import DUPLICATION_ROOTS, duplication_omissions
-from python_checks import sanctioned_problems
+from python_checks import SKILL_CORE_SCRIPTS, sanctioned_problems
 from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
@@ -42,10 +42,9 @@ from validation_support import (
 )
 
 ALLOWANCE = "LANGUAGE_READER_ALLOWED"
-SKILL_CORE = "skills/ejryan89-skill-core/scripts"
-BASH_OWNER = f"{SKILL_CORE}/bash_syntax.py"
-MARKDOWN_OWNER = f"{SKILL_CORE}/markdown_sections.py"
-PROSE_PATH_OWNER = f"{SKILL_CORE}/prose_paths.py"
+BASH_OWNER = f"{SKILL_CORE_SCRIPTS}/bash_syntax.py"
+MARKDOWN_OWNER = f"{SKILL_CORE_SCRIPTS}/markdown_sections.py"
+PROSE_PATH_OWNER = f"{SKILL_CORE_SCRIPTS}/prose_paths.py"
 # The trees of the repository's own Python the policy reads are the duplication policy's, DUPLICATION_ROOTS: their
 # suites state what they test as literals of their own, and fixtures are other trees.
 FIXTURES = "tests/fixtures"
