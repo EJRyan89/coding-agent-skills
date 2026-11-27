@@ -4014,9 +4014,10 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     reader = PowerShellReader(reading, commands, depth)
     followed = all(node in POWERSHELL_UNDERSTOOD for node in nodes) and not reader.read_forms(output)
     if followed and isinstance(statements, list) and not reader.reaches_every_command(statements):
-        # A command no statement lists would go unread, as a chain inside an expression once did, so the tree is read
-        # as one the reader does not follow.
-        reading.notes.append("a PowerShell command no statement the reader listed reaches")
+        # A command no statement lists would go unread, as a chain inside an expression once did, and one a statement
+        # does not place beside its pipeline would be read from where it does not run, so the tree is read as one the
+        # reader does not follow.
+        reading.notes.append("the reader's statements do not list every PowerShell command where it runs")
         followed = False
     if not followed or not isinstance(statements, list):
         moves = any(reader.effect(command) is not Effect.NOTHING for command in commands)
@@ -4041,14 +4042,23 @@ class PowerShellReader:
 
     def reaches_every_command(self, statements: list[Any]) -> bool:
         """Whether the statements list every command of the tree, each in a statement's pipelines or its nested
-        commands, so read_statement reads each."""
-        listed: set[object] = set()
+        commands, and each statement is one read_statement reads whole: its pipelines lists of command indexes, its
+        operators a list, and its stages listing its nested commands beside its pipelines (stages_listed)."""
+        listed: set[int] = set()
         for statement in statements:
-            pipelines = statement.get("pipelines") if isinstance(statement, dict) else None
-            nested = statement.get("nested") if isinstance(statement, dict) else None
-            for pipeline in pipelines if isinstance(pipelines, list) else []:
-                listed.update(pipeline if isinstance(pipeline, list) else [])
-            listed.update(nested if isinstance(nested, list) else [])
+            if not isinstance(statement, dict):
+                return False
+            pipelines, nested = statement.get("pipelines"), statement.get("nested")
+            if not isinstance(pipelines, list) or not isinstance(statement.get("operators"), list):
+                return False
+            if not all(isinstance(pipeline, list) for pipeline in pipelines):
+                return False
+            own = [index for pipeline in pipelines for index in pipeline]
+            if not isinstance(nested, list) or not all(isinstance(index, int) for index in own):
+                return False
+            if not self.stages_listed(pipelines, statement.get("stages"), nested):
+                return False
+            listed.update(own, nested)
         return listed >= set(range(len(self.commands)))
 
     def read_forms(self, output: Mapping[str, Any]) -> list[str]:
@@ -4149,38 +4159,73 @@ class PowerShellReader:
         pipelines = statement.get("pipelines") if isinstance(statement, dict) else None
         operators = statement.get("operators") if isinstance(statement, dict) else None
         nested = statement.get("nested") if isinstance(statement, dict) else None
-        if not isinstance(pipelines, list) or not isinstance(operators, list) or not isinstance(nested, list):
+        stages = statement.get("stages") if isinstance(statement, dict) else None
+        if (
+            not isinstance(pipelines, list)
+            or not isinstance(operators, list)
+            or not isinstance(nested, list)
+            or not isinstance(stages, list)
+            or not self.stages_listed(pipelines, stages, nested)
+        ):
             self.reading.notes.append("a PowerShell statement the reader could not list")
             return UNKNOWN
-        # The commands inside the statement's expressions and bodies run before it, in the session, in an order a
-        # pipeline does not show, so where one may move the location, each is read from where the text does not settle,
-        # and so is the statement, and every command after it.
+        if not pipelines:
+            # An assignment, an if, or a foreach: what it runs is all nested, before the statement ends.
+            return self.read_nested(nested, directory)
+        # Each pipeline's nested commands run once the pipelines before it have run, before any command of its own
+        # (stages), so each is read from where its pipeline starts, never from where the statement does.
+        start = directory
+        outcome = self.read_pipeline(pipelines[0], self.read_nested(stages[0], directory))
+        for operator, pipeline, stage in zip(operators, pipelines[1:], stages[1:], strict=False):
+            if operator == "&&":
+                after = self.read_pipeline(pipeline, self.read_nested(stage, outcome.ok))
+                outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
+            else:
+                after = self.read_pipeline(pipeline, self.read_nested(stage, outcome.fail))
+                outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
+        return self.moved_by(nested, start) if statement.get("background") else outcome.merged()
+
+    @staticmethod
+    def stages_listed(pipelines: list[Any], stages: Any, nested: list[Any]) -> bool:
+        """Whether a statement's stages stand one beside each of its pipelines and together list its nested commands,
+        each once, so reading each stage reads every nested command."""
+        if not isinstance(stages, list):
+            return False
+        if not pipelines:
+            return not stages
+        if len(stages) != len(pipelines):
+            return False
+        if not all(isinstance(stage, list) for stage in stages):
+            return False
+        listed = [index for stage in stages for index in stage]
+        if not all(isinstance(index, int) for index in [*listed, *nested]):
+            return False
+        return len(listed) == len(set(listed)) and set(listed) == set(nested)
+
+    def moved_by(self, indexes: list[Any], directory: Directory) -> Directory:
+        """Where commands run once these have run, in the session, in an order a pipeline does not show: where any
+        may move the location, from where the text does not settle."""
         effect = max(
             (
                 self.effect(self.commands[index])
-                for index in nested
+                for index in indexes
                 if isinstance(index, int) and index < len(self.commands)
             ),
             default=Effect.NOTHING,
         )
         if effect is Effect.UNREAD:
-            directory = UNREAD_CODE
-        elif effect is Effect.FOLLOWED:
-            directory = unknown_from(directory)
-        if nested:
-            self.read_pipeline(nested, directory)
-        if not pipelines:
-            # An assignment, an if, or a foreach: what it runs is all nested, read above.
-            return directory
-        outcome = self.read_pipeline(pipelines[0], directory)
-        for operator, pipeline in zip(operators, pipelines[1:], strict=False):
-            if operator == "&&":
-                after = self.read_pipeline(pipeline, outcome.ok)
-                outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
-            else:
-                after = self.read_pipeline(pipeline, outcome.fail)
-                outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
-        return directory if statement.get("background") else outcome.merged()
+            return UNREAD_CODE
+        if effect is Effect.FOLLOWED:
+            return unknown_from(directory)
+        return directory
+
+    def read_nested(self, indexes: list[Any], directory: Directory) -> Directory:
+        """Nested commands, read from where they start, each placed where the text does not settle once any of them
+        may move the location (moved_by), which is where the commands after them run."""
+        directory = self.moved_by(indexes, directory)
+        if indexes:
+            self.read_pipeline(indexes, directory)
+        return directory
 
     def read_redirections(self, command: Mapping[str, Any], directory: Directory) -> None:
         """The one reading of a command's file redirections, whatever the command, through read_written; each is

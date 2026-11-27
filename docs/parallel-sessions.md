@@ -613,8 +613,13 @@ The configuration's limits:
   script block handed to `ForEach-Object`, `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each
   command inside an expression or a body is read as a command that runs within the statement holding it, a chain of
   `&&` and `||` inside a subexpression, a list, parentheses, a string, or an assignment's value among them: a chain
-  is a statement's own only where it is the statement. A tree in which any command is in neither a statement's own
-  pipelines nor its nested commands is read as one holding a node type the guard does not read. A command
+  is a statement's own only where it is the statement. A command nested in one of the statement's pipelines is read
+  from where that pipeline starts, once the pipelines before it in the statement's chain have run, as PowerShell
+  evaluates a pipeline's arguments before any of its commands runs, so a subexpression after `Set-Location <dir> &&`
+  runs in `<dir>`; where a nested command may move the location, it, and every command after it, is placed where the
+  text does not settle. A tree in which any command is in neither a statement's own pipelines nor its nested commands,
+  or a statement whose nested commands its pipelines do not list each once, is read as one holding a node type the
+  guard does not read. A command
   holding any other node type or form, a method call, a static member such as `[IO.File]::Delete`, a member the text
   does not name, a cast to another type, a script block handed to any other command, or an assignment to the
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git

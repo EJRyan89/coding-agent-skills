@@ -4606,6 +4606,66 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
                     self.assertIn(WRITES.format("commit"), self.reason)
                     self.assertIsNone(self.powershell(command.replace("git commit -m x", "git log"), self.hub))
 
+    def test_a_nested_command_is_read_from_where_its_pipeline_starts_in_the_chain(self) -> None:
+        # PowerShell runs a pipeline's nested commands once the pipelines before it in the chain have run, so a commit
+        # inside an expression after a Set-Location into the hub runs in the hub. The guard once read every nested
+        # command from where the statement started, and the commit ran in the hub from a worktree or a neutral folder.
+        outside = self.root / "not-a-repository"
+        outside.mkdir()
+        neutral = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        containers = (
+            "Write-Output $({git})",
+            "Write-Output @({git})",
+            "Write-Output ({git})",
+            'Write-Output "a $({git}) b"',
+            "Write-Output @{{ a = {git} }}",
+            "Write-Output -InputObject:$({git})",
+            "Write-Output 1 | ForEach-Object {{ {git} }}",
+        )
+        moves = (
+            f"Set-Location '{self.hub}' && ",
+            f"Push-Location '{self.hub}' && ",
+            f"Write-Output 1 && Set-Location '{self.hub}' && ",
+            f"Set-Location '{self.hub}' && Write-Output 1 && ",
+        )
+        for git in ("git commit -m x", "git status && git commit -m x", "git status || git commit -m x"):
+            for move, container in itertools.product(moves, containers):
+                command = move + container.format(git=git)
+                for cwd, environment in ((self.tree, None), (outside, neutral)):
+                    with self.subTest(command=command, cwd=cwd.name):
+                        self.assertEqual("deny", self.powershell(command, cwd, environment))
+                        self.assertIn(WRITES.format("commit"), self.reason)
+        wrapped = "pwsh -NoProfile -c " + shlex.quote(f"Set-Location '{self.hub}' && Write-Output $(git commit -m x)")
+        self.assertEqual("deny", self.bash(wrapped, self.tree))
+        # A nested command that runs before the move, in the pipeline before it or as the moving pipeline's own
+        # argument, which PowerShell evaluates before any command of the pipeline runs, runs where the session was. One
+        # behind || is held as the same commit alone after the move is, its outcome not settled.
+        for command in (
+            f"Write-Output $(git commit -m x) && Set-Location '{self.hub}'",
+            f"Set-Location '{self.hub}' | Write-Output $(git commit -m x)",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.powershell(command, self.tree))
+        alone = self.powershell(f"Set-Location '{self.hub}' || git commit -m x", self.tree)
+        self.assertEqual(
+            alone, self.powershell(f"Set-Location '{self.hub}' || Write-Output $(git commit -m x)", self.tree)
+        )
+        # A nested command that may move the location leaves every command after it, its own pipeline's included,
+        # where the text does not settle.
+        self.assertEqual(
+            "deny", self.powershell(f"Write-Output $(Set-Location '{self.hub}') $(git commit -m x)", self.tree)
+        )
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        self.assertEqual(
+            "deny", self.powershell(f"Write-Output $(Set-Location '{self.hub}') && git commit -m x", self.tree)
+        )
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Bash's twin, a substitution after cd in a list, is read where the cd leaves the shell.
+        self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo $(git commit -m x)', self.tree))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo "$(git status && git commit -m x)"', self.tree))
+        self.assertIn(WRITES.format("commit"), self.reason)
+
     def test_a_file_redirection_is_read_in_every_statement_that_can_carry_one(self) -> None:
         readme = self.hub / "README.md"
         for command in (

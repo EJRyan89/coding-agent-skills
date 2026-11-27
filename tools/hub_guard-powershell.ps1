@@ -20,9 +20,11 @@ using namespace System.Management.Automation.Language
 #       {"kind": "other", "type"}, any other element, which hub_guard.py does not settle;
 #     and a redirection {"kind": "file", "target": element} or {"kind": "merge"}
 #   "statements": the top-level statements, each {"pipelines": [[command index]], "operators": ["&&" | "||"],
-#     "background": bool, "nested": [command index]}, nested naming each command inside the statement's own
-#     expressions and bodies, which runs before or within it; an assignment, an if, or a foreach has no pipelines of
-#     its own; statements is null when one of them is none of these
+#     "stages": [[command index]], "background": bool, "nested": [command index]}, nested naming each command inside
+#     the statement's own expressions and bodies, which runs before or within it, and stages, beside each pipeline,
+#     the nested commands inside it, which PowerShell runs, left to right, once the pipelines before it have run and
+#     before any command of its own does; an assignment, an if, or a foreach has no pipelines of its own; statements
+#     is null when one of them is none of these
 #   "assigned": each variable an assignment or a foreach assigns, anywhere in the tree, {"name", "qualified"}, the
 #     name and whether a drive qualifies it, as env: does, with name null for a target that is no plain variable
 #   "members": each member a property access reaches, {"static": bool, "constant": bool}, whether it is a type's
@@ -91,8 +93,8 @@ function ConvertTo-Command([CommandBaseAst] $Command) {
     }
 }
 
-# The pipelines of a statement and the operators between them, left to right; $null for a statement that is neither
-# a pipeline nor a chain of them.
+# The pipelines of a statement, the operators between them, and the nested commands inside each pipeline, its stage,
+# left to right; $null for a statement that is neither a pipeline nor a chain of them.
 function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] $Commands) {
     if ($Statement -is [PipelineChainAst]) {
         $left = Get-Chain $Statement.LhsPipelineChain $Commands
@@ -104,17 +106,22 @@ function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] 
         return [ordered]@{
             pipelines = @($left.pipelines + $right.pipelines)
             operators = @($left.operators + $operator + $right.operators)
+            stages = @($left.stages + $right.stages)
         }
     }
     if ($Statement -is [AssignmentStatementAst] -or $Statement -is [IfStatementAst] -or
         $Statement -is [ForEachStatementAst]) {
-        return [ordered]@{ pipelines = @(); operators = @() }
+        return [ordered]@{ pipelines = @(); operators = @(); stages = @() }
     }
     if ($Statement -isnot [PipelineAst]) {
         return $null
     }
-    $indexes = foreach ($element in $Statement.PipelineElements) { $Commands.IndexOf($element) }
-    [ordered]@{ pipelines = @(, @($indexes)); operators = @() }
+    $indexes = @(foreach ($element in $Statement.PipelineElements) { $Commands.IndexOf($element) })
+    $stage = foreach ($node in $Statement.FindAll({ param($node) $node -is [CommandBaseAst] }, $true)) {
+        $index = $Commands.IndexOf($node)
+        if ($indexes -notcontains $index) { $index }
+    }
+    [ordered]@{ pipelines = @(, $indexes); operators = @(); stages = @(, @($stage)) }
 }
 
 # The commands inside a statement's expressions and bodies: every command in it but the elements of its own
