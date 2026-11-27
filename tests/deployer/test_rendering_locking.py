@@ -922,6 +922,28 @@ class LockTests(DeployerTestCase):
         self.assert_record_place_refused("is a link, not the folder the deployer makes")
         self.assertEqual("old-token", (target / "token").read_text(encoding="utf-8"))
 
+    def test_a_link_at_the_lock_file_is_refused_and_kept_by_a_dry_run_and_a_deployment(self) -> None:
+        # A link to a folder is the kind each platform makes without privileges; a link to a file, which the release
+        # unlinked as its own lock file, is covered with the FIFOs in test_special_files.py.
+        self.fixture()
+        target = self.root / "elsewhere"
+        target.mkdir()
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        make_directory_link(self.paths.lock_file, target)
+        self.addCleanup(remove_directory_link, self.paths.lock_file)
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="lock's file")
+                assert_refusal(
+                    result.output.splitlines(),
+                    f"ERROR: The deployment lock's file {forward(self.paths.lock_file)} is a link, not the regular "
+                    "file the deployer makes.",
+                    "Move it out of the way once you know what it is, then retry.",
+                    'See "The deployment lock" in docs/recovery.md.',
+                )
+                self.assertTrue(platform_support.is_link_or_junction(self.paths.lock_file))
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_a_lock_pid_outside_the_platforms_range_is_malformed_and_never_probed(self) -> None:
         # Truncated to the 32 bits Windows' OpenProcess takes, 2**32 + this PID names this live process.
         self.fixture()
