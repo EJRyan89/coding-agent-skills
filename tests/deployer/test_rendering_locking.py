@@ -26,9 +26,12 @@ from harness import (
     REPOSITORY_ROOT,
     TAKES_THE_LOCK,
     DeployerTestCase,
+    assert_refusal,
     failing_lock_metadata_write,
     forward,
+    make_directory_link,
     probe_returning,
+    remove_directory_link,
     tree_state,
 )
 from markdown_sections import find_fences
@@ -880,6 +883,67 @@ class LockTests(DeployerTestCase):
         self.write(directory / "info.json", json.dumps({"token": "x"}))
         self.deploy_fails("--all", pattern="Lock metadata is malformed \\(no valid PID\\)")
 
+    def assert_record_place_refused(self, kind: str) -> None:
+        """A dry run and a deployment each refuse what is at the record's place as `kind`, before any change: the
+        harness compares the home byte for byte, so what is there is neither moved aside nor deleted."""
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="lock's record", probe=probe_returning(False, None))
+                assert_refusal(
+                    result.output.splitlines(),
+                    f"ERROR: The deployment lock's record {forward(self.lock_dir)} {kind}.",
+                    "Move it out of the way once you know what it is, then retry.",
+                    'See "The deployment lock" in docs/recovery.md.',
+                )
+                self.assertNotIn("Stale lock detected", result.output)
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assertEqual([self.lock_dir], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_file_at_the_lock_record_is_refused_and_kept_by_a_dry_run_and_a_deployment(self) -> None:
+        # Older than the grace a record with no metadata gets, so a judgment that took it for a record would remove it.
+        self.fixture()
+        self.lock_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.lock_dir.write_text("the user's notes\n", encoding="utf-8")
+        then = time.time() - lock.RECORD_GRACE_SECONDS - 540
+        os.utime(self.lock_dir, (then, then))
+        self.assert_record_place_refused("is not a folder")
+        self.assertEqual("the user's notes\n", self.lock_dir.read_text(encoding="utf-8"))
+
+    def test_a_link_at_the_lock_record_is_refused_and_kept_with_what_it_leads_to(self) -> None:
+        # The folder it leads to reads as a stale record, so a judgment that followed the link would remove the link.
+        self.fixture()
+        target = self.root / "elsewhere"
+        target.mkdir()
+        self.write(target / "token", "old-token")
+        self.write(target / "info.json", json.dumps({"pid": 4242, "token": "old-token", "start_time": 1}))
+        self.lock_dir.parent.mkdir(parents=True, exist_ok=True)
+        make_directory_link(self.lock_dir, target)
+        self.addCleanup(remove_directory_link, self.lock_dir)
+        self.assert_record_place_refused("is a link, not the folder the deployer makes")
+        self.assertEqual("old-token", (target / "token").read_text(encoding="utf-8"))
+
+    def test_a_link_at_the_lock_file_is_refused_and_kept_by_a_dry_run_and_a_deployment(self) -> None:
+        # A link to a folder is the kind each platform makes without privileges; a link to a file, which the release
+        # unlinked as its own lock file, is covered with the FIFOs in test_special_files.py.
+        self.fixture()
+        target = self.root / "elsewhere"
+        target.mkdir()
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        make_directory_link(self.paths.lock_file, target)
+        self.addCleanup(remove_directory_link, self.paths.lock_file)
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="lock's file")
+                assert_refusal(
+                    result.output.splitlines(),
+                    f"ERROR: The deployment lock's file {forward(self.paths.lock_file)} is a link, not the regular "
+                    "file the deployer makes.",
+                    "Move it out of the way once you know what it is, then retry.",
+                    'See "The deployment lock" in docs/recovery.md.',
+                )
+                self.assertTrue(platform_support.is_link_or_junction(self.paths.lock_file))
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_a_lock_pid_outside_the_platforms_range_is_malformed_and_never_probed(self) -> None:
         # Truncated to the 32 bits Windows' OpenProcess takes, 2**32 + this PID names this live process.
         self.fixture()
@@ -1155,6 +1219,25 @@ class LockTests(DeployerTestCase):
         refusal = self.acquire_after_judgment(initialized)
         self.assertEqual(f"{RUNNING} (PID 2002).", refusal.lines[0])
         self.assert_only_the_older_record_is_left()
+
+    def test_a_link_to_the_judged_record_put_in_its_place_after_the_judgment_is_moved_back_and_refused(self) -> None:
+        """Read through the link, what was moved aside has the judged folder's identity, but a link is no record the
+        deployer makes, so it is moved back, never removed."""
+        self.lock_dir.mkdir(parents=True)
+        then = time.time() - lock.RECORD_GRACE_SECONDS - 30
+        os.utime(self.lock_dir, (then, then))
+        elsewhere = self.lock_dir.parent / "elsewhere"
+
+        def linked() -> None:
+            self.lock_dir.rename(elsewhere)
+            make_directory_link(self.lock_dir, elsewhere)
+
+        refusal = self.acquire_after_judgment(linked)
+        self.addCleanup(remove_directory_link, self.lock_dir)
+        self.assertEqual([f"{RUNNING}.", "Wait for it to finish, then retry."], list(refusal.lines))
+        self.assertTrue(platform_support.is_link_or_junction(self.lock_dir))
+        self.assertTrue(elsewhere.is_dir())
+        self.assertEqual([self.lock_dir], list(self.lock_dir.parent.glob(".deploy.lock*")))
 
     def test_a_record_moved_aside_whose_metadata_does_not_read_is_moved_back_and_refused(self) -> None:
         """What was moved aside cannot be told to be the record judged stale, so it is never deleted."""
