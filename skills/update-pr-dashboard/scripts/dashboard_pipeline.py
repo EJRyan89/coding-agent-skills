@@ -54,6 +54,7 @@ from console import run_main
 from flat_text import flat_text, single_line
 from github_client import GitHubError
 from path_containment import resolved_path
+from path_keys import opens_as
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -172,6 +173,8 @@ GENERIC_REPOSITORY_ENTRY: dict[str, Any] = {
 GHOST_LOGIN = "ghost"
 # The record beside the configuration; the default configuration, named `DEFAULT_CONFIG_NAME`, keeps this plain name.
 TRACKER_RECORD = "tracker.json"
+# The suffix of a configuration whose record drops it, `<name>.tracker.json`; any other name keeps its whole name.
+CONFIG_SUFFIX = ".json"
 # Whether a repository's first commit is its second commit or an ancestor of it; None when that cannot be told.
 Ancestry = Callable[[str, str, str], "bool | None"]
 
@@ -542,19 +545,46 @@ def update(
 def tracker_record_path(config_path: Path) -> Path:
     """Where `update` records the pull requests the tracker holds, the one derivation every command reads it by: beside
     the file the configuration path leads to, through any link, so a configuration reached through a link in another
-    folder has the record `update` wrote. It is named after that file, `tracker.json` for the default name and
-    `<name>.tracker.json` for any other, so two configurations in one folder never share one."""
+    folder has the record `update` wrote. It is named after that file as its folder opens it: `tracker.json` for the
+    file `DEFAULT_CONFIG_NAME` opens, `<name>.tracker.json` for the file `<name>.json` opens, and the whole file name
+    followed by `-tracker.json` for any other, so no two files in one folder share a record, whatever their suffixes.
+    `opens_as` asks the folder, so a name given in another case than the folder stores, such as `config.JSON`, has the
+    record of the file it opens where the folder folds case, and one of its own where it does not."""
     resolved = resolved_path(config_path)
-    name = TRACKER_RECORD if resolved.name == DEFAULT_CONFIG_NAME else f"{resolved.stem}.{TRACKER_RECORD}"
+    if opens_as(resolved, DEFAULT_CONFIG_NAME):
+        name = TRACKER_RECORD
+    elif opens_as(resolved, f"{resolved.stem}{CONFIG_SUFFIX}"):
+        name = f"{resolved.stem}.{TRACKER_RECORD}"
+    else:
+        name = f"{resolved.name}-{TRACKER_RECORD}"
     return resolved.parent / name
 
 
 def read_tracker_record(record: Path) -> dict[str, Any] | None:
     """The validated tracker record at `record`, or None before any update has written it. A record it cannot stat, or
-    anything other than a file in its place, is refused as one it cannot read, never one no update has written."""
+    anything other than a file in its place, is refused as one it cannot read, never one no update has written, and a
+    code-review configuration in its place is refused by that cause, so it is never read or replaced as a record."""
     if not record_present(record):
         return None
-    return validate_tracker_record(read_json(record))
+    value = read_json(record)
+    try:
+        return validate_tracker_record(value)
+    except TrackerError:
+        if not _is_configuration(value):
+            raise
+    raise TrackerError(
+        f"{record} holds a code-review configuration, not a tracker record: a configuration sits at the tracker "
+        "record path; rename that configuration"
+    )
+
+
+def _is_configuration(value: Any) -> bool:
+    """Whether `value` is a valid code-review configuration, which no tracker record is."""
+    try:
+        validate_config(value)
+    except ConfigurationError:
+        return False
+    return True
 
 
 def held_pulls(config_path: Path) -> set[str] | None:
