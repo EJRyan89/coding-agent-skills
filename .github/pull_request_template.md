@@ -19,7 +19,9 @@ Closes #
 <!-- For a pull request titled `fix`, replace "None" with the forms the fix weighed, in the author's own words:
      - the construct the fix corrects, and the catalogue its spellings come from, such as builtins, options, binding
        modes, import forms, keywords, exit codes, or keys, with a decision for each entry: read, refused, or out of
-       scope and why, an out-of-scope entry also named in the contract's or policy's limits;
+       scope and why, an out-of-scope entry also named in the contract's or policy's limits; where a module that
+       binds a module-level NOT_READ reads the construct, name its catalogue test and the entries the fix moves
+       instead, since that test holds the rest;
      - the other callers of the helper it changes, and the other skills, shells, or modules holding the same
        construct, each checked;
      - the pattern of docs/lessons.md the defect violated and what its Search for forms found;

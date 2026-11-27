@@ -241,6 +241,77 @@ def test_an_issue_that_names_neither_a_path_nor_a_symbol_still_carries_the_const
     assert result.brief.endswith(fix_brief.RULES.read_text(encoding="utf-8"))
 
 
+# The construct section's request for the catalogue by hand, written out rather than read from the script.
+BY_HAND = (
+    "Name the construct the issue's rule is about and the catalogue its spellings come from, such as builtins, options "
+    "and their bundled forms, binding modes, import forms, error kinds, exit codes, keys, characters, path spellings, "
+    "or shells, as the sibling-spellings reviewer, `.claude/skills/review-repository/references/sibling-spellings.md`, "
+    "will. Then decide, for each entry, whether the change handles it, and name what it leaves in the pull request."
+)
+# What the construct section adds for a file that binds a module-level NOT_READ, whose catalogue test holds its
+# catalogue.
+HELD_BY_A_TEST = (
+    "Each file below binds a module-level `NOT_READ`, so a catalogue test holds every entry of the catalogue it reads: "
+    "read, refused, or named in that table with why. For a construct such a file reads, name that test, and decide "
+    "there only the entries the change moves, rather than listing the catalogue here; list it by hand only for a "
+    "construct no catalogue test holds."
+)
+
+
+def test_a_file_that_binds_a_module_level_not_read_is_named_with_the_suites_holding_its_catalogue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(
+        tmp_path,
+        {
+            "tools/catalogued.py": 'NOT_READ = {"coproc": "why"}\n',
+            "tools/annotated.py": 'NOT_READ: dict[str, str] = {"-x": "why"}\n',
+            # NOT_READ bound inside a function, or only read from another module, binds no table of the file's own.
+            "tools/nested.py": "def f():\n    NOT_READ = {}\n    return NOT_READ\n",
+            "tools/reads.py": "import catalogued\n\nprint(catalogued.NOT_READ)\n",
+            "tools/broken.py": "NOT_READ = {\n",
+            "tests/test_catalogued.py": "import catalogued\n\n\ndef test_x():\n    assert catalogued.NOT_READ\n",
+            "tests/test_other.py": "import catalogued\n\n\ndef test_y():\n    assert catalogued\n",
+        },
+    )
+    files = ("catalogued", "annotated", "nested", "reads", "broken", "reader")
+    body = "Read every form: " + ", ".join(f"`tools/{name}.py`" for name in files) + "."
+    result = run(root, tmp_path, monkeypatch, capsys, issue(body), "7")
+    assert result.code == 0
+    assert result.section("Construct and its spellings (to complete)") == (
+        f"{BY_HAND}\n\n{HELD_BY_A_TEST}\n\n"
+        "- `tools/catalogued.py`: `tests/test_catalogued.py`\n"
+        "- `tools/annotated.py`: no suite names it beside `NOT_READ`; "
+        "`git grep -n -w -F -e 'NOT_READ' -- $(git grep -l -w -F -e 'annotated') ':(glob)**/annotated.py'` lists "
+        "what does"
+    )
+
+
+def test_a_construct_no_catalogue_test_holds_is_still_listed_by_hand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repository(tmp_path)
+    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/reader.py` once."), "7")
+    assert result.code == 0
+    assert result.section("Construct and its spellings (to complete)") == BY_HAND
+
+
+def test_a_catalogued_file_s_suites_past_the_bound_are_cut_with_the_command_that_lists_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    suites = {
+        f"tests/test_held_{index:02}.py": "import held\n\n\ndef test_x():\n    assert held.NOT_READ\n"
+        for index in range(fix_brief.MAX_CALLER_FILES + 2)
+    }
+    root = repository(tmp_path, {"tools/held.py": 'NOT_READ = {"a": "why"}\n', **suites})
+    result = run(root, tmp_path, monkeypatch, capsys, issue("Read `tools/held.py`."), "7")
+    shown = ", ".join(f"`{name}`" for name in sorted(suites)[: fix_brief.MAX_CALLER_FILES])
+    assert result.section("Construct and its spellings (to complete)").endswith(
+        f"- `tools/held.py`: {shown}, and 2 more, which "
+        "`git grep -n -w -F -e 'NOT_READ' -- $(git grep -l -w -F -e 'held') ':(glob)**/held.py'` lists"
+    )
+
+
 def test_a_name_several_files_hold_is_left_for_the_author_and_a_given_path_not_there_yet_is_new(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

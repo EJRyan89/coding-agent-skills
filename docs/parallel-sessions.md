@@ -795,8 +795,9 @@ Within what it reads, it judges only what the text shows, so these too are left 
   configuration a command writes into a repository it makes by any means but a redirection or a git call's words;
 - in PowerShell, a script file found on the path by a name written without `.ps1`, which runs in the session and may
   move its location, where the guard reads the name as a program's, which moves nothing;
-- in PowerShell, a method that moves the location, as `$ExecutionContext.SessionState.Path.SetLocation(...)`, which is
-  no command;
+- in PowerShell, a method that moves the location, as `$ExecutionContext.SessionState.Path.SetLocation(...)`, or runs
+  a script that does in the session, as `[scriptblock]::Create(...).Invoke()` and
+  `$ExecutionContext.InvokeCommand.InvokeScript(...)` do, none of which is a command;
 - in PowerShell, a program `Start-Process` starts, in its parent's directory or the one its `-WorkingDirectory` names,
   as `Start-Process git -ArgumentList commit -WorkingDirectory <dir>`: `Start-Process` is a program the guard does
   not read;

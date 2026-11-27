@@ -37,6 +37,7 @@ import bash_agreement
 import bash_syntax
 import command_wrappers
 import option_reader
+from bash_agreement import PINNED_BUILTINS, PINNED_FROM_BASH
 from command_wrappers import COMMAND_WRAPPERS, UNREAD_PROGRAM, unwrapped
 
 from deployer import platform_support
@@ -547,17 +548,6 @@ class ReaderTests(unittest.TestCase):
         )
 
 
-# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
-# /bin/bash 3.2, which has no mapfile, still holds the decisions to every one, and the release they were printed by,
-# from which on every pinned builtin must still be one the runner's Bash prints.
-PINNED_BUILTINS = frozenset(
-    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
-    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
-    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
-    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
-    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
-)
-PINNED_FROM_BASH = (5, 3)
 # Why compgen given -C, -F, or -W runs text no reader reads.
 COMPGEN_REASON = "runs its -C command or its -F function, or expands its -W wordlist's substitutions"
 

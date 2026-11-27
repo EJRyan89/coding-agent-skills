@@ -33,6 +33,7 @@ import git_client
 import git_worktrees
 import path_containment
 import path_keys
+from bash_agreement import PINNED_BUILTINS, PINNED_FROM_BASH
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import code_spans, markdown_section
@@ -4630,6 +4631,29 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         home = {**self.environment, "HOME": str(self.root)}
         self.assertEqual("deny", self.powershell(f"Set-Location '~/{self.hub.name}'; git commit -m x", self.tree, home))
 
+    def test_a_method_that_moves_the_location_is_a_stated_limit_its_git_call_read_where_the_command_started(
+        self,
+    ) -> None:
+        # Each of these moves the session into the hub, as pwsh runs it, but is no command, so the guard reads the git
+        # call after it where the command started: a limit the guard's contract names with each form, which closing
+        # changes here and there together.
+        forms = (
+            f"$ExecutionContext.SessionState.Path.SetLocation('{self.hub}')",
+            f"[scriptblock]::Create(\"Set-Location '{self.hub}'\").Invoke()",
+            f"$ExecutionContext.InvokeCommand.InvokeScript(\"Set-Location '{self.hub}'\")",
+        )
+        for form in forms:
+            with self.subTest(form=form):
+                self.assertIsNone(self.powershell(f"{form}; git commit -m x", self.tree))
+        limit = " ".join(guard_section().split())
+        for named in (
+            "$ExecutionContext.SessionState.Path.SetLocation(...)",
+            "[scriptblock]::Create(...).Invoke()",
+            "$ExecutionContext.InvokeCommand.InvokeScript(...)",
+        ):
+            with self.subTest(named=named):
+                self.assertIn(f"`{named}`", limit)
+
     def test_the_home_is_the_one_the_environment_names_and_unknown_where_it_is_not_absolute(self) -> None:
         # The guard once fell back on Path.home(), the guard process's own home, which reads a relative profile
         # folder as given, so ~ was read relative to the guard's working directory.
@@ -5768,19 +5792,6 @@ class GitDirectoryNameTests(unittest.TestCase):
 )
 def test_a_pattern_s_matches_lie_in_the_folder_before_its_last_separator(prefix: str, expected: str) -> None:
     assert expected == hub_guard.pattern_folder(prefix)
-
-
-# Bash's builtins as the newest Bash prints them with `compgen -b`, pinned so a runner whose Bash is older, as macOS's
-# /bin/bash 3.2, which has no mapfile, still holds the guard to every one, and the release they were printed by, from
-# which on every pinned builtin must still be one the runner's Bash prints.
-PINNED_BUILTINS = frozenset(
-    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete"}
-    | {"compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false"}
-    | {"fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd"}
-    | {"printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source"}
-    | {"suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"}
-)
-PINNED_FROM_BASH = (5, 3)
 
 
 @functools.cache
