@@ -435,9 +435,9 @@ class CommandNameTests(unittest.TestCase):
                     self.assertEqual(cmdlet, qualified.lower())
 
     def test_a_cmdlet_qualified_by_its_module_path_is_one_pwsh_runs_and_the_guard_does_not_follow(self) -> None:
-        # pwsh runs a cmdlet qualified by its module's folder or manifest, written with forward slashes, as the
-        # cmdlet, on Windows as elsewhere, so the guard, which follows a qualified cmdlet only by the module's name,
-        # reads either as a command it does not read. (pwsh on Windows moved with neither written in backslashes.)
+        # pwsh off Windows runs a cmdlet qualified by its module's folder or manifest as the cmdlet, and pwsh on
+        # Windows runs neither, in either separator; the guard, which follows a qualified cmdlet only by the module's
+        # name, reads either as a command it does not read on every platform, which fails closed on Windows.
         script = (
             "$found = Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1; "
             "$base = $found.ModuleBase -replace '\\\\', '/'; "
@@ -450,7 +450,7 @@ class CommandNameTests(unittest.TestCase):
         )
         for name, moved in json.loads(pwsh(script)):
             with self.subTest(name=name):
-                self.assertTrue(moved)
+                self.assertEqual(not platform_support.WINDOWS, moved)
                 self.assertIsNone(hub_guard.powershell_cmdlet(name))
                 self.assertTrue(hub_guard.powershell_command(name))
 
@@ -524,8 +524,9 @@ class CommandNameTests(unittest.TestCase):
                 self.assertEqual(program, hub_guard.also_a_program(name))
 
     def test_a_command_of_a_module_by_its_path_runs_whatever_its_name(self) -> None:
-        # pwsh runs <module path>\<name> as the command that module exports by that name, a function named as no
-        # cmdlet is, or as git, included, from a .psm1 and from a module folder alike.
+        # pwsh off Windows runs <module path>\<name> as the command that module exports by that name, a function named
+        # as no cmdlet is, or as git, included, from a .psm1 and from a module folder alike; pwsh on Windows runs none,
+        # and the guard reads each as a command it does not read on every platform.
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             mover = "function goplace { param($Where) Set-Location -LiteralPath $Where }\n"
@@ -547,7 +548,7 @@ class CommandNameTests(unittest.TestCase):
             moved = json.loads(pwsh(script, json.dumps(names)))
         for name, followed in zip(names, moved, strict=True):
             with self.subTest(name=name):
-                self.assertTrue(followed)
+                self.assertEqual(not platform_support.WINDOWS, followed)
                 self.assertTrue(hub_guard.powershell_command(name))
                 self.assertIsNone(hub_guard.powershell_cmdlet(name))
 

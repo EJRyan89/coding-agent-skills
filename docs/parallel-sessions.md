@@ -652,8 +652,10 @@ The configuration's limits:
   `Microsoft.PowerShell.Utility\Set-Location`, `\Set-Location`, or `./Place.psm1\Enter-Place`, which PowerShell loads
   and runs a command of, with everything before the last backslash taken as that module, a drive and `~` included,
   as `C:\tools\Set-Location` is, any name after a module by a path holding `/` or naming a `.psm1` or `.psd1`, as
-  `<folder>/Place.psm1\goplace` or `<folder>/git\git`, which runs the command that module exports by that name, its git
-  call read as well where the name is also a program's, as `C:/Program Files/Git/cmd\git.exe` is, and a script
+  `<folder>/Place.psm1\goplace` or `<folder>/git\git`, which pwsh off Windows runs as the command that module exports
+  by that name and pwsh on Windows runs none of, a reading that fails closed there, its git call read as well where
+  the name is also a program's, as `C:/Program Files/Git/cmd\git.exe` is, so a program's path that mixes `/` and `\`,
+  as `./node_modules/.bin\eslint`, leaves the commands after it unplaced too, and a script
   file, whose name ends in `.ps1`, which PowerShell runs in the session, run code the guard does not read, which may
   move the location now or define a function by a location cmdlet's name that a later command runs before the
   cmdlet, so no command after one settles where the location is. Each command is judged by the one decision it is

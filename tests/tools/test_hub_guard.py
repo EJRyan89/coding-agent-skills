@@ -4810,6 +4810,11 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.powershell(f"{folder}/git\\git commit -m x", self.hub))
         self.assertIn(WRITES.format("commit"), self.reason)
         self.assertIsNone(self.powershell(f"{folder}/git\\git status", self.hub))
+        # In a tree holding a node the guard does not follow, as a while loop, only its git calls are read, that one
+        # included.
+        self.assertEqual("deny", self.powershell(f"while ($false) {{ }}; {folder}/git\\git commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell(f"while ($false) {{ }}; {folder}/git\\git status", self.hub))
 
     def test_a_chain_follows_each_operator_to_the_side_it_runs_on(self) -> None:
         # The pipeline after && runs where the one before it succeeded, and the one after || where it failed. A move to
