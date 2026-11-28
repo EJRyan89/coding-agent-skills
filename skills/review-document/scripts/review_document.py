@@ -18,13 +18,15 @@ Every command prints one fact per line:
           it printed an UNSEARCHED line, since what it found may not be all there is.
   report  Given --runs and the run list prepare printed, copies the report `finalize` recorded of each recorded run
           into the output directory beside the fixture the run list names for it, once its record names the review of
-          that fixture's document, and prints REPORT <copy> and RECORD <the record JSON beside the original> for each,
-          in the order prepare published the runs. For a listed run it cannot report, as one whose review failed or
-          that is not finalized, or one whose fixture or report is not what the run list says, it prints UNREPORTED
-          <selector> <run directory> <reason> in its place and goes on. Given --fixture and --report instead, it does
-          the same for that one fixture and report, failing with the reason. A copy is never written over anything
-          already there; a regular file it can read already holding the same bytes is the earlier copy, and is reported
-          again, and anything else, a symbolic link or junction included whatever it leads to, is refused. A copy is
+          that fixture's document and the record and report read as a pair, as review_records.validate_record_pair
+          reads one, the report the bytes the record's digest names, and prints REPORT <copy> and RECORD <the record
+          JSON beside the original> for each, in the order prepare published the runs. For a listed run it cannot
+          report, as one whose review failed or that is not finalized, or one whose fixture or report is not what the
+          run list says, it prints UNREPORTED <selector> <run directory> <reason> in its place and goes on. Given
+          --fixture and --report instead, it does the same for that one fixture and report, failing with the reason.
+          A copy is never written over anything already there; a regular file it can read already holding the same
+          bytes is the earlier copy, and is reported again, and anything else, a symbolic link or junction included
+          whatever it leads to, is refused. A copy is
           made whole or not at all: one that fails part way leaves no report.md, so the next call makes it. It is put in
           place by a hard link, or, on a file system with none, such as FAT or exFAT, by an empty report.md reserved
           under its name and then replaced by the whole copy, so a reader may meet an empty report.md until the copy
@@ -112,6 +114,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import filecmp
+import io
 import os
 import re
 import shutil
@@ -143,11 +146,12 @@ from link_probe import is_plain_file
 from path_containment import resolved_path, within
 from path_keys import name_key
 from review_batches import load_run_list
-from review_config import LOCAL_OWNER
+from review_config import LOCAL_OWNER, ConfigurationError
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
+from review_records import RecordError, artifact_hashes, sha256_text, validate_record_pair
 from review_run import PipelineError
 from review_runtime import (
     DEFAULT_DOCUMENT_STAGE,
@@ -963,7 +967,9 @@ def _is_file(path: Path, refusal: str) -> bool:
 
 def report(fixture: Path, recorded: Path) -> list[str]:
     """Copy the recorded report beside the fixture, whole or not at all and never over a file already there, once
-    its record names the review of the fixture's document, and name the record JSON finalize wrote beside it."""
+    its record names the review of the fixture's document and the two read as a pair, and name the record JSON
+    finalize wrote beside it. A report or record changed since finalize wrote them is refused with the pair's reason,
+    and the bytes copied are held to the digest the pair was read with, so a change made meanwhile is refused too."""
     fixture = resolved_path(fixture)
     # A file it cannot stat is the stat's OSError, which names it, never one that is not there.
     built = f"{fixture} is not a fixture review-document built"
@@ -978,8 +984,16 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     if not _is_file(record, f"{finalized}: the {record.name} beside it is not a file"):
         raise DocumentError(f"{finalized}: no {record.name} file is beside it")
     refuse_other_review(fixture, recorded, record)
+    try:
+        # The pair as every reader of it reads it: a record of the review schema whose digests the Markdown holds.
+        digest = artifact_hashes(validate_record_pair(record, recorded))["markdown_sha256"]
+    except (RecordError, ConfigurationError, PersistenceError, json_writer.JsonWriteRefused) as exc:
+        raise DocumentError(f"{finalized}: {exc}") from exc
     target = directory / REPORT_NAME
     content = recorded.read_bytes()
+    if not holds_digest(content, digest):
+        # The bytes copied are read again after the pair was checked, so they are held to the digest it checked.
+        raise DocumentError(f"{recorded} changed after its record was checked; run report again")
     try:
         # Made whole or not at all, so a copy that fails part way leaves no report.md for the next call to refuse. A
         # file system without hard links has the copy replace an empty report.md reserved under its name, which a
@@ -997,6 +1011,16 @@ def report(fixture: Path, recorded: Path) -> list[str]:
                 )
             raise DocumentError(f"{refused}; the report is at {recorded}") from exc
     return [f"REPORT {target}", f"RECORD {record}"]
+
+
+def holds_digest(content: bytes, digest: str) -> bool:
+    """Whether the recorded report's `content` is the Markdown whose digest its record holds, as
+    `review_records.validate_record_pair` reads it: UTF-8 text, its line endings read as `Path.read_text` reads them."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return sha256_text(io.StringIO(text, newline=None).read()) == digest
 
 
 def earlier_copy(target: Path, recorded: Path) -> bool:

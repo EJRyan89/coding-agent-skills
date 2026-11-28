@@ -8,8 +8,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, override
@@ -1621,6 +1622,50 @@ def test_a_history_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
     with mock.patch.object(Path, "read_bytes", side_effect=denied):
         code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
     assert (code, stdout) == (1, f"FAILED History file {history} cannot be read: Permission denied [history]\n")
+
+
+@contextlib.contextmanager
+def released(fifo: Path) -> Iterator[list[Path]]:
+    """While the block runs, open and close the FIFO's writing end every RELEASE_INTERVAL seconds, so a reader that
+    opens it gets its end of file at once rather than blocking: code that opens it fails the test's assertions, never
+    hangs it. A nonblocking open of the writing end succeeds only while a reader holds the FIFO open, so the list it
+    gives names the FIFO once the block's code opened it, and stays empty while it never did."""
+    done = threading.Event()
+    opened: list[Path] = []
+
+    def release() -> None:
+        while not done.wait(RELEASE_INTERVAL):
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
+                opened.append(fifo)
+
+    releaser = threading.Thread(target=release, daemon=True)
+    releaser.start()
+    try:
+        yield opened
+    finally:
+        done.set()
+        releaser.join()
+
+
+# How often `released` opens the FIFO's writing end, which ends a read blocked opening it.
+RELEASE_INTERVAL = 0.2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no FIFO a folder can hold")
+def test_a_history_that_is_a_fifo_is_refused_before_querying_and_never_opened(tmp_path: Path) -> None:
+    # read_bytes() on a FIFO with no writer blocked forever, before any search; the kind is judged before the read.
+    history = tmp_path / "activity.csv"
+    os.mkfifo(history)  # type: ignore[attr-defined, unused-ignore]  # POSIX only: Windows has no os.mkfifo
+    github = group_github()
+    with released(history) as opened:
+        code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (
+        1,
+        f"FAILED History file {history} cannot be read: not a file [history]\n",
+        [],
+    )
+    assert opened == []
 
 
 def test_a_history_that_cannot_be_written_is_refused_after_every_search(tmp_path: Path) -> None:
