@@ -10,7 +10,8 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -386,6 +387,56 @@ def test_a_missing_term_list_stops_the_run_before_any_profile(planted: dict[str,
     assert "{" not in stdout
 
 
+def test_a_term_list_that_is_a_folder_stops_the_run_as_not_a_file(planted: dict[str, Path]) -> None:
+    planted["terms"].unlink()
+    planted["terms"].mkdir()
+
+    code, stdout, _ = preview(planted)
+
+    assert (code, stdout) == (1, f"FAILED the private-term list at {planted['terms']} is not a file\n")
+
+
+@contextlib.contextmanager
+def released(fifo: Path) -> Iterator[list[Path]]:
+    """While the block runs, open and close the FIFO's writing end every RELEASE_INTERVAL seconds, so a reader that
+    opens it meets its end of file at once rather than blocking: code that opens it fails the test's assertions, never
+    hangs it. A nonblocking open of the writing end succeeds only while a reader holds the FIFO open, so the list it
+    gives names the FIFO once the block's code opened it, and stays empty while it never did."""
+    done = threading.Event()
+    opened: list[Path] = []
+
+    def release() -> None:
+        while not done.wait(RELEASE_INTERVAL):
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
+                opened.append(fifo)
+
+    releaser = threading.Thread(target=release, daemon=True)
+    releaser.start()
+    try:
+        yield opened
+    finally:
+        done.set()
+        releaser.join()
+
+
+# How often `released` opens the FIFO's writing end, which ends a read blocked opening it.
+RELEASE_INTERVAL = 0.2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no FIFO a folder can hold")
+def test_a_term_list_that_is_a_fifo_stops_the_run_before_anything_opens_it(planted: dict[str, Path]) -> None:
+    # read_text() on a FIFO with no writer blocked forever; the list's kind is judged before anything opens it.
+    planted["terms"].unlink()
+    os.mkfifo(planted["terms"])  # type: ignore[attr-defined, unused-ignore]  # POSIX only: Windows has no os.mkfifo
+
+    with released(planted["terms"]) as opened:
+        code, stdout, _ = preview(planted)
+
+    assert (code, stdout) == (1, f"FAILED the private-term list at {planted['terms']} is not a file\n")
+    assert opened == []
+
+
 def test_a_profile_that_changed_since_its_preview_is_not_written(planted: dict[str, Path]) -> None:
     out = planted["root"] / "profile.json"
 
@@ -697,7 +748,7 @@ def test_a_term_list_whose_stat_fails_names_its_path_and_the_class_alone(
     def failing(path: Path) -> bool:
         raise PermissionError(13, "Permission denied", "/qzvprivate/qzvparent")
 
-    monkeypatch.setattr(file_presence, "is_there", failing)
+    monkeypatch.setattr(file_presence, "is_present", failing)
 
     code, stdout, stderr = preview(planted)
 

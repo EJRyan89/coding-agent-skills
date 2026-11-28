@@ -35,6 +35,8 @@ names its class alone. The only paths a FAILED line names are the private-term l
 The exit statuses are in the tool's docstring.
 
 `preview` and `write` take `--terms <file>`, the private-term list, which defaults to `~/.coding-agent-skills/private-terms.txt`.
+Anything but a regular file there, such as a folder or a FIFO, stops the run with
+`FAILED the private-term list at <file> is not a file` before the probe opens it.
 
 ## What a profile holds
 

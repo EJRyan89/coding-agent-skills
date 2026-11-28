@@ -20,7 +20,8 @@ review's text, or a finding category the repository configured. docs/context-pro
 The private-term list, `~/.coding-agent-skills/private-terms.txt` unless `--terms` names another, holds one term per
 line, kept outside every repository. Each field's key and value is matched against every term as the release
 procedure's scan matches the tree: as a fixed string, ignoring case, and as a whole word. A list that is missing or
-cannot be read stops the run, since the scan never runs without one. A match prints `PRIVATE_TERM <field> key` or
+cannot be read stops the run, since the scan never runs without one, and so does anything but a regular file there,
+such as a folder or a FIFO, refused by its kind before anything opens it. A match prints `PRIVATE_TERM <field> key` or
 `PRIVATE_TERM <field> value`, naming the field by the keys above it that matched no term, never the term, then
 `STOPPED private term`, and nothing of the profile is printed or written.
 
@@ -368,11 +369,15 @@ def allowlisted(profile: Mapping[str, Any]) -> None:
 
 
 def read_terms(path: Path) -> list[str]:
-    """The private terms, one a line, blank lines aside. A list that is missing or unreadable stops the run."""
+    """The private terms, one a line, blank lines aside. A list that is missing or unreadable stops the run, and so
+    does anything but a regular file at `path`, such as a folder or a FIFO, whose read would block until a writer came,
+    refused by its kind before anything opens it."""
     try:
-        if not file_presence.is_there(path):
+        if not file_presence.is_present(path):
             raise ProbeError(f"no private-term list at {path}; the profile is never shown without its scan")
         text = path.read_text(encoding="utf-8")
+    except file_presence.NotAFile:
+        raise ProbeError(f"the private-term list at {path} is not a file") from None
     except (OSError, UnicodeDecodeError) as error:
         raise ProbeError(f"the private-term list at {path} cannot be read: {type(error).__name__}") from None
     terms = [line.strip() for line in text_lines(text)]
