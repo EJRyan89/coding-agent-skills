@@ -67,6 +67,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import os
 import re
@@ -93,7 +94,7 @@ from dotnet_solution import (
     refusal,
 )
 from executable_locator import find_program
-from file_presence import ABSENT, NotAFile
+from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, followed_inside
 from git_client import GitClient, GitError, GitResult, output_line
@@ -204,10 +205,16 @@ def write_file_list(names: list[str]) -> str:
 def read_file_list(path: Path) -> list[str]:
     """The paths a FILE_LIST names, as `write_file_list` wrote them: UTF-8, each ended by a NUL.
 
-    Raises OSError when it cannot be read, and ValueError when it is not UTF-8, names no file, holds an empty name,
-    or does not end in a NUL, as a list of lines does: resolve writes a FILE_LIST only when it found files to format,
-    so an empty one did not come from it.
+    Raises OSError when it is missing or cannot be read, and ValueError when it is not a regular file, such as a folder
+    or a FIFO, whose read would block until a writer came, refused by its kind before anything opens it, or when it is
+    not UTF-8, names no file, holds an empty name, or does not end in a NUL, as a list of lines does: resolve writes a
+    FILE_LIST only when it found files to format, so an empty one did not come from it.
     """
+    try:
+        if not is_present(path):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+    except NotAFile:
+        raise ValueError(f"{path} is not a file, as resolve writes a FILE_LIST") from None
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:

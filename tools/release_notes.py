@@ -31,7 +31,8 @@ section was written at never reaches main, and a pull request merged into main o
 section was written is in the tag and in no section. When the section lacks an entry, it prints `BEHIND <n> entries`
 and each entry the section lacks, ready to carry into it, and reads nothing more. An entry the section holds beyond the
 range's, such as an obligation the release's preparation issue records, is the releaser's own. It then reads the
-release notes the tag will publish, the file --notes names, which --check requires, as UTF-8 text with or without a
+release notes the tag will publish, the file --notes names, which --check requires and refuses as `not a file` when
+anything but a regular file is there, such as a folder or a FIFO, before it opens it, as UTF-8 text with or without a
 byte order mark: they must open with the `## VERSION` heading, and their `## VERSION` section must hold the committed
 section's `Level:` line as it is written, each entry the committed section holds, by heading, and the line --counts
 prints at that moment, whatever its numbers, each line read without the blanks around it. It prints a
@@ -81,7 +82,9 @@ from __future__ import annotations
 
 import argparse
 import collections
+import errno
 import functools
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -90,6 +93,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
@@ -461,9 +465,15 @@ def notes_problems(notes: str, version: str, held: str, counts: str, end: str) -
 
 
 def _read_notes(path: Path) -> str:
+    """The release notes at `path`. Anything but a regular file there, such as a folder or a FIFO, whose read would
+    block until a writer came, is refused by its kind before anything opens it."""
     try:
+        if not file_presence.is_present(path):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
         # utf-8-sig: a notes file Windows PowerShell 5's Set-Content -Encoding UTF8 writes opens with a byte order mark.
         return path.read_text(encoding="utf-8-sig")
+    except file_presence.NotAFile:
+        raise ReleaseNotesError(f'cannot read the release notes "{flat_text(str(path))}": not a file') from None
     except (OSError, UnicodeError) as error:
         raise ReleaseNotesError(
             f'cannot read the release notes "{flat_text(str(path))}": {flat_text(str(error))}'
