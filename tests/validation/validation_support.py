@@ -1406,13 +1406,49 @@ class _ReferenceWalk:
     def _value(self, value: ast.expr) -> list[Reference]:
         key = id(value)
         if key not in self.order:
-            self._enter(value)
+            self._enter_chain(value)
         if key in self.finished:
             return self.found[key]
         # The value is in the group of the value being read: it leads back to it.
         reader = self.reading[-1]
         self.low[reader] = min(self.low[reader], self.low[key])
         return [_UNNAMED]
+
+    def _enter_chain(self, value: ast.expr) -> None:
+        """Enter a value and, innermost first, each link inside it that _read asks the names of: an attribute's object,
+        a call's function, and the object a lookup of one constant attribute reads it on, as getattr(x, "a") does,
+        each that is itself an attribute, a call, or a subscript. Each link's read then finds the links inside it
+        already entered, so the walk recurses a fixed depth for a value, never once per link of a chain such as
+        `a.b.c`, `x.f().g()`, or nested getattr calls, which python_reader takes up to nesting_depth's
+        TREE_DEPTH_LIMIT. A link stands for itself, as bound_values reads any expression but a name, and what a member
+        of a group reads does not depend on the order the walk enters the group in, so entering the links first names
+        what reading them from the outside in would. A lookup's object is known once the call's function is read, so
+        a link is visited after its function and before its object."""
+        pending: list[tuple[ast.expr, bool]] = [(value, False)]
+        while pending:
+            node, function_read = pending.pop()
+            if id(node) in self.order:
+                continue
+            if not function_read:
+                pending.append((node, True))
+                inner = _chained(_function_link(node))
+                if inner is not None:
+                    pending.append((inner, False))
+                continue
+            receiver = _chained(self._lookup_receiver(node))
+            if receiver is not None and id(receiver) not in self.order:
+                pending += [(node, True), (receiver, False)]
+                continue
+            self._enter(node)
+
+    def _lookup_receiver(self, value: ast.expr) -> ast.expr | None:
+        """The object _read reads one constant attribute of a call or a subscript on, or None for any other value."""
+        if not isinstance(value, ast.Call | ast.Subscript):
+            return None
+        lookups = attribute_lookups(value, self.names)
+        if len(lookups) == 1 and lookups[0].alone and constant_attribute(lookups[0]) is not None:
+            return lookups[0].receiver
+        return None
 
     def _enter(self, value: ast.expr) -> None:
         key = id(value)
@@ -1452,6 +1488,26 @@ class _ReferenceWalk:
         if isinstance(value, ast.Name) and id(value) in self.resolver.scopes:
             return [Reference(self.resolver.name(value).removeprefix(BUILTINS_PREFIX), "", None)]
         return [_UNNAMED]
+
+
+def _function_link(value: ast.expr) -> ast.expr | None:
+    """The link _ReferenceWalk._read asks the names of before any other in a value: an attribute's object, a call's
+    function, or the function of the one-argument call a subscript's object is, as attribute_lookups reads vars(x)[...]
+    by it; None for any other value."""
+    if isinstance(value, ast.Attribute):
+        return value.value
+    if isinstance(value, ast.Call):
+        return value.func
+    holder = value.value if isinstance(value, ast.Subscript) else None
+    if isinstance(holder, ast.Call) and len(holder.args) == 1 and not isinstance(holder.args[0], ast.Starred):
+        return holder.func
+    return None
+
+
+def _chained(link: ast.expr | None) -> ast.expr | None:
+    """`link` when it continues a chain _ReferenceWalk reads, an attribute, a call, or a subscript; None for anything
+    else, such as a name, whose values are bindings the walk reads one at a time."""
+    return link if isinstance(link, ast.Attribute | ast.Call | ast.Subscript) else None
 
 
 def _dict_additions(name: ast.Name, resolver: CallableResolver) -> tuple[dict[str, list[ast.expr]], bool]:
