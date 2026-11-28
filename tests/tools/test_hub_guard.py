@@ -4753,9 +4753,9 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             check=True,
             timeout=PROCESS_SECONDS,
         )
-        base = result.stdout.strip()
-        manifest = str(Path(base) / "Microsoft.PowerShell.Management.psd1")
-        utility = str(Path(base).with_name("Microsoft.PowerShell.Utility"))
+        base = Path(result.stdout.strip()).as_posix()
+        manifest = f"{base}/Microsoft.PowerShell.Management.psd1"
+        utility = Path(base).with_name("Microsoft.PowerShell.Utility").as_posix()
         for command in (
             f"& '{base}\\Set-Location' '{self.hub}'; git commit -m x",
             f"& '{manifest}\\Set-Location' '{self.hub}'; git commit -m x",

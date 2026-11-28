@@ -435,11 +435,13 @@ class CommandNameTests(unittest.TestCase):
                     self.assertEqual(cmdlet, qualified.lower())
 
     def test_a_cmdlet_qualified_by_its_module_path_is_one_pwsh_runs_and_the_guard_does_not_follow(self) -> None:
-        # pwsh runs a cmdlet qualified by its module's folder or manifest as the cmdlet, so the guard, which follows a
-        # qualified cmdlet only by the module's name, reads either as a command it does not read.
+        # pwsh runs a cmdlet qualified by its module's folder or manifest, written with forward slashes, as the
+        # cmdlet, on Windows as elsewhere, so the guard, which follows a qualified cmdlet only by the module's name,
+        # reads either as a command it does not read. (pwsh on Windows moved with neither written in backslashes.)
         script = (
-            "$base = (Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1).ModuleBase; "
-            "$manifest = Join-Path $base 'Microsoft.PowerShell.Management.psd1'; "
+            "$found = Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1; "
+            "$base = $found.ModuleBase -replace '\\\\', '/'; "
+            '$manifest = "$base/Microsoft.PowerShell.Management.psd1"; '
             "$target = (Get-Item -LiteralPath $PSHOME).FullName; "
             "ConvertTo-Json -Compress -InputObject @(foreach ($module in $base, $manifest) { "
             "Set-Location -LiteralPath $base; "
