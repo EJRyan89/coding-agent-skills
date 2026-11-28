@@ -52,10 +52,10 @@ The sessions that write this repository run on one model family, which shares it
    codex exec --ignore-user-config --ignore-rules --ephemeral --sandbox read-only -c approval_policy=never -c model_reasoning_effort=high -C '<clone>' -o '<report>' - < '<prompt>'
    ```
 
-   On Windows, add `-c windows.sandbox=elevated`, which its read-only sandbox needs there. Run Copilot CLI with its write tool, fetches, and memory denied and only `git`, `python`, and `rg` allowed. Allowing `python` lets it run any Python, which can write, so the throwaway clone, not the allowed tools, is what keeps the run from changing anything that matters:
+   On Windows, add `-c windows.sandbox=elevated`, which its read-only sandbox needs there. Run Copilot CLI with its write tool, fetches, and memory denied and only `git`, `python` (also as `python3`, the only name macOS has), and `rg` allowed. Allowing `python` lets it run any Python, which can write, so the throwaway clone, not the allowed tools, is what keeps the run from changing anything that matters:
 
    ```bash
-   copilot -C '<clone>' --no-ask-user --sync-session=off --disable-builtin-mcps --stream=off '--allow-tool=shell(git:*)' '--allow-tool=shell(python:*)' '--allow-tool=shell(rg:*)' --deny-tool=write --deny-tool=url --deny-tool=memory < '<prompt>' > '<report>'
+   copilot -C '<clone>' --no-ask-user --sync-session=off --disable-builtin-mcps --stream=off '--allow-tool=shell(git:*)' '--allow-tool=shell(python:*)' '--allow-tool=shell(python3:*)' '--allow-tool=shell(rg:*)' --deny-tool=write --deny-tool=url --deny-tool=memory < '<prompt>' > '<report>'
    ```
 
 3. **Verification.** Give each finding of either report to its own Opus subagent, which tries to refute it in a clone at the commit the pass read, never in the hub, and reproduces it when it holds. A finding the subagent cannot confirm is dropped, and a finding an open issue already covers is named on that issue instead.
