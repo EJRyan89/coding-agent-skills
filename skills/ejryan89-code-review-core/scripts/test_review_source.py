@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -1073,6 +1074,27 @@ class CommandTests(LazySnapshotFixture):
         )
         state.mkdir()
         self.assertEqual((1, [f"FAILED {run_root}'s run.json is not a file"]), self.main(*arguments))
+
+    def test_a_run_json_whose_name_is_absent_for_a_moment_is_read_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals: `check` replaces run.json while a reviewer's source command
+        # reads it, and on Windows the replace may hide the name for a moment, in bursts under load, so the run's read
+        # of run.json waits it out rather than refusing the run as one it could not read. The presence check before
+        # it is not injected here.
+        state = self.run_directory / review_guard.RUN_FILE
+        real_read_text = Path.read_text
+        absent: list[Path] = []
+        waits: list[float] = []
+
+        def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == state and len(absent) < 2:
+                absent.append(path)
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+            return real_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", read_text), mock.patch.object(time, "sleep", waits.append):
+            found = review_source._run(self.run_directory, "generic-review")
+        self.assertEqual(([0.01, 0.02], 2), (waits, len(absent)))
+        self.assertEqual(review_source._run(self.run_directory, "generic-review"), found)
 
     def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
         # The run names no repository, as a whole snapshot's run does, so only the files the snapshot's manifest

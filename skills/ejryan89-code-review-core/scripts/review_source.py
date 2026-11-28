@@ -100,7 +100,8 @@ def filled(command: str, value: str) -> str:
 
 def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     """The run's source repository, None for a whole snapshot, its request's repository and head, and the role's read
-    log, once the run is a prepared review run and the role is one of its roles."""
+    log, once the run is a prepared review run and the role is one of its roles. Its read of run.json is marked
+    `replaced`, since `check` replaces the file while a reviewer's source command reads it."""
     run = resolved_path(run)
     if not run.name.startswith(RUN_PREFIX):
         raise SourceError(f"{run} is not a review run")
@@ -109,7 +110,7 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
         run / RUN_FILE, SourceError, f"{run} is not a review run: it holds no {RUN_FILE} file", f"{run}'s {RUN_FILE}"
     )
     try:
-        state = READ.json_object(read_json(run / RUN_FILE), "run")
+        state = READ.json_object(read_json(run / RUN_FILE, replaced=True), "run")
         request = READ.json_object(
             read_json(Path(READ.string(state.get("request_path"), "run.request_path"))), "request"
         )
