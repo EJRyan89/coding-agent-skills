@@ -4666,6 +4666,156 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'cd "{self.hub}" && echo "$(git status && git commit -m x)"', self.tree))
         self.assertIn(WRITES.format("commit"), self.reason)
 
+    def test_a_module_qualified_command_is_read_as_the_command_it_names(self) -> None:
+        # PowerShell runs Module\Verb-Noun as the command that module defines, whatever the case of either part, and
+        # the guard once read the name as a path to a program, which moves nothing, so the commit after a qualified
+        # Set-Location ran in the hub. One qualified by the module that defines it is followed as the bare name is.
+        management = "Microsoft.PowerShell.Management"
+        for command, cwd, expected, reason in (
+            (f"{management}\\Set-Location '{self.hub}'; git commit -m x", self.tree, "deny", WRITES),
+            (f"{management.lower()}\\set-location '{self.hub}'; git commit -m x", self.tree, "deny", WRITES),
+            (f"{management.upper()}\\SET-LOCATION '{self.hub}'; git commit -m x", self.tree, "deny", WRITES),
+            (f"{management}\\Push-Location '{self.hub}'; git commit -m x", self.tree, "deny", WRITES),
+            (f"{management}\\Set-Location '{self.hub}' && git commit -m x", self.tree, "deny", WRITES),
+            (
+                f"{management}\\Set-Location -LiteralPath '{self.hub}' | Out-Null; git commit -m x",
+                self.tree,
+                "deny",
+                WRITES,
+            ),
+            (f"& '{management}\\Set-Location' '{self.hub}'; git commit -m x", self.tree, "deny", WRITES),
+            (f"Write-Output $({management}\\Set-Location '{self.hub}'); git commit -m x", self.tree, "deny", UNPLACED),
+            # Followed, a move out of the hub places the commit in the tree, and a qualified Pop-Location returns.
+            (f"{management}\\Set-Location '{self.tree}'; git commit -m x", self.hub, None, None),
+            (
+                f"{management}\\Push-Location '{self.hub}'; {management}\\Pop-Location; git commit -m x",
+                self.tree,
+                None,
+                None,
+            ),
+            # Qualified by another module, or by none, it is a command the guard does not read, which may move the
+            # location; so is a qualified runner of code, ForEach-Object calling a member, a qualified name
+            # dot-sourced, and a command Get-Command finds.
+            (f". {management}\\Set-Location '{self.hub}'; git commit -m x", self.tree, "deny", UNPLACED),
+            (
+                f"& (Get-Command {management}\\Set-Location) '{self.hub}'; git commit -m x",
+                self.tree,
+                "deny",
+                UNPLACED,
+            ),
+            (f"Microsoft.PowerShell.Utility\\Set-Location '{self.hub}'; git commit -m x", self.tree, "deny", UNPLACED),
+            (f"\\Set-Location '{self.hub}'; git commit -m x", self.tree, "deny", UNPLACED),
+            (f"\\Push-Location '{self.hub}'; git commit -m x", self.tree, "deny", UNPLACED),
+            (
+                f"Microsoft.PowerShell.Utility\\Invoke-Expression \"Set-Location '{self.hub}'\"; git commit -m x",
+                self.tree,
+                "deny",
+                UNPLACED,
+            ),
+            (
+                "Get-ChildItem | Microsoft.PowerShell.Core\\ForEach-Object -MemberName Delete; git commit -m x",
+                self.tree,
+                "deny",
+                UNPLACED,
+            ),
+            # A qualified cmdlet that moves nothing leaves the commit where it was.
+            (f"{management}\\Get-ChildItem | Select-Object -First 1; git commit -m x", self.tree, None, None),
+            (
+                "Get-ChildItem | Microsoft.PowerShell.Core\\Where-Object { $_.Length -gt 1 }; git commit -m x",
+                self.tree,
+                None,
+                None,
+            ),
+        ):
+            for through in ("PowerShell", "pwsh -c"):
+                with self.subTest(command=command, through=through):
+                    if through == "PowerShell":
+                        outcome = self.powershell(command, cwd)
+                    else:
+                        outcome = self.bash("pwsh -NoProfile -c " + shlex.quote(command), cwd)
+                    self.assertEqual(expected, outcome)
+                    if reason is not None:
+                        self.assertIn(reason.format("commit"), self.reason)
+
+    def test_a_cmdlet_qualified_by_its_module_path_leaves_the_commit_after_it_unplaced(self) -> None:
+        # pwsh splits a command's name at its backslash and loads the module a path before it names, a folder, a .psd1,
+        # or a .psm1, to run that module's command; the guard once read such a name as a program's path, which moves
+        # nothing, and the commit after a Set-Location qualified by the module's folder ran in the hub.
+        found = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if found is None:
+            self.fail("pwsh is not on PATH")
+        script = "(Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1).ModuleBase"
+        result = subprocess.run(
+            [found, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=PROCESS_SECONDS,
+        )
+        base = Path(result.stdout.strip()).as_posix()
+        manifest = f"{base}/Microsoft.PowerShell.Management.psd1"
+        utility = Path(base).with_name("Microsoft.PowerShell.Utility").as_posix()
+        for command in (
+            f"& '{base}\\Set-Location' '{self.hub}'; git commit -m x",
+            f"& '{manifest}\\Set-Location' '{self.hub}'; git commit -m x",
+            f"& '{base}\\Push-Location' '{self.hub}'; git commit -m x",
+            f"& '{base}\\Set-Location' '{self.hub}' && git commit -m x",
+            f"& '{utility}\\Invoke-Expression' \"Set-Location '{self.hub}'\"; git commit -m x",
+            f"/usr/local/microsoft/powershell/7/Modules/Microsoft.PowerShell.Management\\Set-Location '{self.hub}'; "
+            "git commit -m x",
+            f"./Place.psm1\\Enter-Place '{self.hub}'; git commit -m x",
+            f"C:/mods/M.psm1\\Set-Location '{self.hub}'; git commit -m x",
+            f"~\\Set-Location '{self.hub}'; git commit -m x",
+        ):
+            for through in ("PowerShell", "pwsh -c"):
+                with self.subTest(command=command, through=through):
+                    if through == "PowerShell":
+                        outcome = self.powershell(command, self.tree)
+                    else:
+                        outcome = self.bash("pwsh -NoProfile -c " + shlex.quote(command), self.tree)
+                    self.assertEqual("deny", outcome)
+                    self.assertIn(UNPLACED.format("commit"), self.reason)
+        # . or .. before a single backslash names a file, which pwsh runs as a program, so the commit stays put.
+        self.assertIsNone(self.powershell(f".\\Set-Location '{self.hub}'; git commit -m x", self.tree))
+
+    def test_a_command_of_a_module_by_its_path_leaves_the_commit_after_it_unplaced_whatever_its_name(self) -> None:
+        # pwsh runs <module path>\<name> as the command the module exports by that name, a function named as no cmdlet
+        # is, or as git, included; the guard once read such a name as a program, or as git, when its last part had no
+        # hyphen, and the commit after a module's goplace ran in the hub.
+        modules = self.root / "modules"
+        (modules / "git").mkdir(parents=True)
+        (modules / "Fn2.psm1").write_text("function goplace { param($Where) Set-Location $Where }\n", encoding="utf-8")
+        (modules / "git" / "git.psm1").write_text(f"function git {{ git -C '{self.hub}' commit -m x }}\n", "utf-8")
+        folder = modules.as_posix()
+        for command in (
+            f"{folder}/Fn2.psm1\\goplace '{self.hub}'; git commit -m x",
+            f"& '{folder}/Fn2.psm1\\goplace' '{self.hub}'; git commit -m x",
+            f"git status && {folder}/Fn2.psm1\\goplace '{self.hub}' && git commit -m x",
+            f"{folder}/git\\git status; git commit -m x",
+            f"{folder}/git/git.psm1\\git status; git commit -m x",
+            f"& '{folder}/git\\git' status; git commit -m x",
+            f"C:\\mods\\M.psm1\\goplace '{self.hub}'; git commit -m x",
+        ):
+            for through in ("PowerShell", "pwsh -c"):
+                with self.subTest(command=command, through=through):
+                    if through == "PowerShell":
+                        outcome = self.powershell(command, self.tree)
+                    else:
+                        outcome = self.bash("pwsh -NoProfile -c " + shlex.quote(command), self.tree)
+                    self.assertEqual("deny", outcome)
+                    self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Its last part a program's name, the name may also be that program, as C:/Program Files/Git/cmd\git.exe is on
+        # Windows, so its git call is read as one too.
+        self.assertEqual("deny", self.powershell(f"{folder}/git\\git commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell(f"{folder}/git\\git status", self.hub))
+        # In a tree holding a node the guard does not follow, as a while loop, only its git calls are read, that one
+        # included.
+        self.assertEqual("deny", self.powershell(f"while ($false) {{ }}; {folder}/git\\git commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell(f"while ($false) {{ }}; {folder}/git\\git status", self.hub))
+
     def test_a_chain_follows_each_operator_to_the_side_it_runs_on(self) -> None:
         # The pipeline after && runs where the one before it succeeded, and the one after || where it failed. A move to
         # a folder that is not there yet may do either: after &&, the commit runs in that folder, outside every
