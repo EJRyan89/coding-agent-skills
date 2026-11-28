@@ -2162,7 +2162,7 @@ def is_parser_annotation(annotation: ast.expr | None, aliases: Aliases) -> bool:
     """Whether an annotation names argparse's parser: as a name, a quoted one, either side of a `|` union, or the type
     a typing wrapper wraps, such as Optional[...], ClassVar[...], Final[...], Annotated[<type>, ...], or any member of
     Union[...], each part quoted or not. A stated limit: a quoted annotation that does not parse or nests past
-    nesting_depth's DEPTH_LIMIT is read as naming nothing."""
+    nesting_depth's TREE_DEPTH_LIMIT is read as naming nothing."""
     if annotation is None:
         return False
     table = _aliases_at(aliases, annotation)

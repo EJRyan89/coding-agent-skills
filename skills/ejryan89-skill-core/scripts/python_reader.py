@@ -10,9 +10,12 @@ content-errors policy holds it to that.
 
 The parser reads a tree far deeper than a Python walk over it recurses, such as a call through a long attribute chain
 or a long run of chained conditional expressions, so a tree it gives could still end that walk in a
-`RecursionError`. Each reader therefore refuses, as nested, a tree past `nesting_depth`'s `DEPTH_LIMIT`, each node
-one level below the node that holds it (`ast.iter_child_nodes`), as `json_reader` and `xml_reader` refuse a value, so
-no walk over a tree they give needs a bound of its own.
+`RecursionError`. Each reader therefore refuses a tree past `nesting_depth`'s `TREE_DEPTH_LIMIT`, each node one level
+below the node that holds it (`ast.iter_child_nodes`), as `json_reader` and `xml_reader` refuse a value past
+`DEPTH_LIMIT`, so no walk over a tree they give needs a bound of its own. A tree nests one level for each link of a
+chain, a `+` or an `elif` included, so the limit is the tree's own rather than a document's, and a chain of a little
+under two hundred links is read. A tree past it is valid Python the parser read, so its refusal, `FOLLOWED`, says the
+reader follows no deeper, apart from `NESTED`, source the parser itself cannot read.
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ import nesting_depth
 
 # The refusal of a source or literal nested deeper than the parser reads.
 NESTED = "nests deeper than the Python parser can read"
+# The refusal of a tree the parser read that nests past TREE_DEPTH_LIMIT.
+FOLLOWED = "nests deeper than the reader follows"
 
 
 class PythonRefused(ValueError):
@@ -51,15 +56,15 @@ def _refused(error: Exception) -> PythonRefused:
 
 
 def _bounded[Tree: ast.AST](tree: Tree) -> Tree:
-    """`tree`, or `PythonRefused` when it nests past `DEPTH_LIMIT`."""
-    if nesting_depth.nests_past(tree, ast.iter_child_nodes):
-        raise PythonRefused(NESTED)
+    """`tree`, or `PythonRefused` with `FOLLOWED` when it nests past `TREE_DEPTH_LIMIT`."""
+    if nesting_depth.nests_past(tree, ast.iter_child_nodes, nesting_depth.TREE_DEPTH_LIMIT):
+        raise PythonRefused(FOLLOWED)
     return tree
 
 
 def parse(source: str, filename: str = "<unknown>") -> ast.Module:
     """The module `source` is, or `PythonRefused` when it does not parse or nests past the parser's limits or
-    `DEPTH_LIMIT`."""
+    `TREE_DEPTH_LIMIT`."""
     try:
         tree = ast.parse(source, filename=filename)
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
@@ -69,7 +74,7 @@ def parse(source: str, filename: str = "<unknown>") -> ast.Module:
 
 def parse_expression(source: str, filename: str = "<unknown>") -> ast.Expression:
     """The expression `source` is, or `PythonRefused` when it is not one or nests past the parser's limits or
-    `DEPTH_LIMIT`."""
+    `TREE_DEPTH_LIMIT`."""
     try:
         tree = ast.parse(source, filename=filename, mode="eval")
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
@@ -79,7 +84,7 @@ def parse_expression(source: str, filename: str = "<unknown>") -> ast.Expression
 
 def literal(value: ast.AST | str) -> Any:
     """The value a literal node, or a literal's source, holds, or `PythonRefused` when it is no literal, holds an
-    unhashable key, or nests past the parser's limits or `DEPTH_LIMIT`. A source is parsed as `ast.literal_eval`
+    unhashable key, or nests past the parser's limits or `TREE_DEPTH_LIMIT`. A source is parsed as `ast.literal_eval`
     parses it, past the spaces and tabs that lead it."""
     node = parse_expression(value.lstrip(" \t")) if isinstance(value, str) else _bounded(value)
     try:

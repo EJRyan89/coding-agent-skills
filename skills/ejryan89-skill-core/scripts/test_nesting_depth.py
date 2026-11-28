@@ -51,6 +51,13 @@ class NestsPastTests(unittest.TestCase):
         self.assertFalse(nesting_depth.nests_past(chain(100), items))
         self.assertTrue(nesting_depth.nests_past(chain(101), items))
 
+    def test_a_python_tree_is_measured_against_its_own_limit_of_two_hundred_levels(self) -> None:
+        # A pinned contract value: python_reader passes it, since a tree nests one level for each link of a chain.
+        self.assertEqual(200, nesting_depth.TREE_DEPTH_LIMIT)
+        self.assertFalse(nesting_depth.nests_past(chain(200), items, nesting_depth.TREE_DEPTH_LIMIT))
+        self.assertTrue(nesting_depth.nests_past(chain(201), items, nesting_depth.TREE_DEPTH_LIMIT))
+        self.assertTrue(nesting_depth.nests_past(chain(101), items))
+
     def test_a_leaf_is_level_one(self) -> None:
         self.assertFalse(nesting_depth.nests_past("leaf", items))
 

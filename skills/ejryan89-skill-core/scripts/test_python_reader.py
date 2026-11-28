@@ -15,9 +15,11 @@ from python_reader import CONTENT_ERRORS, CONTENT_READERS, PythonRefused, litera
 # RecursionError on others, rather than a SyntaxError.
 TOO_DEEP = "x = " + "-" * 100_000 + "1"
 NESTED = "nests deeper than the Python parser can read"
+# The refusal of a tree the parser read but nested past the readers' limit.
+FOLLOWED = "nests deeper than the reader follows"
 # The most levels a tree the readers give nests, each node one level below the node that holds it, as
-# nesting_depth.DEPTH_LIMIT holds it, written out so that a change to that limit fails here.
-LIMIT = 100
+# nesting_depth.TREE_DEPTH_LIMIT holds it, written out so that a change to that limit fails here.
+LIMIT = 200
 
 
 def attribute_chain(parts: int) -> str:
@@ -31,6 +33,18 @@ def conditional_chain(parts: int) -> str:
     assignment, each conditional, the last one's test name, and its load context each one level, so it nests
     `parts + 4` levels."""
     return "y = " + "1 if x else " * parts + "0\n"
+
+
+def sum_chain(terms: int) -> str:
+    """An assignment of `terms` constants joined by `+`, each `+` in the one after it: the module, the assignment,
+    each `+`, and the first constant each one level, so it nests `terms + 2` levels."""
+    return "x = " + " + ".join(["1"] * terms) + "\n"
+
+
+def elif_chain(arms: int) -> str:
+    """An `if` with `arms` `elif` arms, each in the `else` of the one before it: the module, the `if`, each arm, the
+    last arm's test name, and its load context each one level, so it nests `arms + 4` levels."""
+    return "if a:\n    pass\n" + "elif a:\n    pass\n" * arms
 
 
 def nested_lists(levels: int) -> ast.expr:
@@ -68,7 +82,23 @@ class ParseTests(unittest.TestCase):
                 self.assertIsInstance(parse(chain(LIMIT - 4), "m.py"), ast.Module)
                 with self.assertRaises(PythonRefused) as raised:
                     parse(chain(LIMIT - 3), "m.py")
-                self.assertEqual(NESTED, str(raised.exception))
+                self.assertEqual(FOLLOWED, str(raised.exception))
+                self.assertIsNone(raised.exception.line)
+
+    def test_a_long_sum_or_elif_chain_in_a_valid_file_is_read(self) -> None:
+        # Each link of a chain nests one level, so chains of these lengths passed a limit of a hundred levels.
+        for terms in (60, 99, 100, 150):
+            with self.subTest(terms=terms):
+                self.assertIsInstance(parse(sum_chain(terms), "m.py"), ast.Module)
+                self.assertIsInstance(parse(elif_chain(terms), "m.py"), ast.Module)
+
+    def test_a_sum_or_elif_chain_at_the_limit_parses_and_one_link_past_it_is_refused(self) -> None:
+        for chain, levels in ((sum_chain, 2), (elif_chain, 4)):
+            with self.subTest(chain=chain.__name__):
+                self.assertIsInstance(parse(chain(LIMIT - levels), "m.py"), ast.Module)
+                with self.assertRaises(PythonRefused) as raised:
+                    parse(chain(LIMIT - levels + 1), "m.py")
+                self.assertEqual(FOLLOWED, str(raised.exception))
                 self.assertIsNone(raised.exception.line)
 
     def test_a_tree_the_parser_reads_but_a_walk_cannot_recurse_through_is_refused_as_nested(self) -> None:
@@ -80,14 +110,14 @@ class ParseTests(unittest.TestCase):
         ):
             with self.subTest(source=source[:20]), self.assertRaises(PythonRefused) as raised:
                 parse(source, "m.py")
-            self.assertEqual(NESTED, str(raised.exception))
+            self.assertEqual(FOLLOWED, str(raised.exception))
 
     def test_an_expression_at_the_limit_parses_and_one_level_past_it_is_refused(self) -> None:
         # The expression node stands in the module's and the statement's place, one level for the two.
         self.assertIsInstance(parse_expression("x" + ".a" * (LIMIT - 3)), ast.Expression)
         with self.assertRaises(PythonRefused) as raised:
             parse_expression("x" + ".a" * (LIMIT - 2))
-        self.assertEqual(NESTED, str(raised.exception))
+        self.assertEqual(FOLLOWED, str(raised.exception))
 
     def test_a_null_byte_is_refused(self) -> None:
         with self.assertRaises(PythonRefused):
@@ -118,13 +148,13 @@ class LiteralTests(unittest.TestCase):
         self.assertIsInstance(literal(" \t" + "[" * (LIMIT - 2) + "]" * (LIMIT - 2)), list)
         with self.assertRaises(PythonRefused) as raised:
             literal("[" * (LIMIT - 1) + "]" * (LIMIT - 1))
-        self.assertEqual(NESTED, str(raised.exception))
+        self.assertEqual(FOLLOWED, str(raised.exception))
 
     def test_a_literal_node_at_the_limit_reads_and_one_level_past_it_is_refused(self) -> None:
         self.assertIsInstance(literal(nested_lists(LIMIT - 1)), list)
         with self.assertRaises(PythonRefused) as raised:
             literal(nested_lists(LIMIT))
-        self.assertEqual(NESTED, str(raised.exception))
+        self.assertEqual(FOLLOWED, str(raised.exception))
 
     def test_the_family_is_one_value_error_class(self) -> None:
         self.assertEqual((PythonRefused,), CONTENT_ERRORS)
