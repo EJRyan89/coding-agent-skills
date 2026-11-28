@@ -255,6 +255,12 @@ class NodeCatalogueTests(unittest.TestCase):
             {"pipelines": [[0]], "operators": [], "stages": [[1]], "blocks": [[]], "nested": None},
             "statement",
         ]
+        # Operators that do not stand one between each two pipelines, too few, too many, or not && or ||, would leave
+        # a pipeline unread or read on the wrong side of its operator.
+        two: dict[str, Any] = {"pipelines": [[0], [1]], "stages": [[], []], "blocks": [[], []], "nested": []}
+        statements += [{**two, "operators": operators} for operators in ([], ["&&", "&&"], ["|"], [None], [["&&"]])]
+        statements.append({"pipelines": [[0]], "operators": ["&&"], "stages": [[1]], "blocks": [[]], "nested": [1]})
+        statements.append({"pipelines": [], "operators": ["&&"], "stages": [], "blocks": [], "nested": [0, 1]})
         for statement in statements:
             with self.subTest(statement=statement):
                 reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [statement])
@@ -263,6 +269,11 @@ class NodeCatalogueTests(unittest.TestCase):
                 self.assertIsNone(call.place.start)
         # Listed whole: in the stage, the git call runs before the pipeline's Set-Location, where the command started;
         # in the blocks, while the pipeline runs, after the Set-Location may have moved the location.
+        for operator in ("&&", "||"):
+            with self.subTest(operator=operator):
+                chained = {**two, "operators": [operator]}
+                reading = self.read(["ScriptBlockAst", "CommandAst"], commands, [chained])
+                self.assertEqual([], reading.notes)
         for stages, blocks, place in (([[1]], [[]], Path("/elsewhere")), ([[]], [[1]], None)):
             with self.subTest(stages=stages, blocks=blocks):
                 listed: dict[str, Any] = {
@@ -293,6 +304,7 @@ class NodeCatalogueTests(unittest.TestCase):
         self.assertEqual([], reading.notes)
         malformed: list[Any] = [{**whole, key: None} for key in whole]
         malformed.append({**whole, "stages": [[5]]})
+        malformed.append({**whole, "operators": ["&&"]})
         malformed.append("statement")
         for statement in malformed:
             with self.subTest(statement=statement):
@@ -398,9 +410,147 @@ class CommandNameTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
-        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\a-b"):
+        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\git"):
             with self.subTest(name=name):
                 self.assertFalse(hub_guard.powershell_command(name))
+
+    def test_each_cmdlet_the_table_names_is_qualified_by_the_module_powershell_gives_it(self) -> None:
+        # The guard follows Module\Cmdlet only where the module is the one PowerShell says defines the cmdlet, and
+        # PowerShell runs that qualified name as the cmdlet.
+        cmdlets = sorted(set(hub_guard.POWERSHELL_COMMANDS.values()))
+        script = (
+            "$names = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+            "ConvertTo-Json -Compress -InputObject @(foreach ($name in $names) { "
+            "$command = Get-Command -Name $name -CommandType Cmdlet -ErrorAction Ignore; "
+            "if ($null -eq $command) { , @('', '') } else { "
+            '$qualified = Get-Command -Name "$($command.Source)\\$name" -ErrorAction Ignore; '
+            ', @($command.Source, "$($qualified.Name)") } })'
+        )
+        sources = json.loads(pwsh(script, json.dumps(cmdlets)))
+        defined = {cmdlet: source.lower() for cmdlet, (source, _) in zip(cmdlets, sources, strict=True) if source}
+        self.assertEqual(defined, hub_guard.POWERSHELL_MODULES)
+        for cmdlet, (source, qualified) in zip(cmdlets, sources, strict=True):
+            if source:
+                with self.subTest(cmdlet=cmdlet):
+                    self.assertEqual(cmdlet, qualified.lower())
+
+    def test_a_cmdlet_qualified_by_its_module_path_is_one_pwsh_runs_and_the_guard_does_not_follow(self) -> None:
+        # pwsh off Windows runs a cmdlet qualified by its module's folder or manifest as the cmdlet, and pwsh on
+        # Windows runs neither, in either separator; the guard, which follows a qualified cmdlet only by the module's
+        # name, reads either as a command it does not read on every platform, which fails closed on Windows.
+        script = (
+            "$found = Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1; "
+            "$base = $found.ModuleBase -replace '\\\\', '/'; "
+            '$manifest = "$base/Microsoft.PowerShell.Management.psd1"; '
+            "$target = (Get-Item -LiteralPath $PSHOME).FullName; "
+            "ConvertTo-Json -Compress -InputObject @(foreach ($module in $base, $manifest) { "
+            "Set-Location -LiteralPath $base; "
+            '& "$module\\Set-Location" -LiteralPath $target; '
+            ', @("$module\\Set-Location", ((Get-Location).Path -eq $target)) })'
+        )
+        for name, moved in json.loads(pwsh(script)):
+            with self.subTest(name=name):
+                self.assertEqual(not platform_support.WINDOWS, moved)
+                self.assertIsNone(hub_guard.powershell_cmdlet(name))
+                self.assertTrue(hub_guard.powershell_command(name))
+
+    def test_a_qualified_name_names_a_cmdlet_only_by_the_module_that_defines_it(self) -> None:
+        for name, cmdlet, own in (
+            ("Microsoft.PowerShell.Management\\Set-Location", "set-location", True),
+            ("MICROSOFT.POWERSHELL.MANAGEMENT\\push-location", "push-location", True),
+            ("microsoft.powershell.core\\ForEach-Object", "foreach-object", True),
+            ("Microsoft.PowerShell.Utility\\Write-Output", "write-output", True),
+            # Another module, none, or an alias: PowerShell runs a command the guard does not read, or none.
+            ("Microsoft.PowerShell.Utility\\Set-Location", None, True),
+            ("Microsoft.PowerShell.Core\\Set-Location", None, True),
+            ("\\Set-Location", None, True),
+            ("Microsoft.PowerShell.Management\\cd", None, True),
+            ("SomeModule\\Invoke-Something", None, True),
+            ("Microsoft.PowerShell.Utility\\Invoke-Expression", None, True),
+            # A module by its path, a folder, a .psd1, or a .psm1, which PowerShell loads to run its command, and a
+            # module part the text does not settle, ~, a drive, or several folders, which pwsh on Windows may read as
+            # one.
+            ("/usr/local/microsoft/powershell/7/Modules/Microsoft.PowerShell.Management\\Set-Location", None, True),
+            ("/opt/m/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1\\Set-Location", None, True),
+            ("./Place.psm1\\Enter-Place", None, True),
+            ("tools/x\\Set-Location", None, True),
+            ("~\\Set-Location", None, True),
+            ("C:\\tools\\Set-Location", None, True),
+            ("C:/mods/M.psm1\\Set-Location", None, True),
+            ("C:\\mods\\M.psm1\\Set-Location", None, True),
+            ("sub\\Place.psm1\\Enter-Place", None, True),
+            ("C:\\x\\a-b", None, True),
+            # A module by its path, a folder holding / or a .psm1 or .psd1 by any separator, runs the command it exports
+            # by whatever name, git's and a program's included.
+            ("/opt/f/Fn2.psm1\\goplace", None, True),
+            ("/opt/f/git\\git", None, True),
+            ("/opt/f/git/git.psm1\\git", None, True),
+            ("C:/Program Files/Git/cmd\\git.exe", None, True),
+            ("C:\\mods\\M.psm1\\goplace", None, True),
+            ("C:\\mods\\M.psd1\\git", None, True),
+            ("Place.psm1\\goplace", None, True),
+            (".\\Place.psm1\\goplace", None, True),
+            ("/opt/f/x\\a/b", None, True),
+            # . or .. before a single backslash names a file, which PowerShell runs as a program, and so does a name
+            # whose last part is a program's.
+            (".\\Set-Location", None, False),
+            ("..\\Set-Location", None, False),
+            ("C:Set-Location\\x", None, False),
+            ("Microsoft.PowerShell.Management\\Set-Location\\", None, False),
+            ("Microsoft.PowerShell.Management\\a/Set-Location", None, False),
+            ("tools\\git", None, False),
+            ("C:\\tools\\git", None, False),
+            ("tools\\dotnet-format.exe", None, False),
+            # A module folder by a path of backslashes alone, with a command of no hyphen, the text cannot tell from a
+            # program's path: a stated limit.
+            ("C:\\mods\\Place\\goplace", None, False),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(cmdlet, hub_guard.powershell_cmdlet(name))
+                self.assertEqual(own, hub_guard.powershell_command(name))
+        # A module by its path whose last part is also a program's name may be that program, on Windows as
+        # C:/Program Files/Git/cmd\git.exe is, so its git call is read too.
+        for name, program in (
+            ("/opt/f/git\\git", True),
+            ("C:/Program Files/Git/cmd\\git.exe", True),
+            ("C:\\mods\\M.psd1\\git", True),
+            ("/opt/f/Fn2.psm1\\goplace", True),
+            ("/opt/f/Fn2.psm1\\Enter-Place", False),
+            ("Microsoft.PowerShell.Management\\Set-Location", False),
+            ("tools\\git", False),
+            ("git", False),
+        ):
+            with self.subTest(name=name, program=program):
+                self.assertEqual(program, hub_guard.also_a_program(name))
+
+    def test_a_command_of_a_module_by_its_path_runs_whatever_its_name(self) -> None:
+        # pwsh off Windows runs <module path>\<name> as the command that module exports by that name, a function named
+        # as no cmdlet is, or as git, included, from a .psm1 and from a module folder alike; pwsh on Windows runs none,
+        # and the guard reads each as a command it does not read on every platform.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            mover = "function goplace { param($Where) Set-Location -LiteralPath $Where }\n"
+            (folder / "Fn2.psm1").write_text(mover, encoding="utf-8")
+            (folder / "git").mkdir()
+            (folder / "git" / "git.psm1").write_text(
+                "function git { param($Where) Set-Location -LiteralPath $Where }\n", encoding="utf-8"
+            )
+            base = folder.as_posix()
+            names = [f"{base}/Fn2.psm1\\goplace", f"{base}/git\\git", f"{base}/git/git.psm1\\git"]
+            script = (
+                "$names = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+                "$target = (Get-Item -LiteralPath $PSHOME).FullName; "
+                "ConvertTo-Json -Compress -InputObject @(foreach ($name in $names) { "
+                "Set-Location -LiteralPath ([IO.Path]::GetTempPath()); "
+                "& $name $target; "
+                "(Get-Location).Path -eq $target })"
+            )
+            moved = json.loads(pwsh(script, json.dumps(names)))
+        for name, followed in zip(names, moved, strict=True):
+            with self.subTest(name=name):
+                self.assertEqual(not platform_support.WINDOWS, followed)
+                self.assertTrue(hub_guard.powershell_command(name))
+                self.assertIsNone(hub_guard.powershell_cmdlet(name))
 
     def test_each_alias_the_table_gives_a_cmdlet_is_the_one_powershell_gives_it(self) -> None:
         aliases = [name for name, cmdlet in hub_guard.POWERSHELL_COMMANDS.items() if name != cmdlet]

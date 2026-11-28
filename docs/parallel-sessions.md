@@ -621,16 +621,20 @@ The configuration's limits:
   of the pipeline may move it, the block's commands are placed where the text does not settle, as in
   `Set-Location <dir> | ForEach-Object { ... }`. Where a nested command may move the location, it, and every command
   after it, its own pipeline's included, is placed where the text does not settle. A tree in which any command is in
-  neither a statement's own pipelines nor its nested commands, or a statement whose nested commands its pipelines'
-  arguments and script blocks do not list each once, is read as one holding a node type the guard does not read. A
+  neither a statement's own pipelines nor its nested commands, a statement whose nested commands its pipelines'
+  arguments and script blocks do not list each once, or one whose operators do not stand one `&&` or `||` between
+  each two of its pipelines, is read as one holding a node type the guard does not read. A
   command
   holding any other node type or form, a method call, a static member such as `[IO.File]::Delete`, a member the text
   does not name, a cast to another type, a script block handed to any other command, or an assignment to the
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
   calls and its redirections read, each placed where the text does not settle once any command in it may move the
-  location. A command is read as git, as `gh`, as a location cmdlet, followed as Bash's `cd`, `pushd`, and `popd` are
-  to a literal file-system path given by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, any other
-  parameter, as `-StackName`, leaving the location and the stack unknown, or as one
+  location. A cmdlet's name qualified, in any case, by the name of the module that defines it (`POWERSHELL_MODULES`,
+  held to `Get-Command`), as `Microsoft.PowerShell.Management\Set-Location`, is read as the cmdlet; qualified by that
+  module's path, it is not followed. A command is read as git,
+  as `gh`, as a location cmdlet, followed as Bash's `cd`, `pushd`, and `popd` are to a literal file-system path given
+  by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, any other parameter, as `-StackName`, leaving
+  the location and the stack unknown, or as one
   of these cmdlets, by its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
   `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,
   `ForEach-Object`, `Where-Object`, `Group-Object`,
@@ -642,7 +646,16 @@ The configuration's limits:
   `ForEach-Object` given a member's name, and a name PowerShell keeps for its own commands, an alias or a function of
   its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory, whatever its verb,
   since a module PowerShell loads on demand may define a function by it, as Windows' own modules define
-  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), and a script
+  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe`, or as a path with forward
+  slashes alone or a single backslash after `.` or `..`), such a name or an alias after a backslash, qualified by any
+  module but the one that defines it, by none, or by a module's path, a folder, a `.psd1`, or a `.psm1`, as
+  `Microsoft.PowerShell.Utility\Set-Location`, `\Set-Location`, or `./Place.psm1\Enter-Place`, which PowerShell loads
+  and runs a command of, with everything before the last backslash taken as that module, a drive and `~` included,
+  as `C:\tools\Set-Location` is, any name after a module by a path holding `/` or naming a `.psm1` or `.psd1`, as
+  `<folder>/Place.psm1\goplace` or `<folder>/git\git`, which pwsh off Windows runs as the command that module exports
+  by that name and pwsh on Windows runs none of, a reading that fails closed there, its git call read as well where
+  the name is also a program's, as `C:/Program Files/Git/cmd\git.exe` is, so a program's path that mixes `/` and `\`,
+  as `./node_modules/.bin\eslint`, leaves the commands after it unplaced too, and a script
   file, whose name ends in `.ps1`, which PowerShell runs in the session, run code the guard does not read, which may
   move the location now or define a function by a location cmdlet's name that a later command runs before the
   cmdlet, so no command after one settles where the location is. Each command is judged by the one decision it is
@@ -784,6 +797,8 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - an assignment before a shell that runs a script, as `GIT_DIR=<dir> bash -c 'git ...'` or
   `env GIT_DIR=<dir> bash -c '...'`, which the script's git inherits;
 - in PowerShell, an assignment a wrapper hands git through another wrapper, as `env GIT_DIR=<dir> timeout 5 git ...`;
+- in PowerShell, a module folder given by a path of backslashes alone before a command whose name has no hyphen, as
+  `C:\mods\Place\goplace`, which the text cannot tell from a program's path and is read as that program;
 - a script a shell reads from its standard input, from a here-document or a pipe, as `bash <<'EOF'` or
   `echo '...' | bash`;
 - where a here-document's delimiter line, or its delimiter word, ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere

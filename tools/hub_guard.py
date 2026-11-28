@@ -36,7 +36,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -728,6 +728,29 @@ POWERSHELL_COMMANDS = {
             "mkdir",
         )
     },
+}
+# The module that defines each cmdlet POWERSHELL_COMMANDS holds, lower-cased, as Get-Command gives its Source in a pwsh
+# started with no profile: PowerShell runs Module\Cmdlet, whatever the case of either part, as the cmdlet that module
+# defines, and no command at all where the module does not define it. An alias, and mkdir, which is a function of no
+# module on Windows and a program elsewhere, have no qualified form.
+POWERSHELL_MODULES = {
+    **dict.fromkeys(
+        (
+            *("set-location", "push-location", "pop-location", "get-childitem", "get-content", "get-location"),
+            *("get-item", "get-process", "remove-item", "copy-item", "move-item", "new-item", "resolve-path"),
+            *("test-path", "join-path", "split-path", "set-content", "add-content"),
+        ),
+        "microsoft.powershell.management",
+    ),
+    **dict.fromkeys(
+        (
+            *("select-string", "select-object", "sort-object", "measure-object", "write-output", "format-table"),
+            *("group-object", "format-list", "start-sleep", "write-host", "out-string", "get-date", "get-filehash"),
+            *("convertfrom-json", "convertto-json", "out-file"),
+        ),
+        "microsoft.powershell.utility",
+    ),
+    **dict.fromkeys(("get-command", "foreach-object", "where-object", "out-null"), "microsoft.powershell.core"),
 }
 # The variables PowerShell sets or reads itself, by Get-Variable in a pwsh started with no profile and by its
 # documentation of the automatic and preference variables, lower-cased: an assignment to one, as to
@@ -3878,7 +3901,57 @@ def powershell_command(name: str) -> bool:
     lowered = name.lower()
     with_extension = platform_support.program_name(lowered) != lowered
     bare = "-" in lowered and "/" not in lowered and "\\" not in lowered and not with_extension
-    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
+    own = lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
+    return own or qualified_name(name) is not None
+
+
+def qualified_name(name: str) -> tuple[str, str] | None:
+    """The module and the command a module-qualified PowerShell name may name, lower-cased, as
+    Microsoft.PowerShell.Management\\Set-Location names Set-Location of that module: a name PowerShell keeps for its own
+    commands (powershell_command) after the last backslash, and everything before it the module. PowerShell takes a
+    module there by its name, by none, as in \\Set-Location, or by its path, a folder, a .psd1, or a .psm1, as in
+    ./Place.psm1\\Enter-Place, and runs that module's command; which a path or a drive names, on Windows as elsewhere,
+    the text does not settle, so every such module part is one, never matching the module that defines a cmdlet. A
+    module by its path (module_path) runs the command it exports by whatever name, git's included. Any other name is
+    None: one with no backslash, one whose last part is a program's name, as C:\\tools\\git, and . or .. before a
+    single backslash, as .\\Set-Location, a file pwsh runs as a program."""
+    lowered = name.lower()
+    module, separator, command = lowered.rpartition("\\")
+    if not separator:
+        return None
+    if module_path(module):
+        return module, command
+    if "/" in command or module in {".", ".."} or not powershell_command(command):
+        return None
+    return module, command
+
+
+def module_path(module: str) -> bool:
+    """Whether the part of a name before its last backslash names a module by its path: one holding /, which no
+    program's path written with backslashes does, or whose last part is a module file, a .psm1 or a .psd1, by any
+    separator. A module folder by a path of backslashes alone the text cannot tell from a program's folder."""
+    return "/" in module or module.rpartition("\\")[2].endswith((".psm1", ".psd1"))
+
+
+def also_a_program(name: str) -> bool:
+    """Whether a name of a module by its path, which PowerShell may run as that module's command, may also be a
+    program, its last part a name PowerShell keeps for none of its own commands, as C:/Program Files/Git/cmd\\git.exe
+    is on Windows: its git call is read as well, and the location is left where the text does not settle."""
+    module, separator, command = name.lower().rpartition("\\")
+    return bool(separator) and module_path(module) and not powershell_command(command)
+
+
+def powershell_cmdlet(name: str) -> str | None:
+    """The cmdlet POWERSHELL_COMMANDS holds that a command's name runs: by its own name or an alias, or qualified by
+    the module that defines it (POWERSHELL_MODULES). A name qualified any other way, by another module, by none, or
+    naming an alias, runs a command the guard does not read, or none, and is None, as a name the table does not hold
+    is."""
+    qualified = qualified_name(name)
+    if qualified is None:
+        return POWERSHELL_COMMANDS.get(name.lower())
+    module, command = qualified
+    cmdlet = POWERSHELL_COMMANDS.get(command)
+    return cmdlet if cmdlet == command and POWERSHELL_MODULES.get(cmdlet) == module else None
 
 
 def powershell_runs_itself(name: str) -> bool:
@@ -4043,14 +4116,14 @@ class PowerShellReader:
     def reaches_every_command(self, statements: list[Any]) -> bool:
         """Whether the statements list every command of the tree, each in a statement's pipelines or its nested
         commands, and each statement is one read_statement reads whole: its pipelines lists of command indexes, its
-        operators a list, and its stages and blocks listing its nested commands beside its pipelines
-        (stages_listed)."""
+        operators standing between them (operators_listed), and its stages and blocks listing its nested commands
+        beside its pipelines (stages_listed)."""
         listed: set[int] = set()
         for statement in statements:
             if not isinstance(statement, dict):
                 return False
             pipelines, nested = statement.get("pipelines"), statement.get("nested")
-            if not isinstance(pipelines, list) or not isinstance(statement.get("operators"), list):
+            if not isinstance(pipelines, list) or not self.operators_listed(statement.get("operators"), pipelines):
                 return False
             if not all(isinstance(pipeline, list) for pipeline in pipelines):
                 return False
@@ -4088,8 +4161,7 @@ class PowerShellReader:
         found.extend(
             f"a script block handed to {command or 'no command'}"
             for command in output.get("blocks") or []
-            if POWERSHELL_COMMANDS.get(command.lower() if isinstance(command, str) else "")
-            not in POWERSHELL_BLOCK_COMMANDS
+            if (powershell_cmdlet(command) if isinstance(command, str) else None) not in POWERSHELL_BLOCK_COMMANDS
         )
         return found
 
@@ -4138,7 +4210,7 @@ class PowerShellReader:
         name = self.words(command)[0]
         if command.get("invocation") == "Dot" or name is None or name.lower().endswith(POWERSHELL_SCRIPT):
             return Effect.UNREAD
-        cmdlet = POWERSHELL_COMMANDS.get(name.lower())
+        cmdlet = powershell_cmdlet(name)
         if cmdlet is None:
             return Effect.UNREAD if powershell_command(name) else Effect.NOTHING
         if cmdlet == "foreach-object" and any(
@@ -4153,7 +4225,7 @@ class PowerShellReader:
         if isinstance(command, dict):
             self.read_redirections(command, directory)
         words = self.words(command)
-        if words[0] is not None and not powershell_command(words[0]):
+        if words[0] is not None and (not powershell_command(words[0]) or also_a_program(words[0])):
             self.read_native(words, directory)
 
     def read_statement(self, statement: Any, directory: Directory) -> Directory:
@@ -4164,7 +4236,7 @@ class PowerShellReader:
         blocks = statement.get("blocks") if isinstance(statement, dict) else None
         if (
             not isinstance(pipelines, list)
-            or not isinstance(operators, list)
+            or not self.operators_listed(operators, pipelines)
             or not isinstance(nested, list)
             or not isinstance(stages, list)
             or not isinstance(blocks, list)
@@ -4179,7 +4251,7 @@ class PowerShellReader:
         # where its pipeline starts, never from where the statement does.
         start = directory
         outcome = self.read_stage(pipelines[0], stages[0], blocks[0], directory)
-        for operator, pipeline, stage, block in zip(operators, pipelines[1:], stages[1:], blocks[1:], strict=False):
+        for operator, pipeline, stage, block in zip(operators, pipelines[1:], stages[1:], blocks[1:], strict=True):
             if operator == "&&":
                 after = self.read_stage(pipeline, stage, block, outcome.ok)
                 outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
@@ -4198,6 +4270,14 @@ class PowerShellReader:
         directory = self.read_nested(stage, directory)
         self.read_nested(blocks, self.moved_by(pipeline if isinstance(pipeline, list) else [], directory))
         return self.read_pipeline(pipeline, self.moved_by(blocks, directory))
+
+    @staticmethod
+    def operators_listed(operators: Any, pipelines: list[Any]) -> TypeGuard[list[Any]]:
+        """Whether a statement's operators stand one between each two of its pipelines, each && or ||, so every
+        pipeline is read, on the side of its operator it runs on."""
+        if not isinstance(operators, list) or len(operators) != max(len(pipelines) - 1, 0):
+            return False
+        return all(isinstance(operator, str) and operator in {"&&", "||"} for operator in operators)
 
     @staticmethod
     def stages_listed(pipelines: list[Any], stages: Any, blocks: Any, nested: list[Any]) -> bool:
@@ -4277,13 +4357,15 @@ class PowerShellReader:
         effect = self.effect(command)
         name, *arguments = self.words(command)
         if effect is Effect.UNREAD:
-            if command.get("invocation") == "Dot" and name is not None and not powershell_runs_itself(name):
-                # A program dot-sourced into the session runs as it would without the dot, git among them.
+            dotted = command.get("invocation") == "Dot" and name is not None and not powershell_runs_itself(name)
+            if dotted or (name is not None and also_a_program(name)):
+                # A program dot-sourced into the session runs as it would without the dot, git among them; and a
+                # module's command by its path may be the program its name ends in.
                 self.read_native([name, *arguments], directory)
             return certain(UNREAD_CODE)
         outcome = certain(directory)
         if name is not None and not command.get("expression"):
-            cmdlet = POWERSHELL_COMMANDS.get(name.lower())
+            cmdlet = powershell_cmdlet(name)
             if cmdlet is None:
                 self.read_native([name, *arguments], directory)
             elif effect is Effect.FOLLOWED:
