@@ -274,6 +274,55 @@ expect_failed "FAILED $CLONE/skills is the folder skills/ inside a clone, not th
   "folder inside the clone"
 expect_nothing_run "folder inside the clone"
 
+# deploy.py is found in git's listing of the tree's root, given no path to match: git reads an inherited
+# GIT_ICASE_PATHSPECS or GIT_GLOB_PATHSPECS as pathspec magic, which ls-tree refuses, so a path given would fail every
+# update where either is exported. Each such update deploys.
+for PATHSPEC_VARIABLE in GIT_ICASE_PATHSPECS GIT_GLOB_PATHSPECS; do
+  begin_case "$PATHSPEC_VARIABLE exported"
+  new_clone
+  checkout_branch_deployer topic
+  publish "change under $PATHSPEC_VARIABLE"
+  export "$PATHSPEC_VARIABLE=1"
+  run_subject "$CLONE" main
+  unset "$PATHSPEC_VARIABLE"
+  expect_status 0 "$PATHSPEC_VARIABLE exported"
+  expect_main_deployer "$PATHSPEC_VARIABLE exported"
+  expect_deployed "$PATHSPEC_VARIABLE exported"
+done
+
+# git that cannot say where the path is in its clone, or cannot list a tree deploy.py is read from, stops the update
+# with git's reason, never as a top folder or a deploy.py missing: before anything runs for --show-prefix and main's
+# tree, and for origin/main's tree after the fetch, after check and before the switch to main.
+begin_case "git fails where deploy.py is read"
+new_clone
+checkout_branch_deployer topic
+publish "change behind a failing ls-tree"
+FETCHED_COMMIT=$(git -C "$SEED" rev-parse HEAD)
+FAILING_GIT="$FIXTURE/failing git"
+mkdir -p "$FAILING_GIT"
+cat >"$FAILING_GIT/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" --show-prefix "*) [ -z "\${FAIL_PREFIX:-}" ] || { echo "fatal: prefix refused by the test" >&2; exit 128; } ;;
+  *" ls-tree "*"\${FAIL_LS_TREE:-unset} "*) echo "fatal: ls-tree refused by the test" >&2; exit 128 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$FAILING_GIT/git"
+FAIL_PREFIX=1 PATH="$FAILING_GIT:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot read where $CLONE is in its clone: fatal: prefix refused by the test" "prefix not read"
+expect_nothing_run "prefix not read"
+FAIL_LS_TREE=$(git -C "$CLONE" rev-parse "refs/heads/main^{tree}") PATH="$FAILING_GIT:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot read deploy.py at the root of refs/heads/main in $CLONE: fatal: ls-tree refused by the test" \
+  "main's tree not listed"
+expect_nothing_run "main's tree not listed"
+FAIL_LS_TREE=$FETCHED_COMMIT PATH="$FAILING_GIT:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot read deploy.py at the root of refs/remotes/origin/main in $CLONE: fatal: ls-tree refused by the test" \
+  "origin/main's tree not listed"
+expect_main_deployer "origin/main's tree not listed"
+expect_not_deployed "origin/main's tree not listed"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "origin/main's tree not listed: switched"
+
 # Main's tree that cannot be written out, here as git refuses the archive or mktemp the folder, stops before anything
 # runs, and leaves no folder behind.
 begin_case "main's tree not written out"

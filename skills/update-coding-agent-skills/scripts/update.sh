@@ -302,7 +302,7 @@ if ! git_quiet rev-parse --git-dir; then
 fi
 # The update runs deploy.py in the folder it was given, which is deploy.py at the root of main's tree only when that
 # folder is the clone's top folder: a folder inside it, which git reads as the clone too, is refused, naming the folder
-# git reads it as.
+# git reads it as. A stated limit: a git folder whose core.worktree names another folder has no prefix, so it passes.
 if ! git_quiet rev-parse --show-prefix; then
   echo "FAILED cannot read where $CLONE is in its clone: ${GIT_REASON:-git answered no}"
   exit 1
@@ -315,10 +315,14 @@ fi
 # first argument names the tree or commit, the second the ref it was read from, for the reason. Nothing printed when it
 # is there; otherwise a FAILED line and exit 1, naming it missing when the tree holds nothing there, naming the mode git
 # records when it holds something else, such as a folder or a link, and naming git's reason when git cannot answer.
-# ls-tree prints "<mode> <type> <object>", a tab, and the path, and only an entry whose path is deploy.py itself counts.
+# ls-tree lists the tree's root, each entry as "<mode> <type> <object>", a tab, and the path, quoting a path that holds a
+# tab or a line break, and only the entry whose path is deploy.py itself counts. It is given no path to match: git reads
+# an inherited GIT_ICASE_PATHSPECS or GIT_GLOB_PATHSPECS as pathspec magic, which ls-tree refuses, and would fail on it.
+# A stated limit: the tree is git's, and the deployment runs the file on disk, so a deploy.py hidden from the working
+# tree by sparse checkout or skip-worktree passes here and fails the deployment after the switch to main.
 require_deploy_py() {
   local line entry=
-  if ! git_quiet ls-tree --full-tree "$1" -- deploy.py; then
+  if ! git_quiet ls-tree --full-tree "$1"; then
     echo "FAILED cannot read deploy.py at the root of $2 in $CLONE: ${GIT_REASON:-git answered no}"
     exit 1
   fi
