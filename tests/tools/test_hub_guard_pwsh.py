@@ -478,6 +478,17 @@ class CommandNameTests(unittest.TestCase):
             ("C:\\mods\\M.psm1\\Set-Location", None, True),
             ("sub\\Place.psm1\\Enter-Place", None, True),
             ("C:\\x\\a-b", None, True),
+            # A module by its path, a folder holding / or a .psm1 or .psd1 by any separator, runs the command it exports
+            # by whatever name, git's and a program's included.
+            ("/opt/f/Fn2.psm1\\goplace", None, True),
+            ("/opt/f/git\\git", None, True),
+            ("/opt/f/git/git.psm1\\git", None, True),
+            ("C:/Program Files/Git/cmd\\git.exe", None, True),
+            ("C:\\mods\\M.psm1\\goplace", None, True),
+            ("C:\\mods\\M.psd1\\git", None, True),
+            ("Place.psm1\\goplace", None, True),
+            (".\\Place.psm1\\goplace", None, True),
+            ("/opt/f/x\\a/b", None, True),
             # . or .. before a single backslash names a file, which PowerShell runs as a program, and so does a name
             # whose last part is a program's.
             (".\\Set-Location", None, False),
@@ -488,10 +499,55 @@ class CommandNameTests(unittest.TestCase):
             ("tools\\git", None, False),
             ("C:\\tools\\git", None, False),
             ("tools\\dotnet-format.exe", None, False),
+            # A module folder by a path of backslashes alone, with a command of no hyphen, the text cannot tell from a
+            # program's path: a stated limit.
+            ("C:\\mods\\Place\\goplace", None, False),
         ):
             with self.subTest(name=name):
                 self.assertEqual(cmdlet, hub_guard.powershell_cmdlet(name))
                 self.assertEqual(own, hub_guard.powershell_command(name))
+        # A module by its path whose last part is also a program's name may be that program, on Windows as
+        # C:/Program Files/Git/cmd\git.exe is, so its git call is read too.
+        for name, program in (
+            ("/opt/f/git\\git", True),
+            ("C:/Program Files/Git/cmd\\git.exe", True),
+            ("C:\\mods\\M.psd1\\git", True),
+            ("/opt/f/Fn2.psm1\\goplace", True),
+            ("/opt/f/Fn2.psm1\\Enter-Place", False),
+            ("Microsoft.PowerShell.Management\\Set-Location", False),
+            ("tools\\git", False),
+            ("git", False),
+        ):
+            with self.subTest(name=name, program=program):
+                self.assertEqual(program, hub_guard.also_a_program(name))
+
+    def test_a_command_of_a_module_by_its_path_runs_whatever_its_name(self) -> None:
+        # pwsh runs <module path>\<name> as the command that module exports by that name, a function named as no
+        # cmdlet is, or as git, included, from a .psm1 and from a module folder alike.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            mover = "function goplace { param($Where) Set-Location -LiteralPath $Where }\n"
+            (folder / "Fn2.psm1").write_text(mover, encoding="utf-8")
+            (folder / "git").mkdir()
+            (folder / "git" / "git.psm1").write_text(
+                "function git { param($Where) Set-Location -LiteralPath $Where }\n", encoding="utf-8"
+            )
+            base = folder.as_posix()
+            names = [f"{base}/Fn2.psm1\\goplace", f"{base}/git\\git", f"{base}/git/git.psm1\\git"]
+            script = (
+                "$names = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+                "$target = (Get-Item -LiteralPath $PSHOME).FullName; "
+                "ConvertTo-Json -Compress -InputObject @(foreach ($name in $names) { "
+                "Set-Location -LiteralPath ([IO.Path]::GetTempPath()); "
+                "& $name $target; "
+                "(Get-Location).Path -eq $target })"
+            )
+            moved = json.loads(pwsh(script, json.dumps(names)))
+        for name, followed in zip(names, moved, strict=True):
+            with self.subTest(name=name):
+                self.assertTrue(followed)
+                self.assertTrue(hub_guard.powershell_command(name))
+                self.assertIsNone(hub_guard.powershell_cmdlet(name))
 
     def test_each_alias_the_table_gives_a_cmdlet_is_the_one_powershell_gives_it(self) -> None:
         aliases = [name for name, cmdlet in hub_guard.POWERSHELL_COMMANDS.items() if name != cmdlet]

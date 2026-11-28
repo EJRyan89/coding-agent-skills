@@ -3911,14 +3911,34 @@ def qualified_name(name: str) -> tuple[str, str] | None:
     commands (powershell_command) after the last backslash, and everything before it the module. PowerShell takes a
     module there by its name, by none, as in \\Set-Location, or by its path, a folder, a .psd1, or a .psm1, as in
     ./Place.psm1\\Enter-Place, and runs that module's command; which a path or a drive names, on Windows as elsewhere,
-    the text does not settle, so every such module part is one, never matching the module that defines a cmdlet. Any
-    other name is None: one with no backslash, one whose last part is a program's name, as C:\\tools\\git, and . or ..
-    before a single backslash, as .\\Set-Location, a file pwsh runs as a program."""
+    the text does not settle, so every such module part is one, never matching the module that defines a cmdlet. A
+    module by its path (module_path) runs the command it exports by whatever name, git's included. Any other name is
+    None: one with no backslash, one whose last part is a program's name, as C:\\tools\\git, and . or .. before a
+    single backslash, as .\\Set-Location, a file pwsh runs as a program."""
     lowered = name.lower()
     module, separator, command = lowered.rpartition("\\")
-    if not separator or "/" in command or module in {".", ".."} or not powershell_command(command):
+    if not separator:
+        return None
+    if module_path(module):
+        return module, command
+    if "/" in command or module in {".", ".."} or not powershell_command(command):
         return None
     return module, command
+
+
+def module_path(module: str) -> bool:
+    """Whether the part of a name before its last backslash names a module by its path: one holding /, which no
+    program's path written with backslashes does, or whose last part is a module file, a .psm1 or a .psd1, by any
+    separator. A module folder by a path of backslashes alone the text cannot tell from a program's folder."""
+    return "/" in module or module.rpartition("\\")[2].endswith((".psm1", ".psd1"))
+
+
+def also_a_program(name: str) -> bool:
+    """Whether a name of a module by its path, which PowerShell may run as that module's command, may also be a
+    program, its last part a name PowerShell keeps for none of its own commands, as C:/Program Files/Git/cmd\\git.exe
+    is on Windows: its git call is read as well, and the location is left where the text does not settle."""
+    module, separator, command = name.lower().rpartition("\\")
+    return bool(separator) and module_path(module) and not powershell_command(command)
 
 
 def powershell_cmdlet(name: str) -> str | None:
@@ -4205,7 +4225,7 @@ class PowerShellReader:
         if isinstance(command, dict):
             self.read_redirections(command, directory)
         words = self.words(command)
-        if words[0] is not None and not powershell_command(words[0]):
+        if words[0] is not None and (not powershell_command(words[0]) or also_a_program(words[0])):
             self.read_native(words, directory)
 
     def read_statement(self, statement: Any, directory: Directory) -> Directory:
@@ -4337,8 +4357,10 @@ class PowerShellReader:
         effect = self.effect(command)
         name, *arguments = self.words(command)
         if effect is Effect.UNREAD:
-            if command.get("invocation") == "Dot" and name is not None and not powershell_runs_itself(name):
-                # A program dot-sourced into the session runs as it would without the dot, git among them.
+            dotted = command.get("invocation") == "Dot" and name is not None and not powershell_runs_itself(name)
+            if dotted or (name is not None and also_a_program(name)):
+                # A program dot-sourced into the session runs as it would without the dot, git among them; and a
+                # module's command by its path may be the program its name ends in.
                 self.read_native([name, *arguments], directory)
             return certain(UNREAD_CODE)
         outcome = certain(directory)

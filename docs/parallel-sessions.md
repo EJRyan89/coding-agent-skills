@@ -651,7 +651,9 @@ The configuration's limits:
   module but the one that defines it, by none, or by a module's path, a folder, a `.psd1`, or a `.psm1`, as
   `Microsoft.PowerShell.Utility\Set-Location`, `\Set-Location`, or `./Place.psm1\Enter-Place`, which PowerShell loads
   and runs a command of, with everything before the last backslash taken as that module, a drive and `~` included,
-  as `C:\tools\Set-Location` is, and a script
+  as `C:\tools\Set-Location` is, any name after a module by a path holding `/` or naming a `.psm1` or `.psd1`, as
+  `<folder>/Place.psm1\goplace` or `<folder>/git\git`, which runs the command that module exports by that name, its git
+  call read as well where the name is also a program's, as `C:/Program Files/Git/cmd\git.exe` is, and a script
   file, whose name ends in `.ps1`, which PowerShell runs in the session, run code the guard does not read, which may
   move the location now or define a function by a location cmdlet's name that a later command runs before the
   cmdlet, so no command after one settles where the location is. Each command is judged by the one decision it is
@@ -793,6 +795,8 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - an assignment before a shell that runs a script, as `GIT_DIR=<dir> bash -c 'git ...'` or
   `env GIT_DIR=<dir> bash -c '...'`, which the script's git inherits;
 - in PowerShell, an assignment a wrapper hands git through another wrapper, as `env GIT_DIR=<dir> timeout 5 git ...`;
+- in PowerShell, a module folder given by a path of backslashes alone before a command whose name has no hyphen, as
+  `C:\mods\Place\goplace`, which the text cannot tell from a program's path and is read as that program;
 - a script a shell reads from its standard input, from a here-document or a pipe, as `bash <<'EOF'` or
   `echo '...' | bash`;
 - where a here-document's delimiter line, or its delimiter word, ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere

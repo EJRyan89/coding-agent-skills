@@ -4779,6 +4779,38 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         # . or .. before a single backslash names a file, which pwsh runs as a program, so the commit stays put.
         self.assertIsNone(self.powershell(f".\\Set-Location '{self.hub}'; git commit -m x", self.tree))
 
+    def test_a_command_of_a_module_by_its_path_leaves_the_commit_after_it_unplaced_whatever_its_name(self) -> None:
+        # pwsh runs <module path>\<name> as the command the module exports by that name, a function named as no cmdlet
+        # is, or as git, included; the guard once read such a name as a program, or as git, when its last part had no
+        # hyphen, and the commit after a module's goplace ran in the hub.
+        modules = self.root / "modules"
+        (modules / "git").mkdir(parents=True)
+        (modules / "Fn2.psm1").write_text("function goplace { param($Where) Set-Location $Where }\n", encoding="utf-8")
+        (modules / "git" / "git.psm1").write_text(f"function git {{ git -C '{self.hub}' commit -m x }}\n", "utf-8")
+        folder = modules.as_posix()
+        for command in (
+            f"{folder}/Fn2.psm1\\goplace '{self.hub}'; git commit -m x",
+            f"& '{folder}/Fn2.psm1\\goplace' '{self.hub}'; git commit -m x",
+            f"git status && {folder}/Fn2.psm1\\goplace '{self.hub}' && git commit -m x",
+            f"{folder}/git\\git status; git commit -m x",
+            f"{folder}/git/git.psm1\\git status; git commit -m x",
+            f"& '{folder}/git\\git' status; git commit -m x",
+            f"C:\\mods\\M.psm1\\goplace '{self.hub}'; git commit -m x",
+        ):
+            for through in ("PowerShell", "pwsh -c"):
+                with self.subTest(command=command, through=through):
+                    if through == "PowerShell":
+                        outcome = self.powershell(command, self.tree)
+                    else:
+                        outcome = self.bash("pwsh -NoProfile -c " + shlex.quote(command), self.tree)
+                    self.assertEqual("deny", outcome)
+                    self.assertIn(UNPLACED.format("commit"), self.reason)
+        # Its last part a program's name, the name may also be that program, as C:/Program Files/Git/cmd\git.exe is on
+        # Windows, so its git call is read as one too.
+        self.assertEqual("deny", self.powershell(f"{folder}/git\\git commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell(f"{folder}/git\\git status", self.hub))
+
     def test_a_chain_follows_each_operator_to_the_side_it_runs_on(self) -> None:
         # The pipeline after && runs where the one before it succeeded, and the one after || where it failed. A move to
         # a folder that is not there yet may do either: after &&, the commit runs in that folder, outside every
