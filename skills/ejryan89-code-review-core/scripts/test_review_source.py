@@ -1075,26 +1075,61 @@ class CommandTests(LazySnapshotFixture):
         state.mkdir()
         self.assertEqual((1, [f"FAILED {run_root}'s run.json is not a file"]), self.main(*arguments))
 
-    def test_a_run_json_whose_name_is_absent_for_a_moment_is_read_after_short_waits(self) -> None:
+    def test_a_run_json_whose_name_is_absent_for_a_moment_is_found_and_read_after_short_waits(self) -> None:
         # Holds on every platform, by injected refusals: `check` replaces run.json while a reviewer's source command
-        # reads it, and on Windows the replace may hide the name for a moment, in bursts under load, so the run's read
-        # of run.json waits it out rather than refusing the run as one it could not read. The presence check before
-        # it is not injected here.
+        # reads it, and on Windows the replace may hide the name for a moment, in bursts under load. Every stat and
+        # read of run.json finds no file until two waits have passed, so the presence check that runs first and the
+        # read after it both wait the name out, rather than refusing a run that holds run.json throughout.
         state = self.run_directory / review_guard.RUN_FILE
-        real_read_text = Path.read_text
-        absent: list[Path] = []
+        real_stat, real_read_text = Path.stat, Path.read_text
         waits: list[float] = []
+        absent: list[str] = []
+
+        def hidden(path: Path, call: str) -> None:
+            if path == state and len(waits) < 2:
+                absent.append(call)
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+
+        def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            hidden(path, "stat")
+            return real_stat(path, *args, **kwargs)
 
         def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
-            if path == state and len(absent) < 2:
-                absent.append(path)
-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+            hidden(path, "read")
             return real_read_text(path, *args, **kwargs)
 
-        with mock.patch.object(Path, "read_text", read_text), mock.patch.object(time, "sleep", waits.append):
+        with (
+            mock.patch.object(Path, "stat", stat),
+            mock.patch.object(Path, "read_text", read_text),
+            mock.patch.object(time, "sleep", waits.append),
+        ):
             found = review_source._run(self.run_directory, "generic-review")
-        self.assertEqual(([0.01, 0.02], 2), (waits, len(absent)))
+        self.assertEqual([0.01, 0.02], waits)
+        self.assertIn("stat", absent, "the presence check met the absent name first")
         self.assertEqual(review_source._run(self.run_directory, "generic-review"), found)
+
+    def test_a_run_json_missing_throughout_is_refused_as_no_run_after_the_waits_and_a_folder_at_once(self) -> None:
+        # Holds on every platform: the presence check's waits are for a name hidden for a moment, so a run.json that
+        # is missing throughout is refused as before, a folder that holds no run, once they are spent, and something
+        # of the wrong kind in its place is refused at once, as not a file.
+        run_root, state = self.run_directory.resolve(), self.run_directory / review_guard.RUN_FILE
+        arguments = ("source-file", "--run", str(self.run_directory), "--role", "generic-review", "--path=src/a.py")
+        state.unlink()
+        for kind, expected, back_off in (
+            (
+                "missing",
+                f"FAILED {run_root} is not a review run: it holds no run.json file",
+                [0.01, 0.02, 0.04, 0.08, 0.16],
+            ),
+            ("a folder", f"FAILED {run_root}'s run.json is not a file", []),
+        ):
+            with self.subTest(kind=kind):
+                if kind == "a folder":
+                    state.mkdir()
+                waits: list[float] = []
+                with mock.patch.object(time, "sleep", waits.append):
+                    self.assertEqual((1, [expected]), self.main(*arguments))
+                self.assertEqual(back_off, waits)
 
     def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
         # The run names no repository, as a whole snapshot's run does, so only the files the snapshot's manifest
