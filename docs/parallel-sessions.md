@@ -629,8 +629,9 @@ The configuration's limits:
   does not name, a cast to another type, a script block handed to any other command, or an assignment to the
   environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
   calls and its redirections read, each placed where the text does not settle once any command in it may move the
-  location. A cmdlet's name qualified, in any case, by the module that defines it (`POWERSHELL_MODULES`, held to
-  `Get-Command`), as `Microsoft.PowerShell.Management\Set-Location`, is read as the cmdlet. A command is read as git,
+  location. A cmdlet's name qualified, in any case, by the name of the module that defines it (`POWERSHELL_MODULES`,
+  held to `Get-Command`), as `Microsoft.PowerShell.Management\Set-Location`, is read as the cmdlet; qualified by that
+  module's path, it is not followed. A command is read as git,
   as `gh`, as a location cmdlet, followed as Bash's `cd`, `pushd`, and `popd` are to a literal file-system path given
   by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, any other parameter, as `-StackName`, leaving
   the location and the stack unknown, or as one
@@ -645,9 +646,12 @@ The configuration's limits:
   `ForEach-Object` given a member's name, and a name PowerShell keeps for its own commands, an alias or a function of
   its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory, whatever its verb,
   since a module PowerShell loads on demand may define a function by it, as Windows' own modules define
-  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), such a name or
-  an alias qualified by another module or by none, as `Microsoft.PowerShell.Utility\Set-Location` or `\Set-Location`,
-  which PowerShell runs as a command of its own where one answers to it, and a script
+  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe`, or as a path with forward
+  slashes alone or a single backslash after `.` or `..`), such a name or an alias after a backslash, qualified by any
+  module but the one that defines it, by none, or by a module's path, a folder, a `.psd1`, or a `.psm1`, as
+  `Microsoft.PowerShell.Utility\Set-Location`, `\Set-Location`, or `./Place.psm1\Enter-Place`, which PowerShell loads
+  and runs a command of, with everything before the last backslash taken as that module, a drive and `~` included,
+  as `C:\tools\Set-Location` is, and a script
   file, whose name ends in `.ps1`, which PowerShell runs in the session, run code the guard does not read, which may
   move the location now or define a function by a location cmdlet's name that a later command runs before the
   cmdlet, so no command after one settles where the location is. Each command is judged by the one decision it is

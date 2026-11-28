@@ -3906,16 +3906,17 @@ def powershell_command(name: str) -> bool:
 
 
 def qualified_name(name: str) -> tuple[str, str] | None:
-    """The module and the command a module-qualified PowerShell name names, lower-cased, as
-    Microsoft.PowerShell.Management\\Set-Location names Set-Location of that module: one backslash, before it a module
-    part holding no drive, no provider, and no other separator, which may be empty, as in \\Set-Location, and after it a
-    name PowerShell keeps for its own commands (powershell_command). Any other name is None: one with no backslash, and
-    a path, as C:\\tools\\git, tools\\git, or .\\Set-Location, which names a file."""
+    """The module and the command a module-qualified PowerShell name may name, lower-cased, as
+    Microsoft.PowerShell.Management\\Set-Location names Set-Location of that module: a name PowerShell keeps for its own
+    commands (powershell_command) after the last backslash, and everything before it the module. PowerShell takes a
+    module there by its name, by none, as in \\Set-Location, or by its path, a folder, a .psd1, or a .psm1, as in
+    ./Place.psm1\\Enter-Place, and runs that module's command; which a path or a drive names, on Windows as elsewhere,
+    the text does not settle, so every such module part is one, never matching the module that defines a cmdlet. Any
+    other name is None: one with no backslash, one whose last part is a program's name, as C:\\tools\\git, and . or ..
+    before a single backslash, as .\\Set-Location, a file pwsh runs as a program."""
     lowered = name.lower()
-    module, separator, command = lowered.partition("\\")
-    if not separator or "\\" in command or "/" in lowered or ":" in module or module in {".", ".."}:
-        return None
-    if module.startswith("~") or not powershell_command(command):
+    module, separator, command = lowered.rpartition("\\")
+    if not separator or "/" in command or module in {".", ".."} or not powershell_command(command):
         return None
     return module, command
 

@@ -410,7 +410,7 @@ class CommandNameTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
-        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\a-b"):
+        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\git"):
             with self.subTest(name=name):
                 self.assertFalse(hub_guard.powershell_command(name))
 
@@ -434,6 +434,24 @@ class CommandNameTests(unittest.TestCase):
                 with self.subTest(cmdlet=cmdlet):
                     self.assertEqual(cmdlet, qualified.lower())
 
+    def test_a_cmdlet_qualified_by_its_module_path_is_one_pwsh_runs_and_the_guard_does_not_follow(self) -> None:
+        # pwsh runs a cmdlet qualified by its module's folder or manifest as the cmdlet, so the guard, which follows a
+        # qualified cmdlet only by the module's name, reads either as a command it does not read.
+        script = (
+            "$base = (Get-Module -ListAvailable Microsoft.PowerShell.Management | Select-Object -First 1).ModuleBase; "
+            "$manifest = Join-Path $base 'Microsoft.PowerShell.Management.psd1'; "
+            "$target = (Get-Item -LiteralPath $PSHOME).FullName; "
+            "ConvertTo-Json -Compress -InputObject @(foreach ($module in $base, $manifest) { "
+            "Set-Location -LiteralPath $base; "
+            '& "$module\\Set-Location" -LiteralPath $target; '
+            ', @("$module\\Set-Location", ((Get-Location).Path -eq $target)) })'
+        )
+        for name, moved in json.loads(pwsh(script)):
+            with self.subTest(name=name):
+                self.assertTrue(moved)
+                self.assertIsNone(hub_guard.powershell_cmdlet(name))
+                self.assertTrue(hub_guard.powershell_command(name))
+
     def test_a_qualified_name_names_a_cmdlet_only_by_the_module_that_defines_it(self) -> None:
         for name, cmdlet, own in (
             ("Microsoft.PowerShell.Management\\Set-Location", "set-location", True),
@@ -447,15 +465,28 @@ class CommandNameTests(unittest.TestCase):
             ("Microsoft.PowerShell.Management\\cd", None, True),
             ("SomeModule\\Invoke-Something", None, True),
             ("Microsoft.PowerShell.Utility\\Invoke-Expression", None, True),
-            # A path names a file, which PowerShell runs as a program.
+            # A module by its path, a folder, a .psd1, or a .psm1, which PowerShell loads to run its command, and a
+            # module part the text does not settle, ~, a drive, or several folders, which pwsh on Windows may read as
+            # one.
+            ("/usr/local/microsoft/powershell/7/Modules/Microsoft.PowerShell.Management\\Set-Location", None, True),
+            ("/opt/m/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1\\Set-Location", None, True),
+            ("./Place.psm1\\Enter-Place", None, True),
+            ("tools/x\\Set-Location", None, True),
+            ("~\\Set-Location", None, True),
+            ("C:\\tools\\Set-Location", None, True),
+            ("C:/mods/M.psm1\\Set-Location", None, True),
+            ("C:\\mods\\M.psm1\\Set-Location", None, True),
+            ("sub\\Place.psm1\\Enter-Place", None, True),
+            ("C:\\x\\a-b", None, True),
+            # . or .. before a single backslash names a file, which PowerShell runs as a program, and so does a name
+            # whose last part is a program's.
             (".\\Set-Location", None, False),
             ("..\\Set-Location", None, False),
-            ("~\\Set-Location", None, False),
-            ("C:\\tools\\Set-Location", None, False),
             ("C:Set-Location\\x", None, False),
-            ("tools/x\\Set-Location", None, False),
             ("Microsoft.PowerShell.Management\\Set-Location\\", None, False),
+            ("Microsoft.PowerShell.Management\\a/Set-Location", None, False),
             ("tools\\git", None, False),
+            ("C:\\tools\\git", None, False),
             ("tools\\dotnet-format.exe", None, False),
         ):
             with self.subTest(name=name):
