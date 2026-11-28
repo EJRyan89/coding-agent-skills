@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import errno
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -272,16 +273,19 @@ RACE_SECONDS = 5
 class ReadMeetingAReplaceTests(unittest.TestCase):
     """A read of a file another process replaces through atomic_file while it reads, as a reviewer guard reads a run's
     run.json while `check` replaces it. On Windows, an open that meets the replace may be refused with
-    PermissionError, as CI's Windows runner showed for Python's own open, so read_file tries a refused read again."""
+    PermissionError, or with FileNotFoundError while the name is absent for a moment, as CI's Windows runner showed
+    for Python's own open, so read_file told the file is `replaced` tries a refused read again."""
 
     def test_every_read_file_of_a_file_another_process_keeps_replacing_reads_one_whole_file(self) -> None:
         # Holds on Windows: the reader loops over Python's open and json_reader.read_file, pausing a millisecond after
         # each pair so the writer is not starved, while the writer loops over atomic_file.replace_bytes. Every read
         # either gives an object some replace wrote, whole, or is refused; read_file is never refused. A refusal of
         # Python's own open, which read_file tries again, is counted and printed, with the reads and replaces, as a
-        # validation note, so each run shows the race the retry answers.
+        # validation note, so each run shows the race the retry answers: its PermissionErrors and its
+        # FileNotFoundErrors, the absent name CI's Windows runner showed in bursts under load, are each counted.
         reads: collections.Counter[str] = collections.Counter()
         refusals: collections.Counter[str] = collections.Counter()
+        kinds: collections.Counter[tuple[str, str]] = collections.Counter()
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "run.json"
             path.write_bytes(b'{"replace": 0}')
@@ -294,11 +298,12 @@ class ReadMeetingAReplaceTests(unittest.TestCase):
             try:
                 self.assertEqual("ready\n", writer.stdout.readline(), "the writer did not start")
                 while writer.poll() is None:
-                    for name, read in (("open", self.read_through_open), ("read_file", read_file)):
+                    for name, read in (("open", self.read_through_open), ("read_file", self.read_replaced)):
                         try:
                             value = read(path)
                         except OSError as error:
                             refusals[self.refusal(name, error)] += 1
+                            kinds[name, type(error).__name__] += 1
                         else:
                             self.assertIsInstance(value, dict, f"{name} read part of a file")
                             self.assertIsInstance(value.get("replace"), int, f"{name} read part of a file")
@@ -314,7 +319,8 @@ class ReadMeetingAReplaceTests(unittest.TestCase):
             note_line(
                 f"json_reader race on Windows: {reads['open']} reads through open and {reads['read_file']} through "
                 f"read_file met {summary['made']} replaces ({summary['refused']} replaces refused past their waits); "
-                f"refused reads: {dict(refusals) or 'none'}"
+                f"open refused with PermissionError {kinds['open', 'PermissionError']} and with FileNotFoundError "
+                f"{kinds['open', 'FileNotFoundError']} times; refused reads: {dict(refusals) or 'none'}"
             )
         )
         self.assertGreater(summary["made"], 0, "the writer replaced the file")
@@ -328,6 +334,10 @@ class ReadMeetingAReplaceTests(unittest.TestCase):
             return loads(held.read())
 
     @staticmethod
+    def read_replaced(path: Path) -> Any:
+        return read_file(path, replaced=True)
+
+    @staticmethod
     def refusal(name: str, error: OSError) -> str:
         return f"{name}: {type(error).__name__} errno {error.errno} winerror {getattr(error, 'winerror', None)}"
 
@@ -337,12 +347,18 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
     through atomic_file."""
 
     def read(
-        self, refusals: int | None, failure: BaseException | None = None, interrupt: BaseException | None = None
+        self,
+        refusals: int | None,
+        failure: BaseException | None = None,
+        interrupt: BaseException | None = None,
+        *,
+        refused_with: tuple[type[OSError], ...] = (PermissionError,),
+        replaced: bool = False,
     ) -> tuple[Any, list[float], int]:
-        """read_file of a file whose read is refused with PermissionError `refusals` times, or every time for None,
-        then fails with `failure` if given, with each wait raising `interrupt` if given. The file is replaced with a
-        new one at the first refusal, as the replace a refused read meets puts it in place. Returns what read_file gave
-        or raised, the waits, and the tries."""
+        """read_file, told the file is `replaced` if so, of a file whose read is refused `refusals` times, or every
+        time for None, each try with the next of `refused_with` in turn, then fails with `failure` if given, with each
+        wait raising `interrupt` if given. The file is replaced with a new one at the first refusal, as the replace a
+        refused read meets puts it in place. Returns what read_file gave or raised, the waits, and the tries."""
         real_read_bytes = Path.read_bytes
         tries: list[Path] = []
         waits: list[float] = []
@@ -353,7 +369,9 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
             tries.append(self)
             if refusals is None or len(tries) <= refusals:
                 self.write_bytes(b'{"replace": 2}')
-                refused.append(PermissionError(errno.EACCES, "Permission denied", str(self)))
+                kind = refused_with[(len(tries) - 1) % len(refused_with)]
+                code = errno.ENOENT if issubclass(kind, FileNotFoundError) else errno.EACCES
+                refused.append(kind(code, os.strerror(code), str(self)))
                 raise refused[-1]
             if failure is not None:
                 raise failure
@@ -369,7 +387,7 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
             path.write_bytes(b'{"replace": 1}')
             with mock.patch.object(Path, "read_bytes", read_bytes), mock.patch.object(time, "sleep", wait):
                 try:
-                    value: Any = read_file(path)
+                    value: Any = read_file(path, replaced=True) if replaced else read_file(path)
                 except (OSError, KeyboardInterrupt) as error:
                     value = error
         self.assertEqual(1, len(set(tries)), "every try reads the one file")
@@ -403,6 +421,58 @@ class ReadRefusedForAMomentTests(unittest.TestCase):
     def test_an_interrupt_in_a_wait_is_raised(self) -> None:
         interrupt = KeyboardInterrupt()
         self.assertEqual((interrupt, [0.01], 1), self.read(None, interrupt=interrupt))
+        self.assertEqual(
+            (interrupt, [0.01], 1),
+            self.read(None, interrupt=interrupt, refused_with=(FileNotFoundError,), replaced=True),
+        )
+
+    def test_a_replaced_file_whose_name_is_absent_for_a_while_reads_the_new_file_whole_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals: Windows may hide the name of a file another process replaces,
+        # in bursts under load, so a read told the file is replaced tries an absent name again, alone or between
+        # PermissionErrors, after the same waits.
+        self.assertEqual(
+            ({"replace": 2}, [0.01, 0.02, 0.04], 4), self.read(3, refused_with=(FileNotFoundError,), replaced=True)
+        )
+        self.assertEqual(
+            ({"replace": 2}, [0.01, 0.02, 0.04, 0.08], 5),
+            self.read(4, refused_with=(PermissionError, FileNotFoundError), replaced=True),
+        )
+        self.assertEqual(({"replace": 1}, [], 1), self.read(0, replaced=True), "a read not refused never waits")
+
+    def test_a_replaced_file_absent_throughout_raises_the_last_refusal_after_the_bounded_back_off(self) -> None:
+        # Holds on every platform. The same five waits, 0.31 s in all, as for a PermissionError.
+        raised, waits, tries = self.read(None, refused_with=(FileNotFoundError,), replaced=True)
+        self.assertIs(self.refused[-1], raised, "the last try's refusal is raised as it was")
+        self.assertEqual(([0.01, 0.02, 0.04, 0.08, 0.16], 6), (waits, tries))
+
+    def test_an_absent_name_of_a_file_not_said_to_be_replaced_raises_at_once(self) -> None:
+        # Holds on every platform: a missing file, the ordinary state of one no writer has made, is not waited for
+        # unless the caller says another process replaces the file, whether it comes first or after refusals.
+        raised, waits, tries = self.read(None, refused_with=(FileNotFoundError,))
+        self.assertEqual((self.refused[0], [], 1), (raised, waits, tries))
+        raised, waits, tries = self.read(None, refused_with=(PermissionError, FileNotFoundError))
+        self.assertEqual((self.refused[1], [0.01], 2), (raised, waits, tries))
+
+    def test_a_file_that_never_existed_raises_at_once_unless_it_is_said_to_be_replaced(self) -> None:
+        # Holds on every platform, through the file system: no read is injected.
+        waits: list[float] = []
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(time, "sleep", waits.append):
+            missing = Path(temporary) / "run.json"
+            with self.assertRaises(FileNotFoundError):
+                read_file(missing)
+            self.assertEqual([], waits, "a file that never existed is not waited for")
+            with self.assertRaises(FileNotFoundError):
+                read_file(missing, replaced=True)
+            self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits, "a replaced file's absent name is waited out")
+
+    def test_any_other_failure_of_a_replaced_file_is_raised_as_it_was_and_never_tried_again(self) -> None:
+        # Holds on every platform: a replaced file's read tries again a PermissionError and a FileNotFoundError alone.
+        for failure in (IsADirectoryError(errno.EISDIR, "Is a directory"), OSError("synthetic read")):
+            with self.subTest(failure=repr(failure)):
+                self.assertEqual((failure, [], 1), self.read(0, failure, replaced=True))
+                self.assertEqual(
+                    (failure, [0.01, 0.02], 3), self.read(2, failure, refused_with=(FileNotFoundError,), replaced=True)
+                )
 
 
 class AcceptanceTests(unittest.TestCase):

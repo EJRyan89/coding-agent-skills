@@ -316,8 +316,9 @@ def load_run(run: Path) -> RunState:
     missing, unknown, or of the wrong kind or shape fails with a PipelineFieldError naming the first such field.
 
     A run prepared before an optional field was recorded loads without it, as each step that reads the field expects.
+    Its read of run.json is marked `replaced`, since dispatch and the host replace the file while other steps load it.
     """
-    state = READ.json_object(read_json(run / RUN_FILE), "run")
+    state = READ.json_object(read_json(run / RUN_FILE, replaced=True), "run")
     if READ.integer(state.get("schema_version"), "run.schema_version") != RUN_SCHEMA_VERSION:
         raise PipelineError(f"{run} is not a prepared review run")
     return _read_run(READ.json_object(state, "run", required=RUN_FIELDS, optional=RUN_OPTIONAL_FIELDS))

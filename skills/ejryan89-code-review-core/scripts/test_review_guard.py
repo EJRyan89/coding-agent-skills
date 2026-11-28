@@ -375,6 +375,34 @@ class WithheldInputTests(GuardFixture):
                     rf"^the review run {re.escape(str(self.run_directory))} could not be read: \S",
                 )
 
+    def test_a_run_json_whose_name_is_absent_for_a_moment_is_read_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals: `check` replaces run.json while the guard reads it, and on
+        # Windows the replace may hide the name for a moment, in bursts under load, so each of the guard's reads of
+        # run.json tries an absent name again after atomic_file.while_refused's waits rather than denying the call.
+        for name, read in (("roles", guard._roles), ("restricted", guard._restricted)):
+            with self.subTest(read=name):
+                value, waits, absent = self.read_with_run_json_absent(read, 2)
+                self.assertEqual(([0.01, 0.02], 2), (waits, absent))
+                self.assertEqual(read(self.run_directory), value)
+
+    def read_with_run_json_absent(self, read: Any, times: int) -> tuple[Any, list[float], int]:
+        """What `read` gives for the run while run.json's read raises FileNotFoundError `times` times, the waits, and
+        the absent reads."""
+        real_read_bytes = Path.read_bytes
+        run_file = self.run_directory / "run.json"
+        absent: list[Path] = []
+        waits: list[float] = []
+
+        def read_bytes(path: Path) -> bytes:
+            if path == run_file and len(absent) < times:
+                absent.append(path)
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+            return real_read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", read_bytes), mock.patch.object(time, "sleep", waits.append):
+            value = read(self.run_directory)
+        return value, waits, len(absent)
+
     def test_a_malformed_restriction_denies_every_read(self) -> None:
         self.claim("csharp-review")
         malformed: list[Any] = [[], {"x": "csharp-review"}, {"x": [5]}]

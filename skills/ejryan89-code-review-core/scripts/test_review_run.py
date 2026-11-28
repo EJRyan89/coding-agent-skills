@@ -5,10 +5,13 @@ refused by name, by load_run and in the FAILED line of every step that reads the
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import io
 import json
+import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -104,6 +107,30 @@ def test_a_run_as_prepare_writes_it_loads_unchanged(tmp_path: Path) -> None:
     loaded = review_run.load_run(tmp_path)
     assert state == loaded
     assert json.dumps(state, sort_keys=True) == json.dumps(loaded, sort_keys=True)
+
+
+def test_a_run_json_whose_name_is_absent_for_a_moment_loads_after_short_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Holds on every platform, by injected refusals: dispatch and the host replace run.json while other steps load it,
+    # and on Windows the replace may hide the name for a moment, in bursts under load, so load_run waits it out.
+    state = prepared_state()
+    write_run(tmp_path, state)
+    run_file = tmp_path / review_run.RUN_FILE
+    real_read_text = Path.read_text
+    absent: list[Path] = []
+    waits: list[float] = []
+
+    def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == run_file and len(absent) < 2:
+            absent.append(path)
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(time, "sleep", waits.append)
+    assert state == review_run.load_run(tmp_path)
+    assert (waits, len(absent)) == ([0.01, 0.02], 2)
 
 
 def test_the_inline_seal_passes_over_only_folders_so_a_file_it_cannot_stat_is_still_sealed(tmp_path: Path) -> None:
