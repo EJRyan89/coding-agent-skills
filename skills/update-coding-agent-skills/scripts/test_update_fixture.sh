@@ -303,6 +303,18 @@ checkout_branch_deployer() {
   mv -- "$FIXTURE/branch deploy.py" "$CLONE/deploy.py"
   git_quiet -C "$CLONE" commit -a -m "another author's deploy.py"
 }
+# Moves the ref the second argument names, in the repository the first names, to a new commit on top of it whose tree
+# holds nothing at deploy.py, or, given a third argument, the entry "<mode> <type> <object>" it names, as a later commit
+# on main might. It writes objects and the ref alone, so the working tree and the branch a clone is on stay as they are.
+commit_deploy_py_as() {
+  local repository=$1 ref=$2 entries tree commit
+  entries=$(git -C "$repository" ls-tree "$ref" | awk -F '\t' '$2 != "deploy.py"')
+  [ -z "${3:-}" ] || entries+=$'\n'"$3"$'\t'"deploy.py"
+  tree=$(printf '%s\n' "$entries" | git -C "$repository" mktree)
+  commit=$(git -c user.name=Test -c user.email=test@example.invalid -C "$repository" commit-tree "$tree" -p "$ref" \
+    -m "deploy.py replaced")
+  git_quiet -C "$repository" update-ref "$ref" "$commit"
+}
 # The branch's deploy.py never ran, and main's read the pin with check.
 expect_main_deployer() {
   ! grep -q -e "^branch" "$FAKE_DEPLOY_LOG" || fail "$1: the branch's deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"

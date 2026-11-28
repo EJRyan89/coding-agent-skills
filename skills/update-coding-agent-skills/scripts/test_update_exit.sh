@@ -80,40 +80,44 @@ for CHANNEL in main release; do
   expect_not_deployed "git exits 128 on $CHANNEL"
 done
 
-# A folder in the place of deploy.py, the one file update.sh reads from the clone before git.
+# Something other than a regular file at deploy.py in main's tree, the one file update.sh runs from the clone: a folder,
+# or a link, which git records by its mode on every platform. Each is named with the mode git records, never as
+# missing, before anything runs; the branch the clone is on holds a regular deploy.py.
 begin_case 'directory in place of deploy.py'
 new_clone
-rm -f -- "$CLONE/deploy.py"
-mkdir -p "$CLONE/deploy.py"
+checkout_branch_deployer topic
+commit_deploy_py_as "$CLONE" refs/heads/main "040000 tree $(git -C "$CLONE" mktree </dev/null)"
 for CHANNEL in main release; do
   run_subject "$CLONE" "$CHANNEL"
   expect_named_exit "directory in place of deploy.py on $CHANNEL"
-  expect_not_deployed "directory in place of deploy.py on $CHANNEL"
-  expect_failed "FAILED deploy.py in $CLONE is not a file" "directory in place of deploy.py on $CHANNEL"
+  expect_nothing_run "directory in place of deploy.py on $CHANNEL"
+  expect_failed "FAILED deploy.py at the root of refs/heads/main in $CLONE is not a file: git holds a tree there, mode 040000" \
+    "directory in place of deploy.py on $CHANNEL"
 done
 
-# A link to nothing in deploy.py's place is nothing there, and a link that leads to itself a path the stat cannot
-# examine, named with the operating system's reason, never as missing. Git for Windows makes no such link unasked.
-case "${OSTYPE:-}" in
-  msys* | cygwin*) ;;
-  *)
-    begin_case 'links in place of deploy.py'
-    new_clone
-    rm -f -- "$CLONE/deploy.py"
-    ln -s "nowhere" "$CLONE/deploy.py"
-    run_subject "$CLONE" main
-    expect_failed "FAILED no deploy.py in $CLONE" "link to nothing in place of deploy.py"
-    rm -f -- "$CLONE/deploy.py"
-    ln -s "deploy.py" "$CLONE/deploy.py"
-    run_subject "$CLONE" main
-    expect_failed "FAILED deploy.py in $CLONE cannot be examined: Too many levels of symbolic links" \
-      "link loop in place of deploy.py"
-    expect_not_deployed "link loop in place of deploy.py"
-    ;;
-esac
+begin_case 'link in place of deploy.py'
+new_clone
+checkout_branch_deployer topic
+commit_deploy_py_as "$CLONE" refs/heads/main \
+  "120000 blob $(printf 'deploy.py' | git -C "$CLONE" hash-object -w --stdin)"
+run_subject "$CLONE" main
+expect_failed "FAILED deploy.py at the root of refs/heads/main in $CLONE is not a file: git holds a blob there, mode 120000" \
+  "link in place of deploy.py"
+expect_nothing_run "link in place of deploy.py"
 
-# A clone whose folder refuses a stat, mode 000, holds a deploy.py the update cannot examine: named with the operating
-# system's reason, never as missing. Windows judges no folder's mode, and root's stat passes any mode.
+# A folder in deploy.py's place in the working tree of a clone on main is a tracked file deleted: DIRTY, before
+# anything runs.
+begin_case 'directory in place of deploy.py in the working tree'
+new_clone
+rm -f -- "$CLONE/deploy.py"
+mkdir -p "$CLONE/deploy.py"
+run_subject "$CLONE" main
+expect_named_exit "directory in place of deploy.py in the working tree"
+expect_first_line "DIRTY" "directory in place of deploy.py in the working tree"
+expect_nothing_run "directory in place of deploy.py in the working tree"
+
+# A clone whose folder refuses a stat, mode 000, cannot be read by git: named with git's reason, never as missing.
+# Windows judges no folder's mode, and root's stat passes any mode.
 case "${OSTYPE:-}" in
   msys* | cygwin*) ;;
   *)
@@ -123,8 +127,9 @@ case "${OSTYPE:-}" in
       chmod 000 "$CLONE"
       run_subject "$CLONE" main
       chmod 755 "$CLONE"
-      expect_failed "FAILED deploy.py in $CLONE cannot be examined: Permission denied" "clone that cannot be examined"
-      expect_not_deployed "clone that cannot be examined"
+      expect_failed "FAILED cannot read $CLONE as a git repository: " "clone that cannot be examined"
+      grep -q -F "Permission denied" <<<"$OUTPUT" || fail "clone that cannot be examined: no reason: $OUTPUT"
+      expect_nothing_run "clone that cannot be examined"
     fi
     ;;
 esac
