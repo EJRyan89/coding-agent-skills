@@ -327,9 +327,9 @@ def _bound_commands() -> str:
 # command that module exports, alias or not, as pwsh runs it ($qualified); one whose last part names any other command
 # of pwsh's own, qualified by another module, a module's path, or none, as \Invoke-Expression, runs that module's
 # command, none, or one only running settles, and is unread (Get-Unqualified), but for a defining cmdlet's, as
-# \Set-Alias, which is refused as the cmdlet is; any other, as C:\tools\git, is a program's path. A source holding a form DEFINITIONS_REFUSED names is listed as {source, unread, refused}, the form,
-# and nothing more is read of the text it is found in (Find-Definition, and $definers for the cmdlets that define an
-# alias).
+# \Set-Alias, which is refused as the cmdlet is; any other, as C:\tools\git, is a program's path. A source holding a
+# form DEFINITIONS_REFUSED names is listed as {source, unread, refused}, the form, and nothing more is read of the text
+# it is found in (Find-Definition, and $definers for the cmdlets that define an alias).
 COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
