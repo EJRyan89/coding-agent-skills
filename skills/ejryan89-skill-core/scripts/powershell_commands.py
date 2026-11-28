@@ -9,6 +9,13 @@ Where a command's arguments name the program or the script it runs, as Start-Pro
 Invoke-Expression's do, COMMANDS_RUN binds them to its parameters as pwsh's parameter binder does, by BOUND_COMMANDS,
 in every way READ_MODES and REFUSED_MODES name, which NOT_READ completes. test_powershell_commands.py
 binds every form of every parameter of each with pwsh's own binder and holds the reading to it.
+
+A command called by the name of the module that defines it, as Microsoft.PowerShell.Utility\\Invoke-Expression, is
+read as that command, by the modules the running pwsh ships. A source that changes what a later name runs or binds,
+by each form DEFINITIONS_REFUSED names, such as Set-Alias or $PSDefaultParameterValues, is refused as a whole:
+COMMANDS_RUN lists it as unread, so validation's policy refuses it, and `read` raises PowerShellUnread, so audit-skill
+fails the script rather than read the commands the definition changes, as bash_syntax raises NotRead after
+expand_aliases. NOT_READ names the forms neither reads nor refuses.
 """
 
 from __future__ import annotations
@@ -206,9 +213,74 @@ CATALOGUE_TESTS = {
     "each bound command's parameters, aliases, and positions, as pwsh lists them": (
         "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_each_bound_command_s_table_is_what_pwsh_lists"
     ),
+    "the forms by which a source changes what a later name runs or binds": (
+        "skills/ejryan89-skill-core/scripts/test_powershell_commands.py::"
+        "test_every_form_that_changes_what_a_later_name_runs_is_refused_or_not_read"
+    ),
 }
-# The binding modes the reader leaves unread, each with why; every one is read or refused today.
-NOT_READ: dict[str, str] = {}
+# The cmdlets that define an alias, which a source calls by any name, alias, or module-qualified name of theirs, one
+# whose module part only running settles, as \Set-Alias, included.
+DEFINING_COMMANDS = ("Set-Alias", "New-Alias", "Import-Alias")
+# The cmdlet that maps a drive onto a provider, whose -PSProvider COMMANDS_RUN binds as pwsh's binder does, by the
+# parameters the running pwsh lists of it.
+DRIVE_COMMAND = "New-PSDrive"
+# The cmdlets that only read a drive's items: a constant naming a path on the alias: or function: drive that one of
+# them, by any name, is given, alone in its pipeline, is a read.
+READING_COMMANDS = ("Test-Path", "Get-ChildItem", "Get-Item", "Get-Content", "Get-Alias", "Get-Command")
+# The forms by which a source may change the command a later name runs or the arguments it binds, each with how; the
+# reader refuses a source holding one anywhere, since a function, a loop, or a string Invoke-Expression runs may carry
+# it to a command written before it. A defining cmdlet, and New-PSDrive given -PSProvider Alias, Function, or no
+# literal, are found by their command's name as COMMANDS_RUN resolves it. A drive is found by a variable on it, as
+# ${alias:name}, that is assigned, and by a constant naming a path on it, as alias:name or Alias::name, unless a
+# reading cmdlet alone in its pipeline is given it. The defaults are found by the variable, in any scope or on the
+# variable: drive, but where a member or an entry of it is read and nothing is assigned or called, and by a constant
+# holding its name, as Set-Variable's -Name. A lookup action is found by a constant naming its property, but where the
+# property is read and nothing is assigned to it, or naming its set_ or add_ method. A mention the reader cannot tell
+# from a change, as a message holding function:name, is refused too, a stated limit.
+ALIAS = "defines an alias, which PowerShell runs before a function, a cmdlet, or a program of its name"
+ALIAS_DRIVE = "the alias: drive"
+FUNCTION_DRIVE = "the function: drive"
+DEFAULTS = "$PSDefaultParameterValues"
+LOOKUP_ACTIONS = "command lookup actions"
+DEFINITIONS_REFUSED = {
+    "Set-Alias": ALIAS,
+    "New-Alias": ALIAS,
+    "Import-Alias": f"{ALIAS}, each the file it reads lists",
+    ALIAS_DRIVE: f"holds the session's aliases, so an item or a variable on it {ALIAS}",
+    FUNCTION_DRIVE: (
+        "holds the session's functions, so an item or a variable on it defines a function, which PowerShell runs "
+        "before a cmdlet or a program of its name, from a string the parser never reads as code"
+    ),
+    DRIVE_COMMAND: (
+        "maps a drive onto the Alias or Function provider, whose items are aliases and functions as the alias: and "
+        "function: drives' are, where its -PSProvider is Alias, Function, or no literal"
+    ),
+    DEFAULTS: (
+        "binds a value to the parameter of each later cmdlet or advanced function it names that a command leaves "
+        "unbound, as Start-Process's -ArgumentList"
+    ),
+    LOOKUP_ACTIONS: (
+        "PreCommandLookupAction, PostCommandLookupAction, and CommandNotFoundAction replace the command a name finds"
+    ),
+}
+# The binding modes and the forms of DEFINITIONS_REFUSED' kind the reader leaves unread, each with why.
+NOT_READ: dict[str, str] = {
+    "a definition named at run time": (
+        "a value only running settles that names the alias: or function: drive, a drive's provider, "
+        "$PSDefaultParameterValues, or a lookup action, as a path joined at run time, a name built from parts, or "
+        "Get-Variable PSDef*, or the session state and the engine reached through their own API, as "
+        "$ExecutionContext.SessionState"
+    ),
+    "an item or a table a read hands on": (
+        "an alias or a function a reading cmdlet returns, or $PSDefaultParameterValues' table, kept in a variable or "
+        "passed down a pipeline that a later command changes; a reading cmdlet's result piped on, or the table itself "
+        "assigned to a variable, is refused"
+    ),
+    "aliases and functions defined elsewhere": (
+        "those a module the source imports exports, and those a script it dot-sources from outside the sources read "
+        "defines; a script among the sources is read, and refused, by itself"
+    ),
+}
 
 
 def _powershell_list(items: Sequence[str]) -> str:
@@ -251,8 +323,13 @@ def _bound_commands() -> str:
 # file. Each external command carries its words after its name, a literal's text or null for any other, and one
 # Start-Process starts carries instead the items of its -ArgumentList, each a literal's text or null for any other, a
 # list or array of them read item by item, so a reader can read the script a pwsh or Windows PowerShell start-up runs.
-# A stated limit: a cmdlet called by its module-qualified name, as Microsoft.PowerShell.Management\Start-Process, is
-# read as a program of that name, which no skill declares, so the command policy refuses it unbound.
+# A name qualified by the module that defines it, as Microsoft.PowerShell.Management\Start-Process, in any case, is the
+# command that module exports, alias or not, as pwsh runs it ($qualified); one whose last part names any other command
+# of pwsh's own, qualified by another module, a module's path, or none, as \Invoke-Expression, runs that module's
+# command, none, or one only running settles, and is unread (Get-Unqualified), but for a defining cmdlet's, as
+# \Set-Alias, which is refused as the cmdlet is; any other, as C:\tools\git, is a program's path. A source holding a
+# form DEFINITIONS_REFUSED names is listed as {source, unread, refused}, the form, and nothing more is read of the text
+# it is found in (Find-Definition, and $definers for the cmdlets that define an alias).
 COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -260,13 +337,88 @@ COMMANDS_RUN = (
     "$shipped = @(Get-Module -ListAvailable | Where-Object { "
     "$_.ModuleBase.StartsWith($PSHOME, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object Name); "
     "$own = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
-    "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core')) { "
-    "[void]$own.Add($command.Name) }; "
+    "$qualified = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
+    "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core') -CommandType All) { "
+    "[void]$own.Add($command.Name); [void]$qualified.Add($command.ModuleName + '\\' + $command.Name) }; "
     "foreach ($alias in Get-Alias) { [void]$own.Add($alias.Name) }; "
+    f"$definers = @{{}}; foreach ($command in Get-Command -Name {_powershell_list(DEFINING_COMMANDS)}) {{ "
+    "$definers[$command.Name] = $command.Name }; "
+    "foreach ($alias in Get-Alias) { if ($definers.ContainsKey($alias.Definition)) { "
+    "$definers[$alias.Name] = $definers[$alias.Definition] } }; "
+    "$readers = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
+    "$drivers = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
+    f"foreach ($command in Get-Command -Name {_powershell_list(READING_COMMANDS)}) {{ "
+    "[void]$readers.Add($command.Name) }; "
+    f"$driveCommand = Get-Command -Name '{DRIVE_COMMAND}' -CommandType Cmdlet; "
+    "[void]$drivers.Add($driveCommand.Name); "
+    "foreach ($alias in Get-Alias) { if ($readers.Contains($alias.Definition)) { [void]$readers.Add($alias.Name) }; "
+    "if ($drivers.Contains($alias.Definition)) { [void]$drivers.Add($alias.Name) } }; "
+    # New-PSDrive's entry as _bound_commands gives one, from the parameters the running pwsh lists of it.
+    "$driveParameters = @($driveCommand.Parameters.Values); "
+    "$driveTable = @(foreach ($parameter in $driveParameters) { "
+    ",@($parameter.Name, [bool]$parameter.SwitchParameter, @($parameter.Aliases)) }); "
+    "$drivePositions = @($driveParameters | ForEach-Object { $parameter = $_; "
+    "$at = @($parameter.ParameterSets.Values | ForEach-Object Position | Where-Object { $_ -ge 0 }); "
+    "if ($at.Count) { [pscustomobject]@{ Name = $parameter.Name; At = ($at | Measure-Object -Minimum).Minimum } } } | "
+    "Sort-Object At | ForEach-Object Name); "
+    "$drivePipeline = @($driveParameters | Where-Object { @($_.ParameterSets.Values | Where-Object { "
+    "$_.ValueFromPipeline -or $_.ValueFromPipelineByPropertyName }).Count } | ForEach-Object Name); "
+    f"$driveSpec = @('{DRIVE_COMMAND}', $driveTable, $drivePositions, '', $drivePipeline, @()); "
+    # The name a command's name runs a command by: its own name where its module part names the module defining it.
+    "function Get-Unqualified([string]$name) { "
+    "$cut = $name.LastIndexOf('\\'); if ($cut -lt 0) { return $name }; "
+    "if ($qualified.Contains($name)) { return $name.Substring($cut + 1) }; "
+    "if ($own.Contains($name.Substring($cut + 1))) { return $null }; return $name }; "
+    # Whether a node is assigned to: it lies within the left side of the nearest assignment around it.
+    "function Test-Assigned($node) { "
+    "$around = $node.Parent; while ($null -ne $around -and "
+    "$around -isnot [Management.Automation.Language.AssignmentStatementAst]) { $around = $around.Parent }; "
+    "return $null -ne $around -and $node.Extent.StartOffset -ge $around.Left.Extent.StartOffset -and "
+    "$node.Extent.EndOffset -le $around.Left.Extent.EndOffset }; "
+    # Whether a node is the object of a member read, the member a constant names (`$of.Member`) or the object itself
+    # (`$node.Count`, `$node['key']`), with nothing assigned to it or called on it.
+    "function Test-MemberRead($node, [bool]$member) { "
+    "$parent = $node.Parent; "
+    "$read = if ($member) { $parent -is [Management.Automation.Language.MemberExpressionAst] -and "
+    "$parent.Member -eq $node } else { ($parent -is [Management.Automation.Language.MemberExpressionAst] -and "
+    "$parent.Expression -eq $node) -or ($parent -is [Management.Automation.Language.IndexExpressionAst] -and "
+    "$parent.Target -eq $node) }; "
+    "return $read -and $parent -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -and "
+    "-not (Test-Assigned $parent) }; "
+    # Whether a constant is an argument of a cmdlet READING_COMMANDS names, by any name, alone in its pipeline.
+    "function Test-Reading($node) { "
+    "$command = $node.Parent; "
+    "if ($command -is [Management.Automation.Language.CommandParameterAst]) { $command = $command.Parent }; "
+    "if ($command -isnot [Management.Automation.Language.CommandAst] -or $command.CommandElements[0] -eq $node) { "
+    "return $false }; "
+    "$name = Get-Unqualified $command.GetCommandName(); "
+    "return $null -ne $name -and $readers.Contains($name) -and $command.Parent.PipelineElements.Count -eq 1 }; "
+    # The form DEFINITIONS_REFUSED names that a parsed text holds, with the text of the node holding it, or null.
+    "function Find-Definition($tree) { "
+    "$drive = '^(?:[\\w.]+\\\\)?{0}:(?!\\s)'; "
+    "$lookup = '^(?:(?:Pre|Post)CommandLookupAction|CommandNotFoundAction)$'; "
+    "$method = '^(?:set|add)_(?:(?:Pre|Post)CommandLookupAction|CommandNotFoundAction)$'; "
+    "foreach ($node in $tree.FindAll({ param($node) "
+    "$node -is [Management.Automation.Language.VariableExpressionAst] -or "
+    "$node -is [Management.Automation.Language.StringConstantExpressionAst] -or "
+    "$node -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) { "
+    "$form = if ($node -is [Management.Automation.Language.VariableExpressionAst]) { "
+    "$path = $node.VariablePath.UserPath; "
+    f"if ($path -match '^alias:' -and (Test-Assigned $node)) {{ '{ALIAS_DRIVE}' }} "
+    f"elseif ($path -match '^function:' -and (Test-Assigned $node)) {{ '{FUNCTION_DRIVE}' }} "
+    "elseif ($path -match '(^|:)PSDefaultParameterValues$' -and -not (Test-MemberRead $node $false)) { "
+    f"'{DEFAULTS}' }} }} "
+    "else { $text = $node.Value; "
+    f"if ($text -match $method) {{ '{LOOKUP_ACTIONS}' }} "
+    f"elseif ($text -match $lookup -and -not (Test-MemberRead $node $true)) {{ '{LOOKUP_ACTIONS}' }} "
+    f"elseif ($text -match ($drive -f 'alias') -and -not (Test-Reading $node)) {{ '{ALIAS_DRIVE}' }} "
+    f"elseif ($text -match ($drive -f 'function') -and -not (Test-Reading $node)) {{ '{FUNCTION_DRIVE}' }} "
+    f"elseif ($text -match 'PSDefaultParameterValues') {{ '{DEFAULTS}' }} }}; "
+    "if ($form) { return @($form, $node.Extent.Text) } }; return $null }; "
     "$common = [Collections.Generic.HashSet[string]]::new([string[]]@("
     "[Management.Automation.Cmdlet]::CommonParameters + [Management.Automation.Cmdlet]::OptionalCommonParameters), "
     "[StringComparer]::OrdinalIgnoreCase); "
-    "$unknown = [object]::new(); "
+    "$unknown = [object]::new(); $settling = [ref]$false; "
     "$variableCommands = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
     "foreach ($command in Get-Command -Noun Variable) { [void]$variableCommands.Add($command.Name) }; "
     "foreach ($alias in Get-Alias -Definition *-Variable) { [void]$variableCommands.Add($alias.Name) }; "
@@ -299,16 +451,18 @@ COMMANDS_RUN = (
     # and $tree, settles them: the variable, unqualified, is assigned once, by =, from a hashtable literal of constants
     # under literal keys, as a statement of the script block the splat runs in, before it; every other mention of it is
     # an unqualified splat, by the AST and by its text; and the source reaches no variable by name, through a command
-    # of pwsh's Variable noun or its alias ($variableCommands), the variable: drive, PSVariable, SessionState, or
-    # GetVariableValue, and dot-sources nothing. Null for any other splat.
+    # of pwsh's Variable noun or its alias ($variableCommands), by its own name or one Get-Unqualified reads or leaves
+    # unread, the variable: drive, PSVariable, SessionState, or GetVariableValue; it dot-sources nothing; and it runs no
+    # command named other than by a literal or a script block, as `& (Get-Command Set-Variable)` or `& $command`,
+    # which may be such a command. Null for any other splat.
     "function Get-Splat($variable) { "
     "$name = $variable.VariablePath.UserPath; $text = [string]$item[1]; "
     "if (-not $variable.VariablePath.IsUnqualified -or "
     "$text -match '(?i)variable:|PSVariable|SessionState|GetVariableValue') { "
     "return $null }; "
-    "if (@($tree.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and "
-    "($node.InvocationOperator -eq 'Dot' -or $variableCommands.Contains([string]$node.GetCommandName())) }, "
-    "$true)).Count) { return $null }; "
+    "if (-not $settling.Value -and @($tree.FindAll({ param($node) "
+    "$node -is [Management.Automation.Language.CommandAst] -and (Test-VariableCommand $node) }, $true)).Count) { "
+    "return $null }; "
     "$pattern = '(?i)[$@]\\{?(\\w+:)?' + [regex]::Escape($name) + '(?![\\w])'; "
     "$mentions = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and "
     "$node.VariablePath.UserPath -match ('(?i)^(\\w+:)?' + [regex]::Escape($name) + '$') }, $true)); "
@@ -368,6 +522,51 @@ COMMANDS_RUN = (
     "if ($splatted -and $spec[5].Count) { return $null }; "
     "foreach ($name in $spec[5]) { if ($bound.ContainsKey($name)) { return $null } }; "
     "return $bound }; "
+    # The Get-Command call a command's first element is, where it is the bare call in parentheses, as
+    # `& (Get-Command name)`, which runs the command it names; null for a member or an index taken off its result, or
+    # any other expression around it, which is unread.
+    "function Get-NamingCall($first) { "
+    "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
+    "if ($inner.Count -ne 1 -or $first -isnot [Management.Automation.Language.ParenExpressionAst] -or "
+    "$first.Pipeline -isnot [Management.Automation.Language.PipelineAst] -or "
+    "$first.Pipeline.PipelineElements.Count -ne 1 -or $first.Pipeline.PipelineElements[0] -ne $inner[0]) { "
+    "return $null }; "
+    "$spec = $specs[[string](Get-Unqualified $inner[0].GetCommandName())]; "
+    "if ($spec -and $spec[0] -eq 'Get-Command') { return $inner[0] }; return $null }; "
+    # The name a Get-Command call names the command it runs by, or null where it is no literal or holds a wildcard, or
+    # the call binds a refused parameter.
+    "function Get-Named($call) { "
+    "$bound = Get-Bound $call $specs['Get-Command']; "
+    "$name = if ($null -ne $bound) { Get-Literal $bound.Name } else { $null }; "
+    "if ($name -and [Management.Automation.WildcardPattern]::ContainsWildcardCharacters($name)) { return $null }; "
+    "return $name }; "
+    # Whether a command may be one of pwsh's Variable noun, which Get-Splat leaves a splat unsettled by: one
+    # dot-sourced; one called by such a name, its alias, or a module-qualified name Get-Unqualified reads so or leaves
+    # unread; one named other than by a literal or a script block run in place, but for the name
+    # `& (Get-Command name)` settles; and an Invoke-Expression whose string holds such a command or is no literal.
+    # A splat that call is given is read from its table alone ($settling), so the reading ends: any command that may
+    # change it is one this test finds too.
+    "function Test-VariableCommand($node) { "
+    "if ($node.InvocationOperator -eq 'Dot') { return $true }; "
+    "$name = $node.GetCommandName(); "
+    "if (-not $name) { $first = $node.CommandElements[0]; "
+    "if ($first -is [Management.Automation.Language.ScriptBlockExpressionAst]) { return $false }; "
+    "$call = Get-NamingCall $first; if ($null -eq $call) { return $true }; "
+    "$was = $settling.Value; $settling.Value = $true; "
+    "try { $name = Get-Named $call } finally { $settling.Value = $was }; "
+    "if (-not $name) { return $true } }; "
+    "$called = Get-Unqualified $name; "
+    "if ($null -eq $called -or $variableCommands.Contains($called)) { return $true }; "
+    # An Invoke-Expression runs its string in the same scope, so the commands of a literal string are tested as the
+    # source's own, and one the reader cannot read may be any.
+    "$spec = $specs[$called]; if (-not $spec -or $spec[0] -ne 'Invoke-Expression') { return $false }; "
+    "$was = $settling.Value; $settling.Value = $true; "
+    "try { $bound = Get-Bound $node $spec } finally { $settling.Value = $was }; "
+    "$text = if ($null -ne $bound) { Get-Literal $bound.Command } else { $null }; "
+    "if ($null -eq $text -or $text -match '(?i)variable:|PSVariable|SessionState|GetVariableValue') { return $true }; "
+    "$script = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null); "
+    "return [bool]@($script.FindAll({ param($inner) $inner -is [Management.Automation.Language.CommandAst] -and "
+    "(Test-VariableCommand $inner) }, $true)).Count }; "
     "function Get-Literals($element) { "
     "while ($element -is [Management.Automation.Language.ParenExpressionAst] -or "
     "$element -is [Management.Automation.Language.ArrayExpressionAst]) { "
@@ -391,25 +590,34 @@ COMMANDS_RUN = (
     "while ($queue.Count) { $item = $queue.Dequeue(); $index = $item[0]; "
     "$tokens = $null; $errors = $null; "
     "$tree = [Management.Automation.Language.Parser]::ParseInput($item[1], [ref]$tokens, [ref]$errors); "
+    "$definition = Find-Definition $tree; "
+    "if ($null -ne $definition) { "
+    "$found.Add([ordered]@{ source = $index; unread = $definition[1]; refused = $definition[0] }); continue }; "
     "$functions = @($tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name); "
     "foreach ($command in $tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.CommandAst] }, $true)) { "
     "$name = $command.GetCommandName(); $elements = $command.CommandElements; "
     "if (-not $name -and $elements[0].Extent.Text -match '\\.ps1\\W*$') { continue }; "
-    "if (-not $name) { $first = $elements[0]; "
-    "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
-    # Only the bare call in parentheses, `& (Get-Command name)`, runs the command it names; a member or an index taken
-    # off its result, or any other expression around it, is unread.
-    "$innerSpec = if ($inner.Count -eq 1 -and $first -is [Management.Automation.Language.ParenExpressionAst] -and "
-    "$first.Pipeline -is [Management.Automation.Language.PipelineAst] -and "
-    "$first.Pipeline.PipelineElements.Count -eq 1 -and $first.Pipeline.PipelineElements[0] -eq $inner[0]) { "
-    "$specs[[string]$inner[0].GetCommandName()] } else { $null }; "
-    "if ($innerSpec -and $innerSpec[0] -eq 'Get-Command') { "
-    "$bound = Get-Bound $inner[0] $specs['Get-Command']; "
-    "$name = if ($null -ne $bound) { Get-Literal $bound.Name } else { $null }; "
-    "if ($name -and [Management.Automation.WildcardPattern]::ContainsWildcardCharacters($name)) { $name = $null } }; "
+    "if (-not $name) { $first = $elements[0]; $call = Get-NamingCall $first; "
+    "if ($null -ne $call) { $name = Get-Named $call }; "
     "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $first.Extent.Text }); continue } }; "
+    # A name whose module part only running settles is unread, unless its last part names a defining cmdlet, which pwsh
+    # may run as itself: that is refused as the cmdlet is.
+    "$called = Get-Unqualified $name; "
+    "if (-not $called) { $last = $name.Substring($name.LastIndexOf('\\') + 1); "
+    "if ($definers.ContainsKey($last)) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text; "
+    "refused = $definers[$last] }); break }; "
+    "$found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }); continue }; "
+    "$name = $called; "
+    "if ($definers.ContainsKey($name)) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text; "
+    "refused = $definers[$name] }); break }; "
+    "if ($drivers.Contains($name)) { $bound = Get-Bound $command $driveSpec; "
+    "$provider = if ($null -ne $bound) { Get-Literal $bound.PSProvider } else { $null }; "
+    "if (-not $provider -or $provider -match '^(?:[\\w.]+\\\\)?(?:alias|function)$' -or "
+    "[Management.Automation.WildcardPattern]::ContainsWildcardCharacters($provider)) { "
+    f"$found.Add([ordered]@{{ source = $index; unread = $command.Extent.Text; refused = '{DRIVE_COMMAND}' }}); "
+    "break }; continue }; "
     "$arguments = $null; $spec = $specs[$name]; "
     "if ($spec -and $spec[0] -eq 'Start-Process') { $bound = Get-Bound $command $spec; "
     "$name = if ($null -ne $bound) { Get-Literal $bound.FilePath } else { $null }; "
@@ -523,11 +731,21 @@ def listed(sources: Sequence[object], timeout: float = READ_SECONDS, script: str
 
 def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[list[str]]]:
     """The words of each external command each PowerShell source runs, as command_words gives them, read by pwsh's
-    parser in one call for them all, as `listed` lists them; raises PowerShellUnread as it does."""
+    parser in one call for them all, as `listed` lists them; raises PowerShellUnread as it does, and for the first
+    source that holds a form DEFINITIONS_REFUSED names, naming the source by its place among them, from 1, the form,
+    and the text holding it. A program the parser leaves unread names no command, so it is left out."""
     if not sources:
         return []
+    found = listed(sources, timeout)
+    if refused := next((item for item in found if "refused" in item), None):
+        form = refused["refused"]
+        raise PowerShellUnread(
+            f"source {refused['source'] + 1} names a form that may change what a later command runs, so its commands "
+            "are not read: "
+            f"{form} {DEFINITIONS_REFUSED[form]}: {reason_line(refused['unread'])}"
+        )
     commands: list[list[list[str]]] = [[] for _ in sources]
-    for item in listed(sources, timeout):
+    for item in found:
         if (words := command_words(item)) is not None:
             commands[item["source"]].append(words)
     return commands
