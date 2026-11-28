@@ -1077,16 +1077,17 @@ class CommandTests(LazySnapshotFixture):
 
     def test_a_run_json_whose_name_is_absent_for_a_moment_is_found_and_read_after_short_waits(self) -> None:
         # Holds on every platform, by injected refusals: `check` replaces run.json while a reviewer's source command
-        # reads it, and on Windows the replace may hide the name for a moment, in bursts under load. Every stat and
-        # read of run.json finds no file until two waits have passed, so the presence check that runs first and the
-        # read after it both wait the name out, rather than refusing a run that holds run.json throughout.
+        # reads it, and on Windows the replace may hide the name for a moment, in bursts under load. The presence
+        # check's first try finds no run.json, its stat and the stat of the place itself both, and the read's first
+        # two tries find none either, each kind of call hidden on its own, so the check that runs first and the read
+        # after it each wait the name out, rather than refusing a run that holds run.json throughout.
         state = self.run_directory / review_guard.RUN_FILE
         real_stat, real_read_text = Path.stat, Path.read_text
         waits: list[float] = []
         absent: list[str] = []
 
         def hidden(path: Path, call: str) -> None:
-            if path == state and len(waits) < 2:
+            if path == state and absent.count(call) < 2:
                 absent.append(call)
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
 
@@ -1104,8 +1105,8 @@ class CommandTests(LazySnapshotFixture):
             mock.patch.object(time, "sleep", waits.append),
         ):
             found = review_source._run(self.run_directory, "generic-review")
-        self.assertEqual([0.01, 0.02], waits)
-        self.assertIn("stat", absent, "the presence check met the absent name first")
+        # The check waits once, after its one try's two stats; the read's own waits start the table over.
+        self.assertEqual((["stat", "stat", "read", "read"], [0.01, 0.01, 0.02]), (absent, waits))
         self.assertEqual(review_source._run(self.run_directory, "generic-review"), found)
 
     def test_a_run_json_missing_throughout_is_refused_as_no_run_after_the_waits_and_a_folder_at_once(self) -> None:
