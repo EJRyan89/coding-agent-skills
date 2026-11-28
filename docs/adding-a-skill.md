@@ -289,9 +289,14 @@ place, `--`, a splat whose hashtable the source does not settle (a splat of a va
 its script block, from a hashtable literal of constants and mentioned nowhere else is bound by its keys), a cmdlet a
 pipeline feeds a parameter it would read, `Get-Command` given `-Verb`, `-Noun`, `-UseAbbreviationExpansion`,
 `-UseFuzzyMatching`, or a wildcard in its name, and a member or an index taken off its result, as
-`& (Get-Command git).Source`, are programs it cannot read. Stated limits: a cmdlet called by its module-qualified
-name, as `Microsoft.PowerShell.Management\Start-Process`, is read as a program of that name, which the policy refuses
-as undeclared rather than binding its arguments; Windows PowerShell's start-up, which no runner can parse in
+`& (Get-Command git).Source`, are programs it cannot read. A command called by the name of the module that defines
+it, in any case, as `Microsoft.PowerShell.Management\Start-Process`, is read as that command; one of PowerShell's own
+commands qualified any other way, by another module, a module's path, or none, as `\Invoke-Expression`, is a program
+it cannot read. A script that changes what a later name runs or binds, by `Set-Alias`, `New-Alias`, `Import-Alias`,
+the `alias:` or `function:` drive, `$PSDefaultParameterValues`, or a command lookup action of
+`$ExecutionContext.InvokeCommand`, is refused as a whole, as `powershell_commands.DEFINITIONS_REFUSED` lists; one
+named only by a value built at run time, and the aliases a module the script imports exports, are not read
+(`powershell_commands.NOT_READ`). Stated limits: Windows PowerShell's start-up, which no runner can parse in
 process, is read with pwsh's start-up parser; and a splatted hashtable changed by code the source builds at run time,
 or reached through `$PSCmdlet.GetVariableValue` or a drive path built from text, is read as its literal, as is a
 splat in a named block that runs before the block assigning it, as `end` written before `begin`, or after a

@@ -414,3 +414,272 @@ def test_a_get_command_name_holding_a_wildcard_leaves_the_command_unread() -> No
         {"source": 1, "unread": "(gcm 'g*')"},
         {"source": 2, "name": "git", "words": ["push"]},
     ]
+
+
+# Runs each row's source in one pwsh, each in a scope of its own, and prints, for each, what it ran: `prog` is a
+# function that records its words, as a program a row names would run, and Start-Process a function of the same
+# positions that records the program it would start and its arguments, so nothing starts. A Start-Process the row
+# calls by its module-qualified name is the cmdlet itself, which fails to find prog: that failure is recorded as
+# `Start-Process`. Each row's aliases, defaults, lookup actions, and functions are cleared before the next.
+RUNS = (
+    "$ErrorActionPreference = 'Stop'; "
+    "$rows = @(Get-Content -LiteralPath $env:COMMAND_SOURCES -Raw -Encoding utf8 | ConvertFrom-Json); "
+    "$global:ran = [Collections.Generic.List[string]]::new(); "
+    "function global:prog { $global:ran.Add((@('prog') + $args) -join ' ') }; "
+    "function global:Start-Process { [CmdletBinding()] param([Parameter(Position = 0)][string]$FilePath, "
+    "[Parameter(Position = 1)][string[]]$ArgumentList, [switch]$Wait) "
+    "$global:ran.Add((@('start', $FilePath) + @($ArgumentList | Where-Object { $null -ne $_ })) -join ' ') }; "
+    "$aliases = @(Get-ChildItem -LiteralPath alias: | ForEach-Object Name); "
+    "$functions = @(Get-ChildItem -LiteralPath function: | ForEach-Object Name); "
+    "$results = foreach ($row in $rows) { $global:ran.Clear(); "
+    "try { $null = & ([scriptblock]::Create($row)) } catch { "
+    "if ($_.FullyQualifiedErrorId -like '*,Microsoft.PowerShell.Commands.StartProcessCommand') { "
+    "$global:ran.Add('Start-Process') } }; "
+    "$global:PSDefaultParameterValues = @{}; $ExecutionContext.InvokeCommand.PreCommandLookupAction = $null; "
+    "Get-ChildItem -LiteralPath alias: | Where-Object Name -notin $aliases | Remove-Item; "
+    "Get-ChildItem -LiteralPath function: | Where-Object Name -notin $functions | Remove-Item; "
+    ",@($global:ran) }; "
+    "[Console]::Out.WriteLine((ConvertTo-Json -InputObject @($results) -Compress -Depth 3))"
+)
+# What a row's reading is when the reader refuses its source, as `read` raises for it.
+REFUSED = "refused"
+# What a row's reading is when the reader leaves a program unread, which `read` drops and validation refuses.
+UNREAD = "unread"
+
+
+@dataclass(frozen=True)
+class Run:
+    """A source the reader reads as pwsh runs it: the form it shows, what pwsh runs, as RUNS records it, and what the
+    reader reads, each external command's words joined, UNREAD for a program it leaves unread, or REFUSED."""
+
+    form: str
+    source: str
+    runs: tuple[str, ...]
+    reads: tuple[str, ...]
+
+
+# A module-qualified name runs the command that module exports, in any case, as fhx is Microsoft.PowerShell.Utility's
+# alias of Format-Hex, and a built-in alias's or another module's name runs none; one with no module runs a command of
+# a module pwsh has loaded, which only running settles. A Set-Variable called so, or by a name only running settles,
+# changes a splat as Set-Variable does, and a script block run in place is read where it stands.
+QUALIFIED_RUNS = [
+    Run(
+        "defining module",
+        "Microsoft.PowerShell.Utility\\Invoke-Expression 'prog push'",
+        ("prog push",),
+        ("prog push",),
+    ),
+    Run(
+        "defining module",
+        "MICROSOFT.POWERSHELL.UTILITY\\invoke-expression 'prog push'",
+        ("prog push",),
+        ("prog push",),
+    ),
+    Run(
+        "defining module",
+        "& 'Microsoft.PowerShell.Utility\\Invoke-Expression' 'prog push'",
+        ("prog push",),
+        ("prog push",),
+    ),
+    Run(
+        "defining module",
+        "Microsoft.PowerShell.Management\\Start-Process prog push",
+        ("Start-Process",),
+        ("prog push",),
+    ),
+    Run("defining module", "& (Microsoft.PowerShell.Core\\Get-Command prog) push", ("prog push",), ("prog push",)),
+    Run(
+        "defining module",
+        "& (Get-Command Microsoft.PowerShell.Utility\\Invoke-Expression) 'prog push'",
+        ("prog push",),
+        ("prog push",),
+    ),
+    Run(
+        "defining module",
+        "Microsoft.PowerShell.Utility\\Invoke-Expression 'Microsoft.PowerShell.Management\\Start-Process prog push'",
+        ("Start-Process",),
+        ("prog push",),
+    ),
+    Run("defining module", "Microsoft.PowerShell.Utility\\Write-Output push", (), ()),
+    Run("defining module", "'abc' | Microsoft.PowerShell.Utility\\fhx", (), ()),
+    Run(
+        "defining module",
+        "$s = @{ FilePath = 'prog' }; Microsoft.PowerShell.Utility\\Set-Variable s @{ FilePath = 'other' }; "
+        "Start-Process @s",
+        ("start other",),
+        (UNREAD,),
+    ),
+    Run(
+        "named other than by a literal",
+        "$s = @{ FilePath = 'prog' }; & (Get-Command Set-Variable) s @{ FilePath = 'other' }; Start-Process @s",
+        ("start other",),
+        (UNREAD,),
+    ),
+    Run(
+        "named other than by a literal",
+        "$s = @{ FilePath = 'prog' }; $c = 'Set-Variable'; & $c s @{ FilePath = 'other' }; Start-Process @s",
+        ("start other",),
+        (UNREAD, UNREAD),
+    ),
+    Run(
+        "named other than by a literal",
+        "$t = @{ FilePath = 'prog' }; $s = @{ Name = 'Set-Variable' }; & (Get-Command @s) t @{ FilePath = 'other' }; "
+        "Start-Process @t",
+        ("start other",),
+        (UNREAD, UNREAD),
+    ),
+    Run(
+        "named other than by a literal",
+        "$s = @{ FilePath = 'prog' }; & { Write-Output x }; Start-Process @s",
+        ("start prog",),
+        (UNREAD, "prog"),
+    ),
+    Run("alias", "Microsoft.PowerShell.Utility\\iex 'prog push'", (), (UNREAD,)),
+    Run("other module", "Microsoft.PowerShell.Management\\Invoke-Expression 'prog push'", (), (UNREAD,)),
+    Run("other module", "./Place.psm1\\Invoke-Expression 'prog push'", (), (UNREAD,)),
+    Run("no module", "\\Invoke-Expression 'prog push'", ("prog push",), (UNREAD,)),
+]
+# Each form by which a source changes the command a later name runs or the arguments it binds, which the reader
+# refuses (powershell_commands.DEFINITIONS_REFUSED).
+DEFINITION_RUNS = [
+    Run("Set-Alias", "Set-Alias Write-Output prog; Write-Output push", ("prog push",), (REFUSED,)),
+    Run("Set-Alias", "sal Write-Output prog; Write-Output push", ("prog push",), (REFUSED,)),
+    Run("Set-Alias", "Set-Alias prog Write-Output; prog push", (), (REFUSED,)),
+    Run(
+        "Set-Alias",
+        "Microsoft.PowerShell.Utility\\Set-Alias Write-Output prog; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run("Set-Alias", "& (Get-Command Set-Alias) Write-Output prog; Write-Output push", ("prog push",), (REFUSED,)),
+    Run("Set-Alias", "Invoke-Expression 'Set-Alias Write-Output prog'; Write-Output push", ("prog push",), (REFUSED,)),
+    Run(
+        "Set-Alias",
+        "function f { Set-Alias Write-Output prog -Scope Script }; f; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run("New-Alias", "New-Alias -Name Write-Output -Value prog; Write-Output push", ("prog push",), (REFUSED,)),
+    Run("New-Alias", "nal Write-Output prog; Write-Output push", ("prog push",), (REFUSED,)),
+    Run(
+        "Import-Alias",
+        '$f = Join-Path ([IO.Path]::GetTempPath()) "aliases-$PID.csv"; '
+        'Set-Content -LiteralPath $f -Value \'"Write-Output","prog","","None"\'; '
+        "Import-Alias -LiteralPath $f -Force; Remove-Item -LiteralPath $f; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "the alias: drive",
+        "New-Item -Path alias:Write-Output -Value prog | Out-Null; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "the alias: drive",
+        "New-Item -Path alias: -Name Write-Output -Value prog | Out-Null; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "the alias: drive",
+        "Set-Item -Path Microsoft.PowerShell.Core\\Alias::Write-Output -Value prog; Write-Output push",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run("the alias: drive", "${alias:Write-Output} = 'prog'; Write-Output push", ("prog push",), (REFUSED,)),
+    Run("the alias: drive", "$alias:zz = 'prog'; zz push", ("prog push",), (REFUSED,)),
+    Run("the function: drive", "${function:Write-Output} = 'prog push'; Write-Output", ("prog push",), (REFUSED,)),
+    Run(
+        "the function: drive",
+        "New-Item -Path function:Write-Output -Value 'prog push' | Out-Null; Write-Output",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "$PSDefaultParameterValues",
+        "$PSDefaultParameterValues['Start-Process:ArgumentList'] = 'push'; Start-Process prog",
+        ("start prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "$PSDefaultParameterValues",
+        "$global:PSDefaultParameterValues = @{ 'Invoke-Expression:Command' = 'prog push' }; Invoke-Expression",
+        ("prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "$PSDefaultParameterValues",
+        "Set-Variable -Name PSDefaultParameterValues -Value @{ 'Start-Process:ArgumentList' = 'push' }; "
+        "Start-Process prog",
+        ("start prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "$PSDefaultParameterValues",
+        "${variable:PSDefaultParameterValues} = @{ 'Start-Process:ArgumentList' = 'push' }; Start-Process prog",
+        ("start prog push",),
+        (REFUSED,),
+    ),
+    Run(
+        "command lookup actions",
+        "$ExecutionContext.InvokeCommand.PreCommandLookupAction = { param($n, $e) "
+        "if ($n -eq 'Write-Output') { $e.CommandScriptBlock = [scriptblock]::Create('prog push') } }; Write-Output x",
+        ("prog push",),
+        (REFUSED,),
+    ),
+]
+
+
+def reads(items: list[dict[str, Any]]) -> tuple[str, ...]:
+    """What the reader read of one source, as a Run's `reads` holds it."""
+    return tuple(
+        REFUSED
+        if "refused" in item
+        else UNREAD
+        if (words := powershell_commands.command_words(item)) is None
+        else " ".join(words)
+        for item in items
+    )
+
+
+@functools.cache
+def judged_runs() -> list[tuple[Run, tuple[str, ...], tuple[str, ...]]]:
+    """Each run, with what pwsh ran of it and what the reader read of it."""
+    found = [*QUALIFIED_RUNS, *DEFINITION_RUNS]
+    ran = powershell_commands.listed([run.source for run in found], script=RUNS)
+    items: list[list[dict[str, Any]]] = [[] for _ in found]
+    for item in powershell_commands.listed([run.source for run in found]):
+        items[item["source"]].append(item)
+    return [(run, tuple(runs), reads(row_items)) for run, runs, row_items in zip(found, ran, items, strict=True)]
+
+
+def test_the_reader_reads_a_module_qualified_name_and_refuses_a_definition_as_pwsh_runs_them() -> None:
+    problems = [
+        f"{run.source}: pwsh ran {ran}, the reader read {read}; expected {run.runs} and {run.reads}"
+        for run, ran, read in judged_runs()
+        if (ran, read) != (run.runs, run.reads)
+    ]
+    assert problems == []
+
+
+def test_every_form_that_changes_what_a_later_name_runs_is_refused_or_not_read() -> None:
+    refused = powershell_commands.DEFINITIONS_REFUSED
+    assert sorted(refused.keys() & powershell_commands.NOT_READ.keys()) == [], "decide each form once"
+    shown = {run.form for run, ran, read in judged_runs() if run in DEFINITION_RUNS and ran and read == (REFUSED,)}
+    assert sorted(refused.keys() - shown) == [], "give each refused form a row pwsh runs and the reader refuses"
+    assert {run.form for run in DEFINITION_RUNS} <= refused.keys()
+
+
+def test_a_refused_source_fails_read_naming_why_so_audit_skill_fails_closed() -> None:
+    # audit-skill reads a script's git calls through `read`, which drops what is unread, so a source that may change
+    # what a later name runs raises, as bash_syntax raises NotRead after expand_aliases, rather than read git push.
+    with pytest.raises(PowerShellUnread) as raised:
+        powershell_commands.read(["git status", "Set-Alias git curl; git push"])
+    assert str(raised.value) == (
+        "source 2 changes what a later command runs, so its commands are not read: Set-Alias defines an alias, which "
+        "PowerShell runs before a function, a cmdlet, or a program of its name: Set-Alias git curl"
+    )
+    assert powershell_commands.read(["Microsoft.PowerShell.Utility\\Invoke-Expression 'git push origin main'"]) == [
+        [["git", "push", "origin", "main"]]
+    ]
