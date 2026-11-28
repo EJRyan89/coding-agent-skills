@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
 import skill_menu
 from skill_menu import MenuEntry, SourceMenu
 
@@ -185,6 +187,42 @@ def test_read_menu_refuses_a_source_it_cannot_read(
     if document is None:
         (root / "source.json").unlink()
     with pytest.raises(skill_menu.MenuError, match=problem):
+        skill_menu.read_menu(root)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link needs a privilege on Windows")
+def test_read_menu_refuses_a_metadata_entry_whose_stat_fails_with_its_own_error(tmp_path: Path) -> None:
+    # A link to itself fails its stat with ELOOP, which is_metadata_file raises rather than pass the entry over.
+    root = write_source(tmp_path / "source", {"id": "owner/repo"}, {"alpha": {}})
+    (root / "deploy-meta" / "x.json").symlink_to("x.json")
+    with pytest.raises(skill_menu.MenuError, match=r"deploy-meta/x\.json cannot be read: "):
+        skill_menu.read_menu(root)
+
+
+def test_read_menu_refuses_an_entry_whose_stat_fails_on_every_platform(tmp_path: Path) -> None:
+    root = write_source(tmp_path / "source", {"id": "owner/repo"}, {"alpha": {}})
+    denied = PermissionError(13, "Permission denied", str(root / "deploy-meta" / "alpha.json"))
+    with (
+        mock.patch.object(skill_menu, "is_metadata_file", side_effect=denied),
+        pytest.raises(skill_menu.MenuError, match=r"deploy-meta/alpha\.json cannot be read: .*Permission denied"),
+    ):
+        skill_menu.read_menu(root)
+
+
+def test_read_menu_refuses_a_metadata_folder_it_cannot_list_with_its_own_error(tmp_path: Path) -> None:
+    # A file where deploy-meta/ stands is no folder to list; nor is one whose listing fails.
+    root = write_source(tmp_path / "source", {"id": "owner/repo"}, {})
+    (root / "deploy-meta").rmdir()
+    (root / "deploy-meta").write_text("{}", encoding="utf-8")
+    with pytest.raises(skill_menu.MenuError, match=r"deploy-meta cannot be listed: "):
+        skill_menu.read_menu(root)
+    (root / "deploy-meta").unlink()
+    (root / "deploy-meta").mkdir()
+    denied = PermissionError(13, "Permission denied", str(root / "deploy-meta"))
+    with (
+        mock.patch.object(file_presence, "matching", side_effect=denied),
+        pytest.raises(skill_menu.MenuError, match=r"deploy-meta cannot be listed: .*Permission denied"),
+    ):
         skill_menu.read_menu(root)
 
 

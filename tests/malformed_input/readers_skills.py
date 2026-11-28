@@ -505,7 +505,7 @@ READERS = [
             "long_line": PYTHON_TEXT,
         },
         # A call through an attribute chain the parser reads but a recursive walk over the tree, as qualified_name's
-        # over an attribute, cannot recurse through, which python_reader refuses as nested past DEPTH_LIMIT.
+        # over an attribute, cannot recurse through, which python_reader refuses as nested past TREE_DEPTH_LIMIT.
         nesting=lambda levels: b"import sys\n\nsys" + b".a" * levels + b"()\n",
     ),
     Reader(

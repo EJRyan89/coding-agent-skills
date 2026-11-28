@@ -1833,6 +1833,37 @@ class StatusLineTests(TemporaryTestCase):
                 self.assertEqual((1, f"FAILED cannot read {script.resolve().as_posix()}: {reason}"), (code, lines[-1]))
                 script.unlink()
 
+    def test_a_script_with_a_long_sum_or_elif_chain_is_scanned_as_the_valid_python_it_is(self) -> None:
+        # Each link of a chain nests its tree one level deeper; chains of these lengths were refused as not valid
+        # Python while the tree was held to a document's limit of a hundred levels.
+        for terms in (99, 100, 150):
+            body = (
+                "TOTAL = "
+                + " + ".join(["1"] * terms)
+                + "\n\nif TOTAL == 0:\n    pass\n"
+                + "elif TOTAL:\n    pass\n" * terms
+            )
+            with self.subTest(terms=terms):
+                folder = self.skill("It prints `READY` and then `DONE`.\n")
+                script = folder / "scripts" / "tool.py"
+                script.parent.mkdir(parents=True, exist_ok=True)
+                script.write_text(f'{body}print("READY")\nprint("DONE")\n', encoding="utf-8")
+                code, lines, error = run("scan", str(folder))
+                self.assertEqual((0, ""), (code, error), lines)
+                script.unlink()
+
+    def test_a_script_past_the_readers_bound_fails_the_scan_as_python_it_does_not_follow(self) -> None:
+        # A sum of 199 terms nests 201 levels: valid Python, so the line never calls it invalid.
+        folder = self.skill("It prints `READY` and then `DONE`.\n")
+        script = folder / "scripts" / "tool.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("TOTAL = " + " + ".join(["1"] * 199) + '\nprint("READY")\n', encoding="utf-8")
+        code, lines, _ = run("scan", str(folder))
+        self.assertEqual(
+            (1, f"FAILED cannot read {script.resolve().as_posix()}: Python that nests deeper than the reader follows"),
+            (code, lines[-1]),
+        )
+
     def test_a_command_naming_a_script_that_does_not_exist_is_named_on_its_own_line(self) -> None:
         folder = self.skill(
             "Run it:\n\n```bash\n"
@@ -3172,6 +3203,16 @@ class RuntimeSupportTests(SourceTreeTestCase):
         with self.assertRaisesRegex(skill_inventory.InputError, "update.py: not valid Python"):
             skill_inventory.own_needs(skill.parent)
 
+    def test_a_python_script_past_the_readers_bound_fails_the_runtime_derivation_as_valid_python(self) -> None:
+        # A sum of 199 terms nests 201 levels: valid Python the parser reads, past the reader's 200-level bound.
+        skill = self.skill("Body.\n", self.full())
+        script = write(skill.parent / "scripts" / "update.py", "x = " + " + ".join(["1"] * 199) + "\n")
+        with self.assertRaises(skill_inventory.InputError) as raised:
+            skill_inventory.own_needs(skill.parent)
+        self.assertEqual(
+            f"cannot read {script.as_posix()}: Python that nests deeper than the reader follows", str(raised.exception)
+        )
+
     def test_a_bash_script_the_grammar_refuses_fails_the_runtime_derivation(self) -> None:
         # Bash runs the lines before a syntax error, so its git commands cannot be trusted as read, and reading none
         # would pass a skill whose script reaches a remote.
@@ -3653,6 +3694,16 @@ class SourcePluginTests(SourceTreeTestCase):
         lines = self.plugins(skill)
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "names no source ID" in lines[0], lines)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_metadata_entry_whose_stat_fails_makes_the_plugins_unreadable_and_the_inventory_goes_on(self) -> None:
+        # A link to itself fails its stat with ELOOP: the inventory names it and goes on, never ending FAILED.
+        self.source()
+        skill = self.skill("Alpha.\n")
+        (self.root / "deploy-meta" / "x.json").symlink_to("x.json")
+        plugins = self.plugins(skill)
+        self.assertEqual(1, len(plugins), plugins)
+        self.assertTrue(plugins[0].startswith("PLUGINS_UNREADABLE ") and "deploy-meta/x.json" in plugins[0], plugins)
 
     def test_a_dependency_list_of_another_kind_makes_the_plugins_unreadable_as_the_metadata_is(self) -> None:
         # The metadata says DECLARED_UNREADABLE, so the plugins cannot be planned either: never a CARRIED_BY that

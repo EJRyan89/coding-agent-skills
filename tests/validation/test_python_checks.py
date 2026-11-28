@@ -35,6 +35,7 @@ import git_client
 import github_client
 import pdf_tool
 import python_checks
+import python_reader
 import review_vocabularies
 import skill_scripts
 import toolchain
@@ -10600,3 +10601,52 @@ def test_walk_policy_reports_a_listing_with_no_module_to_read() -> None:
         assert python_checks.walk_problems(Path(temporary), []) == [
             f"{Path(temporary).as_posix()}: the listing holds no module the claim policies read, so none was checked"
         ]
+
+
+# Chains python_reader takes up to nesting_depth's TREE_DEPTH_LIMIT, each built from its number of links: an attribute
+# chain called, a method chain, and nested getattr calls, each of which the reference walk the claim policies share
+# follows link by link.
+DEEP_CHAINS = {
+    "attribute chain": lambda links: "import subprocess\nsubprocess" + ".a" * links + "('git')\n",
+    "method chain": lambda links: "import json\nx = json" + ".a()" * links + "\n",
+    "nested getattr": lambda links: "import os\nx = " + "getattr(" * links + "os" + ", 'a')" * links + "\n",
+}
+
+
+def deepest_read(chain: Callable[[int], str]) -> str:
+    """The longest of a chain's sources python_reader reads, one link short of the one it refuses."""
+    links = 1
+    with contextlib.suppress(python_reader.PythonRefused):
+        while True:
+            python_reader.parse(chain(links + 1))
+            links += 1
+    return chain(links)
+
+
+def from_deeper_stack[Value](frames: int, call: Callable[[], Value]) -> Value:
+    """call's result, made `frames` frames below this one, as a policy runs below the runner and the suite's own."""
+    return call() if frames <= 0 else from_deeper_stack(frames - 1, call)
+
+
+@pytest.mark.parametrize("chain", DEEP_CHAINS, ids=list(DEEP_CHAINS))
+@pytest.mark.parametrize(
+    "policy",
+    [
+        python_checks.json_write_problems,
+        python_checks.int_parse_problems,
+        python_checks.ctypes_declaration_problems,
+        python_checks.time_option_problems,
+    ],
+    ids=lambda policy: policy.__name__,
+)
+def test_reference_policies_read_the_deepest_chain_python_reader_takes_without_recursing_per_link(
+    chain: str, policy: Callable[[Path, list[Path]], list[str]]
+) -> None:
+    # The walk once recursed about five frames for each link, past the default recursion limit at a chain python_reader
+    # takes; it now enters a chain's links innermost first, a fixed depth for any chain.
+    source = deepest_read(DEEP_CHAINS[chain])
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"tools/deep.py": source})
+        found = from_deeper_stack(100, lambda: policy(root, sorted(root.rglob("*.py"))))
+    assert isinstance(found, list)

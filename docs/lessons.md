@@ -717,11 +717,14 @@ or removed fails validation until its pattern follows it.
   `csharp_layout:_brace_level` and `msbuild_conditions:Parser.nested`, a hand-written parser's own check; and
   `python_reader:parse`, `python_reader:parse_expression`, and `python_reader:literal`, the one parse of Python source
   and of a literal, which refuse the parser's overflow, a memory or recursion error, and a tree the parser reads but
-  that nests past the same limit, as the `python_reader:PythonRefused` their callers handle, so a walk over a tree
-  they return, such as `python_names:qualified_name` over an attribute chain, needs no bound of its own. A handler around such a reader alone names its family and no
-  RecursionError; one that also guards a parser that recurses, such as tomllib, keeps it and says which call
-  raises it. `json_writer:nests_too_deep`, the writer's judgment of a value's depth against the same limit, by
-  `nesting_depth:nests_past`'s walk, which `json_writer:dumps` makes before the json module writes and
+  that nests past `nesting_depth:TREE_DEPTH_LIMIT`, as the `python_reader:PythonRefused` their callers handle, so a
+  walk over a tree they return, such as `python_names:qualified_name` over an attribute chain, needs no bound of its
+  own. A tree has its own limit because each link of a flat chain, a plus, an elif, or an attribute, nests it one
+  level: a limit that counts a chain's links as a document's brackets refuses valid source. Measure a bound against
+  input the reader must take, a long chain included, as well as against the walks it protects. A handler around such
+  a reader alone names its family and no RecursionError; one that also guards a parser that recurses, such as
+  tomllib, keeps it and says which call raises it. `json_writer:nests_too_deep`, the writer's judgment of a value's
+  depth against `nesting_depth:DEPTH_LIMIT`, by `nesting_depth:nests_past`'s walk, which `json_writer:dumps` makes before the json module writes and
   `mcp_handshake:group_servers` before it keys a server by its JSON text.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests::test_nesting_is_judged_at_the_readers_limit_before_the_json_module_writes`,
@@ -735,6 +738,7 @@ or removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
   `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests`,
   `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests::test_a_tree_at_the_limit_parses_and_one_level_past_it_is_refused_as_nested`,
+  `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests::test_a_sum_or_elif_chain_at_the_limit_parses_and_one_link_past_it_is_refused`,
   `tests/validation/test_python_checks.py::test_owner_only_policy_refuses_each_reference_outside_its_owners`,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
@@ -748,7 +752,7 @@ or removed fails validation until its pattern follows it.
   name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`; an
   `except RecursionError` around `json.dumps(`, `pickle.dumps(`, `repr(`, or another call the standard library runs
   in C, whose depth is judged with `nesting_depth:nests_past` instead.
-- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844, #2849, #2851
+- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844, #2849, #2851, #3590
 
 ### A walk over bindings reads each binding once per question
 

@@ -103,9 +103,10 @@ outside its folder, that is not UTF-8 text, or one outside its folder that canno
 UNREADABLE <path> <reason> instead of a cost, the path relative to the skill folder, and inventory exits 1 after it.
 tools and scan read the text itself and no Markdown outside the folder: tools fails on a Markdown file in the folder
 that is not UTF-8 text, and scan on one it is given or that a folder it is given stands for. scan fails too on a script
-whose status lines it compares that is not UTF-8 text, not valid Python, Bash the one Bash grammar refuses, or larger
-than the reader's bound, whose output it cannot measure, and tools on a script a command of the skill runs, or one of
-the skill's own whose git commands it reads in a source tree, that is larger than the reader's bound.
+whose status lines it compares that is not UTF-8 text, not valid Python or Python nested deeper than its reader
+follows, Bash the one Bash grammar refuses, or larger than the reader's bound, whose output it cannot measure, and
+tools on a script a command of the skill runs, or one of the skill's own whose git commands it reads in a source tree,
+that is larger than the reader's bound.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -3037,11 +3038,19 @@ def bash_facts(text: str) -> ScriptFacts:
     return facts
 
 
+def python_refusal(error: Exception) -> str:
+    """Why a script python_reader refused cannot be read: "not valid Python", or, for a tree the parser read that nests
+    past the reader's bound, which is valid Python, that it is Python nesting deeper than the reader follows."""
+    if str(error) == python_reader.FOLLOWED:
+        return f"Python that {python_reader.FOLLOWED}"
+    return "not valid Python"
+
+
 def script_facts(path: Path, text: str | None = None, locate: exit_constants.Locate = no_modules) -> ScriptFacts:
     """What a script prints and exits with, from its text, which the caller read or `require_text` reads, a Python
-    script's exit codes followed into each module `locate` finds. One that is not UTF-8 text, not valid Python, or Bash
-    the grammar refuses, fails: what it prints cannot be measured, and reading it as printing nothing would compare the
-    Markdown with less than the skill runs."""
+    script's exit codes followed into each module `locate` finds. One that is not UTF-8 text, not valid Python or
+    Python nested deeper than python_reader follows, or Bash the grammar refuses, fails: what it prints cannot be
+    measured, and reading it as printing nothing would compare the Markdown with less than the skill runs."""
     if text is None:
         text = require_text(path)
     if path.suffix.casefold() != ".py":
@@ -3052,7 +3061,7 @@ def script_facts(path: Path, text: str | None = None, locate: exit_constants.Loc
     try:
         return python_facts(text, locate)
     except python_reader.CONTENT_ERRORS as exc:
-        raise InputError(f"cannot read {posix(path)}: not valid Python") from exc
+        raise InputError(f"cannot read {posix(path)}: {python_refusal(exc)}") from exc
 
 
 def python_constants(texts: dict[Path, str]) -> dict[Path, exit_constants.ModuleConstants]:
@@ -3865,7 +3874,7 @@ def script_git_subcommands(script: Path, text: str | None = None) -> set[str]:
     try:
         return runtime_support.python_git_subcommands(text)
     except python_reader.CONTENT_ERRORS as exc:
-        raise InputError(f"cannot read {posix(script)}: not valid Python") from exc
+        raise InputError(f"cannot read {posix(script)}: {python_refusal(exc)}") from exc
 
 
 def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: list[str]) -> list[tuple[str, str]]:

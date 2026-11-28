@@ -367,6 +367,26 @@ def _read_bundles(menu: SourceMenu, path: Path, value: object) -> None:
             menu.opt_in_bundles.add(bundle)
 
 
+def _metadata_files(folder: Path) -> list[Path]:
+    """The metadata files of deploy-meta/ at `folder`, as is_metadata_file chooses them, in path order. A folder it
+    cannot list, something other than a folder there included, and an entry whose stat fails, such as a link to
+    itself, are each a MenuError naming that path, as _json_object refuses a file it cannot read, so MenuError is the
+    one refusal read_menu raises."""
+    try:
+        found = file_presence.matching(folder, "*.json")
+    except OSError as exc:
+        raise MenuError(f"{folder.as_posix()} cannot be listed: {exc}") from exc
+    files = []
+    for path in found:
+        try:
+            chosen = is_metadata_file(path)
+        except OSError as exc:
+            raise MenuError(f"{path.as_posix()} cannot be read: {exc}") from exc
+        if chosen:
+            files.append(path)
+    return files
+
+
 def read_menu(root: Path) -> SourceMenu:
     """The menu of the source tree at root: its ID and bundles from source.json, and each skill's from its metadata."""
     document = _json_object(root / SOURCE_FILE)
@@ -378,9 +398,8 @@ def read_menu(root: Path) -> SourceMenu:
     ):
         raise MenuError(f"{(root / SOURCE_FILE).as_posix()} names no source ID of the form <owner>/<repository>")
     menu = SourceMenu(source_id)
-    for path in file_presence.matching(root / METADATA_FOLDER, "*.json"):
-        if is_metadata_file(path):
-            menu.skills[path.stem] = _entry(path, _json_object(path))
+    for path in _metadata_files(root / METADATA_FOLDER):
+        menu.skills[path.stem] = _entry(path, _json_object(path))
     _read_bundles(menu, root / SOURCE_FILE, document.get("bundles"))
     named = [*(name for entry in menu.skills.values() for name in entry.skill_deps), *menu.skill_bundle]
     unknown = sorted({name for name in named if name not in menu.skills})
