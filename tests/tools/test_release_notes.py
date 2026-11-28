@@ -10,8 +10,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import override
 from unittest import mock
@@ -670,6 +671,34 @@ def counting_client(items: Sequence[Mapping[str, object]] | None = None) -> GitH
     return GitHubClient(lambda command: CommandResult(0, answers[tuple(command)], ""), sleeper=lambda _: None)
 
 
+@contextlib.contextmanager
+def released(fifo: Path) -> Iterator[list[Path]]:
+    """While the block runs, open and close the FIFO's writing end every RELEASE_INTERVAL seconds, so a reader that
+    opens it meets its end of file at once rather than blocking: code that opens it fails the test's assertions, never
+    hangs it. A nonblocking open of the writing end succeeds only while a reader holds the FIFO open, so the list it
+    gives names the FIFO once the block's code opened it, and stays empty while it never did."""
+    done = threading.Event()
+    opened: list[Path] = []
+
+    def release() -> None:
+        while not done.wait(RELEASE_INTERVAL):
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
+                opened.append(fifo)
+
+    releaser = threading.Thread(target=release, daemon=True)
+    releaser.start()
+    try:
+        yield opened
+    finally:
+        done.set()
+        releaser.join()
+
+
+# How often `released` opens the FIFO's writing end, which ends a read blocked opening it.
+RELEASE_INTERVAL = 0.2
+
+
 class CheckTests(FixtureRepository):
     """--check, run at the tag: the section origin/main holds against the entries origin/main's commits carry, and the
     release notes about to be published against that section and the line --counts prints."""
@@ -926,6 +955,37 @@ class CheckTests(FixtureRepository):
             )
         self.assertEqual((2, ""), (code, out.getvalue()))
         self.assertTrue(err.getvalue().startswith('ERROR: cannot read the release notes "'), err.getvalue())
+
+    def check_notes_at(self, notes: Path) -> tuple[int, str, str]:
+        """--check with `--notes` naming `notes` as it stands, and a counting client."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_notes.main(
+                ["v0.2.0", "--check", "--notes", str(notes)], root=self.root, client=counting_client()
+            )
+        return code, out.getvalue(), err.getvalue()
+
+    def test_notes_that_are_a_folder_exit_2_as_not_a_file(self) -> None:
+        self.released_section()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.assertEqual(
+            (2, "", f'ERROR: cannot read the release notes "{folder.name}": not a file\n'),
+            self.check_notes_at(Path(folder.name)),
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no FIFO a folder can hold")
+    def test_notes_that_are_a_fifo_exit_2_before_anything_opens_them(self) -> None:
+        # read_text() on a FIFO with no writer blocked forever; the notes' kind is judged before anything opens them.
+        self.released_section()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        notes = Path(folder.name) / "release notes.md"
+        os.mkfifo(notes)  # type: ignore[attr-defined, unused-ignore]  # POSIX only: Windows has no os.mkfifo
+        with released(notes) as opened:
+            result = self.check_notes_at(notes)
+        self.assertEqual((2, "", f'ERROR: cannot read the release notes "{notes}": not a file\n'), result)
+        self.assertEqual([], opened)
 
     def test_a_section_that_is_behind_is_reported_before_the_notes_are_read(self) -> None:
         self.released_section()
