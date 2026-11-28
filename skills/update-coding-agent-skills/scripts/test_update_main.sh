@@ -27,14 +27,16 @@ for ARGUMENTS in "" "--cross-major" "beta" "Main" "main --channel" "main --chann
   [ -z "$OUTPUT" ] || fail "channel usage '$ARGUMENTS': usage went to stdout: $OUTPUT"
 done
 
-# A path that is not a clone is a named failure, not a usage error.
+# A path that is not a clone is a named failure, not a usage error, with or without a deploy.py in it: the update reads
+# deploy.py from main's tree, never from the folder.
 begin_case 'not a clone'
-run_subject "$FIXTURE" main
-expect_failed "FAILED no deploy.py in $FIXTURE" "directory without deploy.py"
 PLAIN="$FIXTURE/plain dir (no git)"
 mkdir -p "$PLAIN"
-cp "$SEED/deploy.py" "$PLAIN/deploy.py"
 export GIT_CEILING_DIRECTORIES="$FIXTURE"
+run_subject "$PLAIN" main
+expect_failed "FAILED cannot read $PLAIN as a git repository: fatal: not a git repository" "directory without deploy.py"
+expect_nothing_run "directory without deploy.py"
+cp "$SEED/deploy.py" "$PLAIN/deploy.py"
 run_subject "$PLAIN" main
 unset GIT_CEILING_DIRECTORIES
 expect_failed "FAILED cannot read $PLAIN as a git repository: fatal: not a git repository" "not a repository"
@@ -193,6 +195,84 @@ run_subject "$CLONE" main
 expect_failed "FAILED cannot read the pin with main's deploy.py: the clone has neither refs/heads/main nor refs/remotes/origin/main" \
   "no main, a tag named refs/remotes/origin/main"
 expect_nothing_run "no main, a tag named refs/remotes/origin/main"
+
+# deploy.py is read from main's tree, where the update runs it, never from the branch the clone was left on: a branch
+# with no deploy.py, such as an orphan branch of documents, is switched from as any other branch is, and the update
+# deploys from main.
+begin_case "branch without deploy.py"
+new_clone
+git_quiet -C "$CLONE" switch --orphan docs
+printf 'documents\n' >"$CLONE/README.md"
+git_quiet -C "$CLONE" add README.md
+git_quiet -C "$CLONE" commit -m "documents"
+publish "change over a branch without deploy.py"
+run_subject "$CLONE" main
+expect_status 0 "branch without deploy.py"
+expect_main_deployer "branch without deploy.py"
+[ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "branch without deploy.py: not switched to main"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "branch without deploy.py: main not fast-forwarded"
+expect_deployed "branch without deploy.py"
+
+begin_case "branch without deploy.py on the release channel"
+new_clone
+git_quiet -C "$CLONE" switch --orphan docs
+printf 'documents\n' >"$CLONE/README.md"
+git_quiet -C "$CLONE" add README.md
+git_quiet -C "$CLONE" commit -m "documents"
+run_subject "$CLONE" release
+expect_status 1 "branch without deploy.py on the release channel"
+expect_first_line "NO_RELEASE" "branch without deploy.py on the release channel"
+expect_main_deployer "branch without deploy.py on the release channel"
+[ "$(git -C "$CLONE" branch --show-current)" = "docs" ] || fail "branch without deploy.py on the release channel: switched"
+
+# A main whose tree holds no deploy.py is refused, naming main, before anything runs, though the branch the clone is on
+# holds one; on either channel, and with no local main, naming origin/main as the clone last fetched it.
+begin_case "main without deploy.py"
+for CHANNEL in main release; do
+  new_clone
+  checkout_branch_deployer topic
+  commit_deploy_py_as "$CLONE" refs/heads/main
+  run_subject "$CLONE" "$CHANNEL"
+  expect_failed "FAILED no deploy.py at the root of refs/heads/main in $CLONE" "main without deploy.py on $CHANNEL"
+  expect_nothing_run "main without deploy.py on $CHANNEL"
+  [ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "main without deploy.py on $CHANNEL: switched"
+done
+
+begin_case "origin/main without deploy.py and no local main"
+new_clone
+checkout_branch_deployer topic
+git_quiet -C "$CLONE" branch -D main
+commit_deploy_py_as "$CLONE" refs/remotes/origin/main
+run_subject "$CLONE" main
+expect_failed "FAILED no deploy.py at the root of refs/remotes/origin/main in $CLONE" \
+  "origin/main without deploy.py and no local main"
+expect_nothing_run "origin/main without deploy.py and no local main"
+
+# The deployment runs deploy.py as the fast-forward leaves it, origin/main's after the fetch, so an origin/main that
+# holds none is refused after the fetch and before the switch to main: the clone stays on its branch, and nothing is
+# deployed.
+begin_case "fetched origin/main without deploy.py"
+new_clone
+checkout_branch_deployer topic
+WITHOUT_DEPLOYER="$FIXTURE/upstream without deploy.py.git"
+git_quiet clone --bare "$UPSTREAM" "$WITHOUT_DEPLOYER"
+commit_deploy_py_as "$WITHOUT_DEPLOYER" refs/heads/main
+git_quiet -C "$CLONE" remote set-url origin "$WITHOUT_DEPLOYER"
+run_subject "$CLONE" main
+expect_failed "FAILED no deploy.py at the root of refs/remotes/origin/main in $CLONE" \
+  "fetched origin/main without deploy.py"
+expect_main_deployer "fetched origin/main without deploy.py"
+expect_not_deployed "fetched origin/main without deploy.py"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "fetched origin/main without deploy.py: switched"
+
+# A folder inside a clone is not the clone: deploy.py at the root of main's tree is not in it, so it is refused, naming
+# the folder git reads it as, before anything runs.
+begin_case "folder inside the clone"
+new_clone
+run_subject "$CLONE/skills" main
+expect_failed "FAILED $CLONE/skills is the folder skills/ inside a clone, not the clone's top folder" \
+  "folder inside the clone"
+expect_nothing_run "folder inside the clone"
 
 # Main's tree that cannot be written out, here as git refuses the archive or mktemp the folder, stops before anything
 # runs, and leaves no folder behind.

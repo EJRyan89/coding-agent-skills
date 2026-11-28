@@ -42,8 +42,10 @@
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
 #   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on: the
-#                    clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this skill,
-#                    something other than a file stands in the place of deploy.py or of the core's script, or that place
+#                    clone is not a repository, or is a folder inside one, main's tree, or origin/main's after the
+#                    fetch, holds no deploy.py at its root, or something other than a regular file there, named with the
+#                    mode git records, whatever branch the clone is on, no ejryan89-skill-core is deployed beside this
+#                    skill, something other than a file stands in the place of the core's script, or that place
 #                    cannot be examined, the operating system's reason following, the temporary directory is one another
 #                    account could rename or cannot be examined, the clone has no main to read the pin with or main's
 #                    tree could not be written out for it, `deploy.py check` printed nothing, printed only its error, or
@@ -68,7 +70,7 @@ esac
 
 # Usage is checked before any work, so a usage error never becomes a FAILED line.
 usage() {
-  echo "usage: update.sh <clone containing deploy.py> <release|main> [--channel <release|main>] [--cross-major]" \
+  echo "usage: update.sh <clone whose main holds deploy.py> <release|main> [--channel <release|main>] [--cross-major]" \
     "[--unpin]" >&2
   exit 2
 }
@@ -249,13 +251,13 @@ done
 # and the upgrade-notes check read too: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1
 # and every other tag are not releases. It runs from the copy of ejryan89-skill-core the deployment that installed this
 # script put beside it, never from the clone, whose later commits may move or rename it before the update has deployed
-# them. deploy.py at the root of main's tree is the one file the update runs from the clone.
+# them. deploy.py at the root of main's tree is the one file the update runs from the clone, and it is required there,
+# where it runs, never in the working tree of a branch the clone was left on (require_deploy_py below).
 RELEASE_TAGS="$SCRIPTS/../../ejryan89-skill-core/scripts/release_tags.py"
 require_file "$RELEASE_TAGS" "no ejryan89-skill-core release_tags.py deployed beside update.sh: $RELEASE_TAGS" \
   "ejryan89-skill-core release_tags.py beside update.sh at $RELEASE_TAGS"
 
 CLONE=$1
-require_file "$CLONE/deploy.py" "no deploy.py in $CLONE" "deploy.py in $CLONE"
 
 # A git command in the clone, read as ejryan89-skill-core's git_client.py reads git's exit status: status 0 when git
 # succeeded, GIT_OUT then its output; 1 when git said no, which a --quiet command, merge-base --is-ancestor, and
@@ -298,6 +300,41 @@ if ! git_quiet rev-parse --git-dir; then
   echo "FAILED cannot read $CLONE as a git repository: $GIT_REASON"
   exit 1
 fi
+# The update runs deploy.py in the folder it was given, which is deploy.py at the root of main's tree only when that
+# folder is the clone's top folder: a folder inside it, which git reads as the clone too, is refused, naming the folder
+# git reads it as.
+if ! git_quiet rev-parse --show-prefix; then
+  echo "FAILED cannot read where $CLONE is in its clone: ${GIT_REASON:-git answered no}"
+  exit 1
+elif [ -n "$GIT_OUT" ]; then
+  echo "FAILED $CLONE is the folder $(one_line "$GIT_OUT") inside a clone, not the clone's top folder"
+  exit 1
+fi
+
+# A regular file at deploy.py in the root of a tree, read from git, as the update runs deploy.py from main's tree: the
+# first argument names the tree or commit, the second the ref it was read from, for the reason. Nothing printed when it
+# is there; otherwise a FAILED line and exit 1, naming it missing when the tree holds nothing there, naming the mode git
+# records when it holds something else, such as a folder or a link, and naming git's reason when git cannot answer.
+# ls-tree prints "<mode> <type> <object>", a tab, and the path, and only an entry whose path is deploy.py itself counts.
+require_deploy_py() {
+  local line entry=
+  if ! git_quiet ls-tree --full-tree "$1" -- deploy.py; then
+    echo "FAILED cannot read deploy.py at the root of $2 in $CLONE: ${GIT_REASON:-git answered no}"
+    exit 1
+  fi
+  while IFS= read -r line; do
+    [ "${line#*$'\t'}" != deploy.py ] || entry=${line%%$'\t'*}
+  done <<<"$GIT_OUT"
+  case "$entry" in
+    "") echo "FAILED no deploy.py at the root of $2 in $CLONE" ;;
+    "100644 blob "* | "100755 blob "*) return 0 ;;
+    *)
+      local mode=${entry%% *} kind=${entry#* }
+      echo "FAILED deploy.py at the root of $2 in $CLONE is not a file: git holds a ${kind%% *} there, mode $mode"
+      ;;
+  esac
+  exit 1
+}
 
 # Untracked files are allowed: Git refuses a fast-forward that would overwrite one. Read without the index refresh a
 # status otherwise writes back, so the check never takes the clone's index lock. Its stdout alone is the answer, and its
@@ -417,6 +454,7 @@ if ! git_quiet rev-parse --verify "$GIT_OUT^{tree}"; then
   exit 1
 fi
 MAIN_TREE=$GIT_OUT
+require_deploy_py "$MAIN_TREE" "$MAIN_SOURCE"
 if ! git_quiet rev-parse --verify "HEAD^{tree}"; then
   echo "FAILED cannot read the tree the clone is on: ${GIT_REASON:-git answered no}"
   exit 1
@@ -742,6 +780,9 @@ if [ -z "$FOUND_ON" ]; then
   echo "FAILED cannot read the branch or the commit the clone is on: git named none"
   exit 1
 fi
+# The deployment below runs deploy.py as the fast-forward leaves it, origin/main's as fetched, which need not be the
+# tree check ran from, so it is required there too, before the switch to main changes the clone.
+require_deploy_py "$AFTER_COMMIT" "$ORIGIN_MAIN"
 # Main's commit before the fast-forward is a full object id too: local main's, or origin/main's when the clone has no
 # local main yet, which the switch below then creates there.
 BEFORE_COMMIT=${MAIN_COMMIT:-$AFTER_COMMIT}
