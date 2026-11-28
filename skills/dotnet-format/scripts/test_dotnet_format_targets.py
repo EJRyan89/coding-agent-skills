@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -1593,6 +1594,49 @@ class FileListTests(unittest.TestCase):
     def test_a_missing_list_is_an_os_error(self) -> None:
         with self.assertRaises(FileNotFoundError):
             targets.read_file_list(self.path)
+
+    def test_a_list_that_is_a_folder_is_refused_as_not_a_file(self) -> None:
+        self.path.mkdir()
+        with self.assertRaises(ValueError) as context:
+            targets.read_file_list(self.path)
+        self.assertEqual(f"{self.path} is not a file, as resolve writes a FILE_LIST", str(context.exception))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no FIFO a folder can hold")
+    def test_a_list_that_is_a_fifo_is_refused_before_anything_opens_it(self) -> None:
+        # read_bytes() on a FIFO with no writer blocked forever; the list's kind is judged before anything opens it.
+        os.mkfifo(self.path)  # type: ignore[attr-defined, unused-ignore]  # POSIX only: Windows has no os.mkfifo
+        with released(self.path) as opened, self.assertRaises(ValueError) as context:
+            targets.read_file_list(self.path)
+        self.assertEqual(f"{self.path} is not a file, as resolve writes a FILE_LIST", str(context.exception))
+        self.assertEqual([], opened)
+
+
+@contextlib.contextmanager
+def released(fifo: Path) -> Iterator[list[Path]]:
+    """While the block runs, open and close the FIFO's writing end every RELEASE_INTERVAL seconds, so a reader that
+    opens it meets its end of file at once rather than blocking: code that opens it fails the test's assertions, never
+    hangs it. A nonblocking open of the writing end succeeds only while a reader holds the FIFO open, so the list it
+    gives names the FIFO once the block's code opened it, and stays empty while it never did."""
+    done = threading.Event()
+    opened: list[Path] = []
+
+    def release() -> None:
+        while not done.wait(RELEASE_INTERVAL):
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # type: ignore[attr-defined, unused-ignore]  # POSIX only
+                opened.append(fifo)
+
+    releaser = threading.Thread(target=release, daemon=True)
+    releaser.start()
+    try:
+        yield opened
+    finally:
+        done.set()
+        releaser.join()
+
+
+# How often `released` opens the FIFO's writing end, which ends a read blocked opening it.
+RELEASE_INTERVAL = 0.2
 
 
 def install(folder: Path, name: str) -> Path:
