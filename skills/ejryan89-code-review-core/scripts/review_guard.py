@@ -362,9 +362,10 @@ def run_root(path: Path) -> Path | None:
 
 
 def _roles(run: Path) -> list[dict[str, Any]]:
-    """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file."""
+    """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file. Every read of
+    run.json here is marked `replaced`, since `check` replaces the file while the guard reads it."""
     try:
-        state = json_reader.read_file(run / RUN_FILE)
+        state = json_reader.read_file(run / RUN_FILE, replaced=True)
     except (OSError, ValueError) as exc:
         raise _unread_run(run, exc) from exc
     try:
@@ -601,7 +602,7 @@ def _restricted(run: Path) -> dict[str, list[str]]:
     """The run's restricted paths, each with the roles that may read it: a file of the run that only the roles given
     the text it holds may read, such as the closing issues."""
     try:
-        state = READ.json_object(json_reader.read_file(run / RUN_FILE), "run")
+        state = READ.json_object(json_reader.read_file(run / RUN_FILE, replaced=True), "run")
         restricted = READ.json_object(state.get("restricted", {}), "run.restricted")
         return {
             READ.string(path, "a key of run.restricted"): READ.array(roles, f"run.restricted.{path}", READ.string)

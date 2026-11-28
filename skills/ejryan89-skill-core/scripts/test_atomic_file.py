@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, override
 from unittest import mock
@@ -28,9 +28,11 @@ from atomic_file import (
     UnfinishedReservationError,
     create_bytes,
     is_read_only,
+    read_refusals,
     refuse_uncreatable,
     replace_bytes,
     replace_text,
+    while_refused,
 )
 from file_presence import is_occupied
 from flat_text import flat_text
@@ -421,6 +423,47 @@ class ReplaceRefusedForAMomentTests(unittest.TestCase):
             self.assertEqual("next\n", path.read_text(encoding="utf-8"))
             self.assertEqual(["run.json"], names_in(temporary))
             self.assertEqual([0.01] if sys.platform == "win32" else [], waits)
+
+
+class WhileRefusedTests(unittest.TestCase):
+    """while_refused, the one table of waits, tries again each refusal it is given and nothing else."""
+
+    def run_refused(self, failures: Sequence[BaseException], refusal: Any) -> tuple[Any, list[float]]:
+        """What while_refused gives or raises for an action that raises each of `failures` in turn, then returns 1."""
+        waits: list[float] = []
+        remaining = list(failures)
+
+        def action() -> int:
+            if remaining:
+                raise remaining.pop(0)
+            return 1
+
+        with mock.patch.object(time, "sleep", waits.append):
+            try:
+                value: Any = while_refused(action, refusal)
+            except OSError as error:
+                value = error
+        return value, waits
+
+    def test_each_refusal_of_a_tuple_is_tried_again_after_the_same_waits(self) -> None:
+        refused = [PermissionError(errno.EACCES, "denied"), FileNotFoundError(errno.ENOENT, "absent")]
+        self.assertEqual((1, [0.01, 0.02]), self.run_refused(refused, (PermissionError, FileNotFoundError)))
+
+    def test_an_error_not_among_the_refusals_is_raised_at_once(self) -> None:
+        absent = FileNotFoundError(errno.ENOENT, "absent")
+        self.assertEqual((absent, []), self.run_refused([absent], PermissionError))
+        self.assertEqual((absent, [0.01]), self.run_refused([PermissionError(), absent], (PermissionError,)))
+
+
+class ReadRefusalsTests(unittest.TestCase):
+    """read_refusals is what a read of a file tries again: on Windows a PermissionError while a replace holds the old
+    file for delete, and, for a file the caller says another process replaces, a FileNotFoundError while the replace
+    hides its name for a moment."""
+
+    def test_a_replaced_file_s_read_tries_again_an_absent_name_and_any_other_read_does_not(self) -> None:
+        # Pinned against literals, never against the tuple under test.
+        self.assertEqual((PermissionError, FileNotFoundError), read_refusals(replaced=True))
+        self.assertEqual((PermissionError,), read_refusals(replaced=False))
 
 
 class CreateTests(unittest.TestCase):

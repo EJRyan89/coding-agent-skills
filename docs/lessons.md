@@ -1553,16 +1553,19 @@ or removed fails validation until its pattern follows it.
 
 ### A file handed to another process appears whole
 
-- **Rule:** A file one process writes for another is written to a temporary name beside it and renamed into place.
-- **Why:** A reader that runs before its writer finishes reads an empty or partial file.
-- **Use:** `atomic_file:replace_text`, `atomic_file:replace_bytes`, `json_reader:read_file`, `atomic_file:while_refused`
+- **Rule:** A file one process writes for another is written to a temporary name beside it and renamed into place,
+  and its reader marks the read `replaced`.
+- **Why:** A reader that runs before its writer finishes reads an empty or partial file, and on Windows a read that
+  meets the rename may find the name absent for a moment.
+- **Use:** `atomic_file:replace_text`, `atomic_file:replace_bytes`, `json_reader:read_file`, `atomic_file:while_refused`,
+  `atomic_file:read_refusals`
 - **No guard:** Whether a reader can run before its writer finishes depends on the processes' timing, which reading
   the code cannot settle. The canary's own case is held by
   `tests/tools/test_runtime_canary.py::test_an_empty_pid_file_is_a_named_wait_rather_than_a_parse_error`, and review
   holds the rest.
 - **Search for:** `.write_text(` or `open(` with `"w"` on a pid, lock, status, or record file another process polls;
   a reader that loops until `.exists()` and then reads at once.
-- **Examples:** #1354
+- **Examples:** #1354, #3582
 
 ### A deletion stopped partway is told from a change
 

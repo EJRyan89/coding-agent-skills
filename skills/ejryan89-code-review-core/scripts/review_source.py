@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
+import os
 import sys
 from pathlib import Path
 
@@ -44,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 import json_writer
+from atomic_file import read_refusals, while_refused
 from console import run_main
 from executable_locator import PYTHON
 from flat_text import single_line
@@ -98,18 +101,41 @@ def filled(command: str, value: str) -> str:
     raise ValueError(f"the command holds neither {' nor '.join(PLACEHOLDERS)}: {command}")
 
 
+def _require_run_file(run: Path) -> None:
+    """Return once run.json is a file in `run`; otherwise raise a SourceError naming why: a run.json it cannot stat, or
+    a folder in its place, named so, never as a folder that holds no run, and one that is not there as a folder that
+    holds no run.
+
+    The check is tried again after `atomic_file.while_refused`'s waits while it finds no run.json, the waits a read
+    marked `replaced` gets, since on Windows `check`'s replace of the file may hide its name for a moment, so a run that
+    holds run.json throughout is never refused as one that holds none. A run.json missing throughout is refused once
+    the waits are spent, and anything else at once."""
+    path = run / RUN_FILE
+
+    def reason() -> str | None:
+        found = file_presence.refusal_reason(path)
+        if found == file_presence.MISSING:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+        return found
+
+    try:
+        found = while_refused(reason, read_refusals(replaced=True))
+    except FileNotFoundError:
+        raise SourceError(f"{run} is not a review run: it holds no {RUN_FILE} file") from None
+    if found is not None:
+        raise SourceError(f"{run}'s {RUN_FILE} {found}")
+
+
 def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     """The run's source repository, None for a whole snapshot, its request's repository and head, and the role's read
-    log, once the run is a prepared review run and the role is one of its roles."""
+    log, once the run is a prepared review run and the role is one of its roles. Its check and read of run.json are
+    each marked `replaced`, since `check` replaces the file while a reviewer's source command reads it."""
     run = resolved_path(run)
     if not run.name.startswith(RUN_PREFIX):
         raise SourceError(f"{run} is not a review run")
-    # A run.json it cannot stat, or a folder in its place, is named so, never a folder that holds no run.
-    file_presence.require(
-        run / RUN_FILE, SourceError, f"{run} is not a review run: it holds no {RUN_FILE} file", f"{run}'s {RUN_FILE}"
-    )
+    _require_run_file(run)
     try:
-        state = READ.json_object(read_json(run / RUN_FILE), "run")
+        state = READ.json_object(read_json(run / RUN_FILE, replaced=True), "run")
         request = READ.json_object(
             read_json(Path(READ.string(state.get("request_path"), "run.request_path"))), "request"
         )

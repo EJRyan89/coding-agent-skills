@@ -311,21 +311,38 @@ def _publish(
         raise
 
 
-def while_refused[T](action: Callable[[], T], refusal: type[OSError] = PermissionError) -> T:
-    """What `action` returns, trying it again after each of its waits while a try raises `refusal`, and raising the
-    last try's error when every one does. Any other error, an interrupt in a wait included, is raised as it was, at
-    once.
+def while_refused[T](
+    action: Callable[[], T], refusal: type[OSError] | tuple[type[OSError], ...] = PermissionError
+) -> T:
+    """What `action` returns, trying it again after each of its waits while a try raises `refusal`, or any of a tuple
+    of refusals, and raising the last try's error when every one does. Any other error, an interrupt in a wait
+    included, is raised as it was, at once.
 
     It is the one table of waits for a file another process holds for a moment, which the replace and the removal of a
-    copy here and `json_reader.read_file` share. The waits, in seconds, are 10, 20, 40, 80, and 160 ms, so an action
-    refused throughout raises within about a third of a second, well inside a hook's time limit, and are kept inside the
-    function rather than at module level so only the suites that run a retried action reach them."""
+    copy here and the reads `read_refusals` names share. The waits, in seconds, are 10, 20, 40, 80, and 160 ms, so an
+    action refused throughout raises within about a third of a second, well inside a hook's time limit, and are kept
+    inside the function rather than at module level so only the suites that run a retried action reach them."""
     for wait in (0.01, 0.02, 0.04, 0.08, 0.16):
         try:
             return action()
         except refusal:
             time.sleep(wait)
     return action()
+
+
+def read_refusals(*, replaced: bool) -> tuple[type[OSError], ...]:
+    """The errors a read of a file tries again through while_refused's waits, as `json_reader.read_file` and the
+    code-review pipeline's `read_json` read: a PermissionError, which Windows raises for an open that meets another
+    process's replace through this module while the replace holds the old file for delete; and, for a file the caller
+    says another process `replaced`, a FileNotFoundError too.
+
+    Windows may hide the name of a file being replaced for a moment, in bursts under load, so an open in that window
+    finds no file, as CI's Windows runner showed for Python's own open. Go's `cmd/internal/robustio` says the same of
+    its own reads, that ERROR_FILE_NOT_FOUND can occur as a spurious error while a file is replaced, and it does not
+    retry it, since the file may also not exist. Only the caller can tell those apart: a check for the file before the
+    read meets the same window, so it cannot. A read the caller does not mark replaced raises an absent file at once,
+    the ordinary state of one no writer has made yet; one it marks waits out the full back-off before raising."""
+    return (PermissionError, FileNotFoundError) if replaced else (PermissionError,)
 
 
 def _replace_waiting(copy: Path, target: Path) -> None:

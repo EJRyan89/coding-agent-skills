@@ -145,19 +145,21 @@ def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
     return _bounded(value), end
 
 
-def read_file(path: Path, *, byte_order_mark: bool = False) -> Any:
+def read_file(path: Path, *, byte_order_mark: bool = False, replaced: bool = False) -> Any:
     """The value the UTF-8 file at `path` holds, as `loads` reads it, whatever the platform's own codec: an `OSError`
     when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, and a refusal of a
     leading byte-order mark, which a program's own record never holds. With `byte_order_mark`, one leading UTF-8
     byte-order mark is passed over, as the `utf-8-sig` codec reads it, for a file a person edits and an editor may
     save with one, such as Windows PowerShell 5.1's `Out-File -Encoding utf8`.
 
-    A read refused with PermissionError is tried again after `atomic_file.while_refused`'s short waits, and the last
-    try's error raised: on Windows, an open that meets another process's replace of the file through `atomic_file` may
-    be refused while the replace holds the old file for delete, as CI's Windows runner showed, and a try after the
-    replace reads the new file whole. Every try reads the whole file afresh, so a read gives the old file or the new
-    one, never part of either. Any other error is raised at once."""
-    data = atomic_file.while_refused(lambda: path.read_bytes())
+    A read refused with one of `atomic_file.read_refusals` is tried again after `atomic_file.while_refused`'s short
+    waits, and the last try's error raised: on Windows, an open that meets another process's replace of the file
+    through `atomic_file` may be refused while the replace holds the old file for delete, or, for a file the caller
+    says another process `replaced`, find the name absent for a moment, as CI's Windows runner showed, and a try after
+    the replace reads the new file whole. A file not marked `replaced` that is absent raises at once. Every try reads
+    the whole file afresh, so a read gives the old file or the new one, never part of either. Any other error is
+    raised at once."""
+    data = atomic_file.while_refused(lambda: path.read_bytes(), atomic_file.read_refusals(replaced=replaced))
     return loads(data.decode("utf-8-sig" if byte_order_mark else "utf-8"))
 
 

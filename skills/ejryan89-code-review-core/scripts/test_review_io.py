@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import re
 import shutil
 import stat
@@ -64,16 +66,26 @@ class ReadJsonRefusedForAMomentTests(unittest.TestCase):
     """read_json of a file whose read another process refuses for a moment, as Windows refuses one that meets a
     replace through atomic_file, such as a concurrent run's write of the batch state or the dashboard's record."""
 
-    def read(self, refusals: int | None, failure: OSError | None = None) -> tuple[Any, list[float], list[OSError]]:
-        """read_json of a file whose read is refused with PermissionError `refusals` times, or every time for None,
-        then fails with `failure` if given. Returns what it gave or raised, the waits, and each error a try raised."""
+    def read(
+        self,
+        refusals: int | None,
+        failure: OSError | None = None,
+        *,
+        refused_with: tuple[type[OSError], ...] = (PermissionError,),
+        replaced: bool = False,
+    ) -> tuple[Any, list[float], list[OSError]]:
+        """read_json, told the file is `replaced` if so, of a file whose read is refused `refusals` times, or every
+        time for None, each try with the next of `refused_with` in turn, then fails with `failure` if given. Returns
+        what it gave or raised, the waits, and each error a try raised."""
         real_read_text = Path.read_text
         raised: list[OSError] = []
         waits: list[float] = []
 
         def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
             if refusals is None or len(raised) < refusals:
-                raised.append(PermissionError(13, "Permission denied", str(self)))
+                kind = refused_with[len(raised) % len(refused_with)]
+                code = errno.ENOENT if issubclass(kind, FileNotFoundError) else errno.EACCES
+                raised.append(kind(code, os.strerror(code), str(self)))
                 raise raised[-1]
             if failure is not None:
                 raised.append(failure)
@@ -85,7 +97,7 @@ class ReadJsonRefusedForAMomentTests(unittest.TestCase):
             path.write_bytes(b'{"x": 1}')
             with mock.patch.object(Path, "read_text", read_text), mock.patch.object(time, "sleep", waits.append):
                 try:
-                    value: Any = read_json(path)
+                    value: Any = read_json(path, replaced=True) if replaced else read_json(path)
                 except review_io.FileUnreadable as error:
                     value = error
         return value, waits, raised
@@ -110,6 +122,73 @@ class ReadJsonRefusedForAMomentTests(unittest.TestCase):
                 error, waits, raised = self.read(0, failure)
                 self.assertEqual(([], [failure]), (waits, raised))
                 self.assertIs(failure, error.__cause__)
+
+    def test_a_replaced_file_whose_name_is_absent_for_a_while_is_read_after_short_waits(self) -> None:
+        # Holds on every platform, by injected refusals: Windows may hide the name of a file another process replaces,
+        # in bursts under load, so a read told the file is replaced tries an absent name again after the same waits.
+        self.assertEqual(
+            ({"x": 1}, [0.01, 0.02, 0.04]),
+            self.read(3, refused_with=(FileNotFoundError, PermissionError), replaced=True)[:2],
+        )
+
+    def test_a_replaced_file_absent_throughout_is_unreadable_from_the_last_refusal_after_the_back_off(self) -> None:
+        error, waits, raised = self.read(None, refused_with=(FileNotFoundError,), replaced=True)
+        self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits)
+        self.assertIs(raised[-1], error.__cause__, "the unreadable file names the last try's refusal")
+
+    def test_an_absent_name_of_a_file_not_said_to_be_replaced_is_unreadable_at_once(self) -> None:
+        error, waits, raised = self.read(None, refused_with=(FileNotFoundError,))
+        self.assertEqual(([], 1), (waits, len(raised)))
+        self.assertIs(raised[0], error.__cause__)
+
+    def test_a_file_that_never_existed_is_unreadable_at_once_unless_it_is_said_to_be_replaced(self) -> None:
+        # Holds on every platform, through the file system: the size check's stat meets the missing file first.
+        waits: list[float] = []
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(time, "sleep", waits.append):
+            missing = Path(temporary) / "state.json"
+            with self.assertRaises(review_io.FileUnreadable) as caught:
+                read_json(missing)
+            self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+            self.assertEqual([], waits, "a file that never existed is not waited for")
+            with self.assertRaises(review_io.FileUnreadable):
+                read_json(missing, replaced=True)
+            self.assertEqual([0.01, 0.02, 0.04, 0.08, 0.16], waits, "a replaced file's absent name is waited out")
+
+    def test_the_size_check_s_stat_is_tried_again_with_the_read(self) -> None:
+        # Holds on every platform, by injected refusals: the stat that bounds the size meets the replace as the read
+        # does, so it is tried again within the same waits, a PermissionError always and an absent name for a file
+        # said to be replaced, and an absent name of any other file is unreadable at once.
+        for kind, replaced, expected in (
+            (PermissionError, False, ({"x": 1}, [0.01, 0.02])),
+            (FileNotFoundError, True, ({"x": 1}, [0.01, 0.02])),
+            (FileNotFoundError, False, (FileNotFoundError, [])),
+        ):
+            with self.subTest(kind=kind.__name__, replaced=replaced):
+                self.assertEqual(expected, self.stat_refused(kind, 2, replaced=replaced))
+
+    def stat_refused(self, kind: type[OSError], refusals: int, *, replaced: bool) -> tuple[Any, list[float]]:
+        """read_json of a file whose stat is refused with `kind` `refusals` times. Returns what it gave, or the type of
+        the unreadable file's cause, and the waits."""
+        real_stat = Path.stat
+        waits: list[float] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b'{"x": 1}')
+            refused: list[OSError] = []
+
+            def refused_stat(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+                if self == path and len(refused) < refusals:
+                    code = errno.ENOENT if issubclass(kind, FileNotFoundError) else errno.EACCES
+                    refused.append(kind(code, os.strerror(code), str(self)))
+                    raise refused[-1]
+                return real_stat(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "stat", refused_stat), mock.patch.object(time, "sleep", waits.append):
+                try:
+                    value: Any = read_json(path, replaced=True) if replaced else read_json(path)
+                except review_io.FileUnreadable as error:
+                    value = type(error.__cause__)
+        return value, waits
 
 
 class LockOwnerSizeTests(unittest.TestCase):
